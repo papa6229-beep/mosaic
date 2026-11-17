@@ -152,24 +152,27 @@ def cover_frame(frame, cx, cy, w, h, prev_color, prev_hair=None):
             hm = np.maximum(hm, prev_hair * 0.7)
         hair_state = hm
         hb = (hm > 0.3).astype(np.uint8)
-        if hb.any():
-            kk = HAIR_PAD * 2 + 1
-            hb = cv2.dilate(hb, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kk, kk)))
-            region |= hb
+        bx, by, bw2, bh2 = cv2.boundingRect(hb)
+        if bw2 > 0:
+            p = HAIR_PAD
+            X0, Y0 = max(0, bx - p), max(0, by - p)
+            X1, Y1 = min(W, bx + bw2 + p), min(H, by + bh2 + p)
+            d = cv2.distanceTransform((hb[Y0:Y1, X0:X1] == 0).astype(np.uint8), cv2.DIST_L2, 3)
+            region[Y0:Y1, X0:X1] |= (d <= p).astype(np.uint8)
 
-    ys, xs = np.nonzero(region)
-    if len(xs) == 0:
+    rx, ry, rw, rh = cv2.boundingRect(region)
+    if rw == 0:
         return frame, prev_color, 0.0, hair_state
     m = int(short * 0.25 + 2 * k + 2 * bk + 4)
-    x0, y0 = max(0, xs.min() - m), max(0, ys.min() - m)
-    x1, y1 = min(W, xs.max() + m), min(H, ys.max() + m)
+    x0, y0 = max(0, rx - m), max(0, ry - m)
+    x1, y1 = min(W, rx + rw + m), min(H, ry + rh + m)
     sub = frame[y0:y1, x0:x1]
     core = region[y0:y1, x0:x1]
-    ring_k = int(short * 0.25) * 2 + 1
-    outer = cv2.dilate(core, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ring_k, ring_k)))
+    dist = cv2.distanceTransform((core == 0).astype(np.uint8), cv2.DIST_L2, 3)   # 영역 밖 거리 (빠름)
+    outer = (dist <= short * 0.25).astype(np.uint8)
 
     # 덮을 영역 안쪽은 100% 덮고, 바깥쪽으로만 옅어지게
-    grow = cv2.dilate(core, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)))
+    grow = (dist <= k / 2).astype(np.uint8)
     alpha = (big_blur_mask(grow * 255, k / 2.0) / 255.0).clip(0, 1)
     alpha = np.maximum(alpha, core.astype(np.float32))
 
