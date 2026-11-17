@@ -137,49 +137,54 @@ def big_blur_mask(m, sigma):
     return big_blur(m.astype(np.float32), sigma)
 
 
-def cover_frame(frame, cx, cy, w, h, prev_color, prev_hair=None):
-    """반환: (결과, 피부색, 털비침비율, 털마스크상태)"""
+def cover_frame(frame, cx, cy, w, h, prev_color, prev_state=None):
+    """원본 모자이크 + 붙어 있는 털을 바깥 테두리를 따라 감싸고(고무줄처럼), 여유를 두고 블러로 덮음.
+    반환: (결과, 피부색, 털비침비율, 상태)"""
     H, W = frame.shape[:2]
-    ew = w * SCALE + PAD_PX * 2
-    eh = h * SCALE + PAD_PX * 2
-    short = max(8.0, min(ew, eh))
-    k = int(short * FEATHER) | 1
-    bk = int(short * BLUR_FRAC) | 1
+    prev_hair, prev_region = prev_state if prev_state else (None, None)
+    x1, y1, x2, y2 = cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2
 
-    # 덮을 영역 = 원본 모자이크 타원 + (붙어 있는 털 덩어리)
-    region = np.zeros((H, W), np.uint8)
-    cv2.ellipse(region, (int(cx), int(cy)), (int(ew / 2), int(eh / 2)), 0, 0, 360, 1, -1)
+    # 1) 원본 모자이크 영역 + 털
+    u = np.zeros((H, W), np.uint8)
+    cv2.rectangle(u, (int(x1), int(y1)), (int(x2), int(y2)), 1, -1)
     hair_state = None
     if HAIR:
-        hm = hair_mask(frame, [cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2], near=max(20, min(w, h) * HAIR_REACH)).astype(np.float32)
+        hm = hair_mask(frame, [x1, y1, x2, y2], near=max(20, min(w, h) * HAIR_REACH)).astype(np.float32)
         if prev_hair is not None:                       # 앞 프레임과 섞어서 깜빡임 방지
             hm = np.maximum(hm, prev_hair * 0.7)
         hair_state = hm
-        hb = (hm > 0.3).astype(np.uint8)
-        bx, by, bw2, bh2 = cv2.boundingRect(hb)
-        if bw2 > 0:
-            p = HAIR_PAD + k   # 털이 가장자리 옅어지는 구간에 걸리지 않게
-            X0, Y0 = max(0, bx - p), max(0, by - p)
-            X1, Y1 = min(W, bx + bw2 + p), min(H, by + bh2 + p)
-            d = cv2.distanceTransform((hb[Y0:Y1, X0:X1] == 0).astype(np.uint8), cv2.DIST_L2, 3)
-            region[Y0:Y1, X0:X1] |= (d <= p).astype(np.uint8)
+        u |= (hm > 0.3).astype(np.uint8)
 
-    rx, ry, rw, rh = cv2.boundingRect(region)
-    if rw == 0:
-        return frame, prev_color, 0.0, hair_state
-    m = int(short * 0.25 + 2 * k + 2 * bk + 4)
-    x0, y0 = max(0, rx - m), max(0, ry - m)
-    x1, y1 = min(W, rx + rw + m), min(H, ry + rh + m)
-    sub = frame[y0:y1, x0:x1]
-    core = region[y0:y1, x0:x1]
-    dist = cv2.distanceTransform((core == 0).astype(np.uint8), cv2.DIST_L2, 3)   # 영역 밖 거리 (빠름)
+    # 2) 바깥 테두리를 따라 감싸기 + 여유
+    hull = cv2.convexHull(cv2.findNonZero(u))
+    hx, hy, hw, hh = cv2.boundingRect(hull)
+    short = max(8.0, min(hw, hh))
+    margin = short * max(0.0, SCALE - 1.0) + PAD_PX
+    k = int(short * FEATHER) | 1
+    bk = int(short * BLUR_FRAC) | 1
+    m = int(margin + 2 * k + 2 * bk + 8)
+    x0, y0 = max(0, hx - m), max(0, hy - m)
+    x1c, y1c = min(W, hx + hw + m), min(H, hy + hh + m)
+    hmask = np.zeros((y1c - y0, x1c - x0), np.uint8)
+    cv2.drawContours(hmask, [hull - np.array([x0, y0])], -1, 1, -1)
+    d = cv2.distanceTransform((hmask == 0).astype(np.uint8), cv2.DIST_L2, 3)
+    core = (d <= margin).astype(np.float32)
+
+    # 3) 모양 출렁임 줄이기: 앞 프레임 영역과 섞되, 이번 영역은 반드시 포함
+    full = np.zeros((H, W), np.float32)
+    full[y0:y1c, x0:x1c] = core
+    if prev_region is not None:
+        full = np.maximum(full, 0.6 * prev_region + 0.4 * full)
+    region_state = full
+    core = (full[y0:y1c, x0:x1c] > 0.5).astype(np.uint8)
+
+    sub = frame[y0:y1c, x0:x1c]
+    dist = cv2.distanceTransform((core == 0).astype(np.uint8), cv2.DIST_L2, 3)
     outer = (dist <= short * 0.25).astype(np.uint8)
-
     alpha = (big_blur_mask(core * 255, k / 2.0) / 255.0).clip(0, 1)   # 처음 버전과 같은 가장자리
 
     col = skin_color(sub, core, outer)
     col = col if prev_color is None else 0.8 * prev_color + 0.2 * col
-
     filled = sub.copy()
     filled[core > 0] = col.astype(np.uint8)
     soft = big_blur(filled, bk / 2.0)
@@ -187,13 +192,13 @@ def cover_frame(frame, cx, cy, w, h, prev_color, prev_hair=None):
     a = alpha[..., None]
     o = (sub.astype(np.float32) * (1 - a) + soft.astype(np.float32) * a).clip(0, 255).astype(np.uint8)
     out = frame.copy()
-    out[y0:y1, x0:x1] = o
+    out[y0:y1c, x0:x1c] = o
     inner = alpha > 0.95
     dark = 0.0
     if inner.any():
         lum = o[inner].astype(np.float32).mean(1)
         dark = float((lum < col.mean() - DARK_GAP).mean())
-    return out, col, dark, hair_state
+    return out, col, dark, (hair_state, region_state)
 
 
 def main(src, boxes_json, dst):
