@@ -37,7 +37,6 @@
 <main>
   <h1>모자이크 생성기</h1>
   <p class="sub">원본 모자이크 위에 더 크고 자연스러운 블러를 덮어요.</p>
-  <p class="sub" id="sys" style="font-size:13px;margin-top:-16px">이 컴퓨터 확인 중…</p>
 
   <div class="card">
     <div id="drop"><b>영상 파일을 여기에 끌어 놓거나 눌러서 선택</b><span class="sub">mp4 등</span><div id="fname"></div></div>
@@ -96,7 +95,6 @@ $("go").onclick=()=>{
 };
 function fmt(s){s=Math.round(s);const h=Math.floor(s/3600),m=Math.floor(s%3600/60),x=s%60;return (h?h+"시간 ":"")+(m?m+"분 ":"")+x+"초"}
 let started=0;
-fetch("/sysinfo").then(r=>r.json()).then(i=>{$("sys").textContent=`이 컴퓨터: 그래픽카드 ${i.gpu}${i.vram_gb?" ("+i.vram_gb+"GB)":""} · CPU ${i.cpu} (${i.cores}스레드)${i.ram_gb?" · 메모리 "+i.ram_gb+"GB":""} · 저장 방식 ${i.encoder}`}).catch(()=>{$("sys").textContent=""});
 function fail(m){$("msg").innerHTML='<span class="warn">'+m+'</span>';$("go").disabled=false}
 function poll(id){
   fetch("/status/"+id).then(r=>r.json()).then(s=>{
