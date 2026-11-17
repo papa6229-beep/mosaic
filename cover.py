@@ -103,28 +103,32 @@ def big_blur(img, sigma):
 
 
 def hair_mask(frame, box, search=1.0, near=40):
-    """원본 모자이크 주변에서 '어둡고 잔결이 있는'(털 같은) 부분 중 모자이크에 붙어 있는 덩어리만 찾음"""
+    """원본 모자이크 주변에서 털 색(살색보다 어둡고 + 붉은기·노란기가 빠진 거무스름한 색)을 찾아,
+    모자이크에 붙어 있는 덩어리만 돌려줌. 그림자는 어두워도 살색이 그대로라 안 잡힘."""
     H, W = frame.shape[:2]
     x1, y1, x2, y2 = box
     bw, bh = x2 - x1, y2 - y1
     X1, Y1 = max(0, int(x1 - bw * search)), max(0, int(y1 - bh * search))
     X2, Y2 = min(W, int(x2 + bw * search)), min(H, int(y2 + bh * search))
     full = np.zeros((H, W), np.uint8)
-    if X2 - X1 < 10 or Y2 - Y1 < 10:
+    if X2 - X1 < 16 or Y2 - Y1 < 16:
         return full
-    g = cv2.cvtColor(frame[Y1:Y2, X1:X2], cv2.COLOR_BGR2GRAY).astype(np.float32)
-    skin = np.percentile(g, 75)
-    dark = g < skin * 0.55
-    mu = cv2.blur(g, (7, 7))
-    sd = np.sqrt(np.maximum(cv2.blur(g * g, (7, 7)) - mu * mu, 0))
-    tex = cv2.blur((sd > 10).astype(np.float32), (9, 9)) > 0.3
-    m = (dark & tex).astype(np.uint8)
-    m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))
+    lab = cv2.cvtColor(frame[Y1:Y2, X1:X2], cv2.COLOR_BGR2LAB).astype(np.float32)
+    L = lab[..., 0]
+    C = np.hypot(lab[..., 1] - 128, lab[..., 2] - 128)          # 색 진하기 (살색일수록 큼)
+    valid = cv2.erode((L > 25).astype(np.uint8), np.ones((31, 31), np.uint8)) > 0   # 검은 띠 제외
+    if valid.sum() < 100:
+        return full
+    skinL = np.percentile(L[valid], 80)                          # 이 근처 살 밝기
+    skinC = np.median(C[valid & (L > skinL * 0.85)])             # 이 근처 살색 진하기
+    m = (valid & (L < skinL * 0.8) & (C < skinC * 0.9)).astype(np.uint8)
+    m = (cv2.blur(m.astype(np.float32), (15, 15)) > 0.5).astype(np.uint8)
+    m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (21, 21)))
     touch = np.zeros_like(m)
     cv2.rectangle(touch, (int(x1 - X1 - near), int(y1 - Y1 - near)), (int(x2 - X1 + near), int(y2 - Y1 + near)), 1, -1)
-    n, lab, st, _ = cv2.connectedComponentsWithStats(m)
-    hit = np.unique(lab[(touch > 0) & (m > 0)])
-    keep = np.isin(lab, [k for k in hit if k > 0 and st[k, cv2.CC_STAT_AREA] > 150])
+    n, lab_, st, _ = cv2.connectedComponentsWithStats(m)
+    hit = np.unique(lab_[(touch > 0) & (m > 0)])
+    keep = np.isin(lab_, [k for k in hit if k > 0 and st[k, cv2.CC_STAT_AREA] > 150])
     full[Y1:Y2, X1:X2] = keep.astype(np.uint8)
     return full
 
@@ -154,7 +158,7 @@ def cover_frame(frame, cx, cy, w, h, prev_color, prev_hair=None):
         hb = (hm > 0.3).astype(np.uint8)
         bx, by, bw2, bh2 = cv2.boundingRect(hb)
         if bw2 > 0:
-            p = HAIR_PAD
+            p = HAIR_PAD + k   # 털이 가장자리 옅어지는 구간에 걸리지 않게
             X0, Y0 = max(0, bx - p), max(0, by - p)
             X1, Y1 = min(W, bx + bw2 + p), min(H, by + bh2 + p)
             d = cv2.distanceTransform((hb[Y0:Y1, X0:X1] == 0).astype(np.uint8), cv2.DIST_L2, 3)
@@ -171,10 +175,7 @@ def cover_frame(frame, cx, cy, w, h, prev_color, prev_hair=None):
     dist = cv2.distanceTransform((core == 0).astype(np.uint8), cv2.DIST_L2, 3)   # 영역 밖 거리 (빠름)
     outer = (dist <= short * 0.25).astype(np.uint8)
 
-    # 덮을 영역 안쪽은 100% 덮고, 바깥쪽으로만 옅어지게
-    grow = (dist <= k / 2).astype(np.uint8)
-    alpha = (big_blur_mask(grow * 255, k / 2.0) / 255.0).clip(0, 1)
-    alpha = np.maximum(alpha, core.astype(np.float32))
+    alpha = (big_blur_mask(core * 255, k / 2.0) / 255.0).clip(0, 1)   # 처음 버전과 같은 가장자리
 
     col = skin_color(sub, core, outer)
     col = col if prev_color is None else 0.8 * prev_color + 0.2 * col
