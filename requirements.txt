@@ -4,3 +4,4 @@ numpy
 scipy
 ultralytics
 imageio-ffmpeg
+psutil

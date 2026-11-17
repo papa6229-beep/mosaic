@@ -167,6 +167,8 @@ HAIR_TEX   = 2.2    # 털 덩어리의 잔결이 맨살의 이 배수보다 크�
 HAIR_GRAY  = 0.7     # 털 덩어리의 색 진하기가 살색의 이 비율보다 낮아야 음모로 인정
 HAIR_MEM   = 0.95    # 털을 놓쳐도 몇 프레임 기억 (깜빡임 방지)
 GHOST      = 0.8    # 자리를 옮길 때 예전 자리가 사라지는 속도 (작을수록 빨리 사라짐)
+BRIDGE     = 100    # 이 거리(픽셀) 안의 털 덩어리는 모자이크와 이어 붙임
+FILL_RES   = 120    # 블러 재료를 만들 때 줄여서 계산하는 크기 (작을수록 빠름, 어차피 강하게 흐려서 화질 차이 거의 없음)
 SHRINK_AFTER = 15   # 필요 이상으로 큰 상태가 이 프레임 수 넘게 이어지면 천천히 줄임
 SHRINK_RATIO = 1.6  # 지금 블러가 필요한 크기의 몇 배를 넘으면 '너무 큼'으로 봄
 
@@ -175,7 +177,7 @@ def natural_fill(sub, need, sigma, cover):
     """블러 칠할 재료: 덮는 범위 안에서 살색이 아닌 것(털·검은 부분·흰 배경 등)은 먼저 주변 피부로 메운 뒤 강하게 흐림
     → 블러가 통째로 살색이 되고, 피부 명암만 자연스럽게 남음"""
     h, w = need.shape
-    f = max(1.0, min(h, w) / 200.0)
+    f = max(1.0, min(h, w) / FILL_RES)
     sw, sh = max(8, int(w / f)), max(8, int(h / f))
     small = cv2.resize(sub, (sw, sh), interpolation=cv2.INTER_AREA)
     nd = cv2.resize(need * 255, (sw, sh), interpolation=cv2.INTER_NEAREST)
@@ -190,7 +192,7 @@ def natural_fill(sub, need, sigma, cover):
     msk = ((nd > 0) | (notskin & cv_)).astype(np.uint8) * 255
     msk = cv2.dilate(msk, np.ones((5, 5), np.uint8))
     if msk.any():
-        small = cv2.inpaint(small, msk, 7, cv2.INPAINT_TELEA)
+        small = cv2.inpaint(small, msk, 3, cv2.INPAINT_TELEA)
     s2 = max(1.0, sigma / f)
     n = int(s2 * 3) * 2 + 1
     small = cv2.GaussianBlur(small, (n, n), s2)
@@ -222,6 +224,12 @@ def cover_frame(frame, cx, cy, w, h, prev_color, prev_state=None):
             kk = HAIR_PAD * 2 + 1
             ell = R.copy()
             R |= cv2.dilate(hb, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kk, kk)))
+            # 모자이크 가까이 있는데 살짝 떨어진 털 덩어리는 모자이크와 이어 붙임 (따로 떨어진 블러 없이 한 덩어리로)
+            q = 4
+            small = cv2.resize(R, (W // q, H // q), interpolation=cv2.INTER_NEAREST)
+            kb = max(3, int(BRIDGE / q) | 1)
+            small = cv2.morphologyEx(small, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kb, kb)))
+            R |= cv2.resize(small, (W, H), interpolation=cv2.INTER_NEAREST)
             n_, lab_ = cv2.connectedComponents(R)                       # 원본 모자이크와 이어진 덩어리만 남김
             keep = np.unique(lab_[ell > 0]); keep = keep[keep > 0]
             R = np.isin(lab_, keep).astype(np.uint8)

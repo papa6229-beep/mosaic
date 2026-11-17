@@ -37,6 +37,7 @@
 <main>
   <h1>모자이크 생성기</h1>
   <p class="sub">원본 모자이크 위에 더 크고 자연스러운 블러를 덮어요.</p>
+  <p class="sub" id="sys" style="font-size:13px;margin-top:-16px">이 컴퓨터 확인 중…</p>
 
   <div class="card">
     <div id="drop"><b>영상 파일을 여기에 끌어 놓거나 눌러서 선택</b><span class="sub">mp4 등</span><div id="fname"></div></div>
@@ -93,10 +94,14 @@ $("go").onclick=()=>{
   x.onload=()=>{const r=JSON.parse(x.responseText);if(r.error){fail(r.error);return}poll(r.job)};
   x.onerror=()=>fail("업로드 실패");x.send(fd);
 };
+function fmt(s){s=Math.round(s);const h=Math.floor(s/3600),m=Math.floor(s%3600/60),x=s%60;return (h?h+"시간 ":"")+(m?m+"분 ":"")+x+"초"}
+let started=0;
+fetch("/sysinfo").then(r=>r.json()).then(i=>{$("sys").textContent=`이 컴퓨터: 그래픽카드 ${i.gpu}${i.vram_gb?" ("+i.vram_gb+"GB)":""} · CPU ${i.cpu} (${i.cores}스레드)${i.ram_gb?" · 메모리 "+i.ram_gb+"GB":""} · 저장 방식 ${i.encoder}`}).catch(()=>{$("sys").textContent=""});
 function fail(m){$("msg").innerHTML='<span class="warn">'+m+'</span>';$("go").disabled=false}
 function poll(id){
   fetch("/status/"+id).then(r=>r.json()).then(s=>{
-    $("msg").textContent=s.msg;$("bar").style.width=(s.pct||0)+"%";
+    if(!started)started=Date.now();
+    $("msg").textContent=s.msg+(s.done?"":` · 지금까지 ${fmt((Date.now()-started)/1000)}`);$("bar").style.width=(s.pct||0)+"%";
     if(s.error){fail(s.error);return}
     if(!s.done){setTimeout(()=>poll(id),700);return}
     const r=s.report;
@@ -106,7 +111,11 @@ function poll(id){
       <div><span>Lada가 놓친 프레임 (앞뒤로 채움)</span><span>${r.missing}</span></div>
       <div><span>털 비침 의심</span><span class="${r.leak?'warn':'good'}">${r.leak?r.leak+"프레임":"없음"}</span></div>
       ${r.leak?`<div><span>의심 위치(초)</span><span>${r.leak_times.join(", ")}</span></div>`:""}
-      <div><span>걸린 시간</span><span>${r.sec}초</span></div></div>
+      <div><span>영상 길이</span><span>${fmt(r.video_sec)}</span></div>
+      <div><span>원본 모자이크 위치 찾기</span><span>${fmt(r.t_detect)}</span></div>
+      <div><span>블러 덮기 + 저장 (${r.encoder})</span><span>${fmt(r.t_cover)}</span></div>
+      <div><span><b>전체 작업 시간</b></span><span><b>${fmt(r.sec)}</b> (영상 길이의 ${(r.sec/r.video_sec).toFixed(1)}배)</span></div>
+      <div><span>1시간 영상이면 (예상)</span><span>${fmt(r.sec/r.video_sec*3600)}</span></div></div>
       <a class="dl" href="/download/${id}">결과 영상 받기</a>`;
     $("go").disabled=false;
   });

@@ -26,6 +26,78 @@ _model = None
 
 
 # ---------------- 도구 준비 ----------------
+import queue, platform
+
+
+def frames(src, depth=16):
+    """영상 프레임을 다른 일과 동시에 미리 읽어 둠 (읽는 시간만큼 빨라짐)"""
+    q = queue.Queue(maxsize=depth)
+
+    def reader():
+        cap = cv2.VideoCapture(src)
+        while True:
+            ok, f = cap.read()
+            if not ok:
+                break
+            q.put(f)
+        cap.release()
+        q.put(None)
+    threading.Thread(target=reader, daemon=True).start()
+    while True:
+        f = q.get()
+        if f is None:
+            return
+        yield f
+
+
+def fmt_sec(s):
+    s = int(max(0, s))
+    return f"{s // 60}분 {s % 60}초" if s >= 60 else f"{s}초"
+
+
+_enc = None
+
+
+def encoder_args():
+    """그래픽카드 인코더(NVENC)가 되면 그걸로, 안 되면 CPU(x264)로 저장"""
+    global _enc
+    if _enc is None:
+        test = [ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=black:s=256x256:d=0.2",
+                "-c:v", "h264_nvenc", "-f", "null", "-"]
+        try:
+            ok = subprocess.run(test, capture_output=True, timeout=30).returncode == 0
+        except Exception:
+            ok = False
+        _enc = (["-c:v", "h264_nvenc", "-preset", "p5", "-rc", "vbr", "-cq", "17", "-b:v", "0"], "그래픽카드(NVENC)") if ok \
+            else (["-c:v", "libx264", "-crf", "16", "-preset", "fast"], "CPU(x264)")
+    return _enc
+
+
+def sysinfo():
+    info = {"os": platform.platform(), "cpu": platform.processor() or platform.machine(), "cores": os.cpu_count()}
+    try:   # Windows: CPU 제품명
+        import winreg
+        k = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"HARDWARE\DESCRIPTION\System\CentralProcessor\0")
+        info["cpu"] = winreg.QueryValueEx(k, "ProcessorNameString")[0].strip()
+    except Exception:
+        pass
+    try:
+        import psutil
+        info["ram_gb"] = round(psutil.virtual_memory().total / 1e9, 1)
+    except Exception:
+        pass
+    try:
+        import torch
+        if torch.cuda.is_available():
+            p = torch.cuda.get_device_properties(0)
+            info["gpu"] = p.name
+            info["vram_gb"] = round(p.total_memory / 1e9, 1)
+        else:
+            info["gpu"] = "없음 (CPU로 탐지 — 느림)"
+    except Exception:
+        info["gpu"] = "확인 불가"
+    info["encoder"] = encoder_args()[1]
+    return info
 def ffmpeg_exe():
     try:
         import imageio_ffmpeg
@@ -85,7 +157,6 @@ def detect_lada(frames):
 
 
 def detect_all(src, job, n):
-    cap = cv2.VideoCapture(src)
     detect = detect_fake if FAKE else detect_lada
     if not FAKE:
         get_model(job)
@@ -95,20 +166,23 @@ def detect_all(src, job, n):
     except Exception:
         how = "CPU"
     boxes, batch, i = {}, [], 0
+    t0 = time.time()
+    it = frames(src)
     while True:
-        ok, f = cap.read()
-        if ok:
+        f = next(it, None)
+        if f is not None:
             batch.append(f)
-        if batch and (len(batch) == 8 or not ok):
+        if batch and (len(batch) == 8 or f is None):
             for k, b in enumerate(detect(batch)):
                 boxes[str(i + k)] = b
             i += len(batch)
             batch = []
             job["pct"] = int(i * 50 / max(n, 1))
-            job["msg"] = f"원본 모자이크 위치 찾는 중 {i}/{n} 프레임 · {how}"
-        if not ok:
+            el = time.time() - t0
+            left = el / max(i, 1) * (n - i)
+            job["msg"] = f"원본 모자이크 위치 찾는 중 {i}/{n} 프레임 · {how} · 이 단계 남은 시간 약 {fmt_sec(left)}"
+        if f is None:
             break
-    cap.release()
     return boxes, i
 
 
@@ -123,17 +197,16 @@ def render(src, boxes_json, dst, job, n):
     cmd = [ffmpeg_exe(), "-y", "-loglevel", "error",
            "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{W}x{H}", "-r", f"{fps}", "-i", "-",
            "-i", src, "-map", "0:v", "-map", "1:a?",
-           "-c:v", "libx264", "-crf", "16", "-preset", "medium", "-pix_fmt", "yuv420p",
+           *encoder_args()[0], "-pix_fmt", "yuv420p",
            "-c:a", "copy", "-shortest", dst]
     p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+    cap.release()
     col, hs, bad, i = None, None, [], 0
-    while True:
-        ok, f = cap.read()
-        if not ok:
-            break
+    t0 = time.time()
+    for f in frames(src):
         if tr is not None and i < len(tr[4]) and tr[4][i]:
             f, col, d, hs = cover.cover_frame(f, tr[0][i], tr[1][i], tr[2][i], tr[3][i], col, hs)
-            if d > 0.005:
+            if d > 300:          # 덮이지 않은 털이 300픽셀 넘게 남은 프레임
                 bad.append(i)
         else:
             col = None
@@ -142,8 +215,8 @@ def render(src, boxes_json, dst, job, n):
         i += 1
         if i % 15 == 0:
             job["pct"] = 50 + int(i * 50 / max(n, 1))
-            job["msg"] = f"모자이크 덮는 중 {i}/{n} 프레임"
-    cap.release()
+            el = time.time() - t0
+            job["msg"] = f"모자이크 덮는 중 {i}/{n} 프레임 · 저장: {encoder_args()[1]} · 이 단계 남은 시간 약 {fmt_sec(el / i * (n - i))}"
     p.stdin.close()
     err = p.stderr.read().decode("utf-8", "ignore")
     if p.wait() != 0:
@@ -170,12 +243,18 @@ def run_job(jid, src, params):
             n = int(cv2.VideoCapture(src).get(cv2.CAP_PROP_FRAME_COUNT))
             t0 = time.time()
             boxes, n2 = detect_all(src, job, n)
+            t_detect = time.time() - t0
             n = max(n, n2)
             bj = os.path.join(JOBS, jid, "boxes.json")
             json.dump(boxes, open(bj, "w"))
             out = os.path.join(JOBS, jid, os.path.splitext(os.path.basename(src))[0] + "_cover.mp4")
+            t1 = time.time()
             rep = render(src, bj, out, job, n)
+            rep["t_detect"] = round(t_detect, 1)
+            rep["t_cover"] = round(time.time() - t1, 1)
             rep["sec"] = round(time.time() - t0, 1)
+            rep["video_sec"] = round(rep["frames"] / rep["fps"], 1)
+            rep["encoder"] = encoder_args()[1]
             job.update(pct=100, msg="완료", done=True, out=out, report=rep)
         except Exception as e:
             traceback.print_exc()
@@ -183,6 +262,11 @@ def run_job(jid, src, params):
 
 
 # ---------------- 화면 ----------------
+@app.get("/sysinfo")
+def sysinfo_api():
+    return jsonify(sysinfo())
+
+
 @app.get("/quit")
 def quit_server():
     threading.Timer(0.3, lambda: os._exit(0)).start()
