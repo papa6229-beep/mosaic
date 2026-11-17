@@ -163,7 +163,7 @@ def run_job(jid, src, params):
         try:
             cover.SCALE = float(params.get("scale", cover.SCALE))
             cover.BLUR_FRAC = float(params.get("blur", cover.BLUR_FRAC))
-            cover.FEATHER = float(params.get("feather", cover.FEATHER))
+            cover.FEATHER_W = float(params.get("feather", cover.FEATHER_W))
             cover.HAIR = params.get("hair", "1") == "1"
             cover.HAIR_REACH = float(params.get("reach", cover.HAIR_REACH))
             ensure_model(job)

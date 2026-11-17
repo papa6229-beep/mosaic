@@ -22,7 +22,7 @@ SMOOTH_SIZE= 4.0    # 크기 부드럽게 (클수록 크기가 덜 흔들림)
 SCALE      = 1.25   # 원본 모자이크보다 몇 배 크게 덮을지
 PAD_PX     = 12     # 추가로 늘릴 픽셀
 DARK_GAP   = 35     # 주변 피부보다 이만큼 이상 어두우면 '털 비침'으로 셈
-FEATHER    = 0.35   # 가장자리 옅어지는 폭 (상자 짧은 변 대비 비율)
+FEATHER    = 0.35   # (이전 방식용)   # 가장자리 옅어지는 폭 (상자 짧은 변 대비 비율)
 BLUR_FRAC  = 0.30   # 안쪽 블러 세기 (상자 짧은 변 대비 비율)
 HAIR       = True   # 원본 모자이크에 붙어 있는 털까지 찾아서 같이 덮기
 HAIR_PAD   = 15     # 찾은 털 덩어리 주변으로 더 덮을 픽셀
@@ -103,28 +103,53 @@ def big_blur(img, sigma):
 
 
 def hair_mask(frame, box, search=1.0, near=40):
-    """원본 모자이크 주변에서 '어둡고 잔결이 있는'(털 같은) 부분 중 모자이크에 붙어 있는 덩어리만 찾음"""
+    """원본 모자이크 주변에서 털 색(살색보다 어둡고 + 붉은기·노란기가 빠진 거무스름한 색)을 찾아,
+    모자이크에 붙어 있는 덩어리만 돌려줌. 그림자는 어두워도 살색이 그대로라 안 잡힘."""
     H, W = frame.shape[:2]
     x1, y1, x2, y2 = box
     bw, bh = x2 - x1, y2 - y1
     X1, Y1 = max(0, int(x1 - bw * search)), max(0, int(y1 - bh * search))
     X2, Y2 = min(W, int(x2 + bw * search)), min(H, int(y2 + bh * search))
     full = np.zeros((H, W), np.uint8)
-    if X2 - X1 < 10 or Y2 - Y1 < 10:
+    if X2 - X1 < 16 or Y2 - Y1 < 16:
         return full
-    g = cv2.cvtColor(frame[Y1:Y2, X1:X2], cv2.COLOR_BGR2GRAY).astype(np.float32)
-    skin = np.percentile(g, 75)
-    dark = g < skin * 0.55
-    mu = cv2.blur(g, (7, 7))
-    sd = np.sqrt(np.maximum(cv2.blur(g * g, (7, 7)) - mu * mu, 0))
-    tex = cv2.blur((sd > 10).astype(np.float32), (9, 9)) > 0.3
-    m = (dark & tex).astype(np.uint8)
-    m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))
+    lab = cv2.cvtColor(frame[Y1:Y2, X1:X2], cv2.COLOR_BGR2LAB).astype(np.float32)
+    L = lab[..., 0]
+    C = np.hypot(lab[..., 1] - 128, lab[..., 2] - 128)          # 색 진하기 (살색일수록 큼)
+    valid = cv2.erode((L > 25).astype(np.uint8), np.ones((31, 31), np.uint8)) > 0   # 검은 띠 제외
+    if valid.sum() < 100:
+        return full
+    skinL = np.percentile(L[valid], 80)                          # 이 근처 살 밝기
+    skinC = np.median(C[valid & (L > skinL * 0.85)])             # 이 근처 살색 진하기
+    hp = L - cv2.GaussianBlur(L, (0, 0), 2)
+    sd = np.sqrt(np.maximum(cv2.blur(hp * hp, (9, 9)), 0))
+    base = np.median(sd[valid & (L > skinL * 0.85)]) + 1e-3     # 맨살의 잔결
+    m = (valid & (L < skinL * 0.8) & (C < skinC * 0.9)).astype(np.uint8)
+    m = (cv2.blur(m.astype(np.float32), (15, 15)) > 0.5).astype(np.uint8)
+    m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (21, 21)))
+    # 원본 모자이크 안쪽은 빼고 봄 (모자이크 속 검은 칸을 타고 남자 다리털·그림자가 이어지는 것 방지)
+    inner = np.zeros_like(m)
+    ix1, iy1, ix2, iy2 = int(x1 - X1 + bw * 0.1), int(y1 - Y1 + bh * 0.1), int(x2 - X1 - bw * 0.1), int(y2 - Y1 - bh * 0.1)
+    if ix2 > ix1 and iy2 > iy1:
+        cv2.rectangle(inner, (ix1, iy1), (ix2, iy2), 1, -1)
+    m = m & (inner == 0)
     touch = np.zeros_like(m)
     cv2.rectangle(touch, (int(x1 - X1 - near), int(y1 - Y1 - near)), (int(x2 - X1 + near), int(y2 - Y1 + near)), 1, -1)
-    n, lab, st, _ = cv2.connectedComponentsWithStats(m)
-    hit = np.unique(lab[(touch > 0) & (m > 0)])
-    keep = np.isin(lab, [k for k in hit if k > 0 and st[k, cv2.CC_STAT_AREA] > 150])
+    n, lab_, st, _ = cv2.connectedComponentsWithStats(m)
+    hit = np.unique(lab_[(touch > 0) & (m > 0)])
+    keep_ids = []
+    for k in hit:
+        if k == 0 or st[k, cv2.CC_STAT_AREA] <= max(1500, bw * bh * 0.01):   # 작은 부스러기(다리털 몇 가닥 등)는 무시
+            continue
+        comp = lab_ == k
+        # 음모: 꼬불꼬불한 가닥이 빽빽해 잔결이 맨살보다 훨씬 많음 / 남자 다리털·그림자: 잔결이 적음
+        # (아주 빽빽해서 색이 거의 빠진 덩어리는 잔결과 상관없이 음모로 인정)
+        tx = np.median(sd[comp]) / base            # 가닥 결 (맨살 대비)
+        cr = np.median(C[comp]) / skinC            # 색 진하기 (살색 대비)
+        # 음모 = 가닥 결이 많고 + 살색이 빠진 덩어리. 결만 있고 살색이 남으면 다리털, 색만 빠지고 결이 없으면 그림자
+        if (tx > HAIR_TEX and cr < 0.8) or (tx > 3.0 and cr < 0.86):
+            keep_ids.append(k)
+    keep = np.isin(lab_, keep_ids)
     full[Y1:Y2, X1:X2] = keep.astype(np.uint8)
     return full
 
@@ -133,66 +158,115 @@ def big_blur_mask(m, sigma):
     return big_blur(m.astype(np.float32), sigma)
 
 
-def cover_frame(frame, cx, cy, w, h, prev_color, prev_hair=None):
-    """반환: (결과, 피부색, 털비침비율, 털마스크상태)"""
+BAND       = 0.6    # 털은 원본 모자이크에서 이 거리(상자 짧은 변 대비) 안쪽만 인정
+FEATHER_W  = 0.4    # 가장자리가 투명해지는 폭 (덮는 크기 대비) — 넓을수록 자연스럽게 사라짐
+FEATHER_MAX = 90    # 번짐 폭 최대 (픽셀) — 가까운 장면에서 블러가 과하게 커지는 것 방지
+BAND_MAX   = 9999    # 털 인정 거리 최대 (픽셀)
+NEAR_MAX   = 40     # 털 덩어리는 원본 모자이크에서 이 거리(픽셀) 안에 닿아 있어야 인정
+HAIR_TEX   = 2.2    # 털 덩어리의 잔결이 맨살의 이 배수보다 크면 음모로 인정
+HAIR_GRAY  = 0.7     # 털 덩어리의 색 진하기가 살색의 이 비율보다 낮아야 음모로 인정
+HAIR_MEM   = 0.95    # 털을 놓쳐도 몇 프레임 기억 (깜빡임 방지)
+GHOST      = 0.8    # 자리를 옮길 때 예전 자리가 사라지는 속도 (작을수록 빨리 사라짐)
+SHRINK_AFTER = 15   # 필요 이상으로 큰 상태가 이 프레임 수 넘게 이어지면 천천히 줄임
+SHRINK_RATIO = 1.6  # 지금 블러가 필요한 크기의 몇 배를 넘으면 '너무 큼'으로 봄
+
+
+def natural_fill(sub, need, sigma, cover):
+    """블러 칠할 재료: 덮는 범위 안에서 살색이 아닌 것(털·검은 부분·흰 배경 등)은 먼저 주변 피부로 메운 뒤 강하게 흐림
+    → 블러가 통째로 살색이 되고, 피부 명암만 자연스럽게 남음"""
+    h, w = need.shape
+    f = max(1.0, min(h, w) / 200.0)
+    sw, sh = max(8, int(w / f)), max(8, int(h / f))
+    small = cv2.resize(sub, (sw, sh), interpolation=cv2.INTER_AREA)
+    nd = cv2.resize(need * 255, (sw, sh), interpolation=cv2.INTER_NEAREST)
+    cv_ = cv2.resize((cover > 0.05).astype(np.uint8) * 255, (sw, sh), interpolation=cv2.INTER_NEAREST) > 0
+    lab = cv2.cvtColor(small, cv2.COLOR_BGR2LAB).astype(np.float32)
+    L = lab[..., 0]
+    Cc = np.hypot(lab[..., 1] - 128, lab[..., 2] - 128)
+    ok = (L > 25) & (Cc > np.percentile(Cc, 60))        # 색이 있는(살색 쪽) 픽셀로 피부 기준을 잡음
+    skinL = np.median(L[ok]) if ok.sum() > 20 else 170
+    skinC = np.median(Cc[ok]) if ok.sum() > 20 else 25
+    notskin = (L < skinL * 0.75) | ((L > skinL * 1.12) & (Cc < skinC * 0.7)) | (Cc < skinC * 0.45)
+    msk = ((nd > 0) | (notskin & cv_)).astype(np.uint8) * 255
+    msk = cv2.dilate(msk, np.ones((5, 5), np.uint8))
+    if msk.any():
+        small = cv2.inpaint(small, msk, 7, cv2.INPAINT_TELEA)
+    s2 = max(1.0, sigma / f)
+    n = int(s2 * 3) * 2 + 1
+    small = cv2.GaussianBlur(small, (n, n), s2)
+    return cv2.resize(small, (w, h), interpolation=cv2.INTER_CUBIC)
+
+
+def cover_frame(frame, cx, cy, w, h, prev_color, prev_state=None):
+    """반환: (결과, None, 덮이지 않은 털 픽셀 수, 상태)"""
     H, W = frame.shape[:2]
-    ew = w * SCALE + PAD_PX * 2
-    eh = h * SCALE + PAD_PX * 2
-    short = max(8.0, min(ew, eh))
-    k = int(short * FEATHER) | 1
-    bk = int(short * BLUR_FRAC) | 1
+    st = prev_state or {"C": None, "hair": None, "over": 0}
+    x1, y1, x2, y2 = cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2
+    short = max(8.0, min(w, h))
 
-    # 덮을 영역 = 원본 모자이크 타원 + (붙어 있는 털 덩어리)
-    region = np.zeros((H, W), np.uint8)
-    cv2.ellipse(region, (int(cx), int(cy)), (int(ew / 2), int(eh / 2)), 0, 0, 360, 1, -1)
-    hair_state = None
+    # 1) 반드시 덮어야 할 곳 R = 원본 모자이크(타원) + 바로 옆에 붙은 털
+    R = np.zeros((H, W), np.uint8)
+    cv2.ellipse(R, (int(cx), int(cy)), (int(w * SCALE / 2 + PAD_PX), int(h * SCALE / 2 + PAD_PX)), 0, 0, 360, 1, -1)
+    hb = None
     if HAIR:
-        hm = hair_mask(frame, [cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2], near=max(20, min(w, h) * HAIR_REACH)).astype(np.float32)
-        if prev_hair is not None:                       # 앞 프레임과 섞어서 깜빡임 방지
-            hm = np.maximum(hm, prev_hair * 0.7)
-        hair_state = hm
+        hm = hair_mask(frame, [x1, y1, x2, y2], near=min(NEAR_MAX, max(20, short * HAIR_REACH))).astype(np.float32)
+        if st["hair"] is not None:
+            hm = np.maximum(hm, st["hair"] * HAIR_MEM)
+        st["hair"] = hm
         hb = (hm > 0.3).astype(np.uint8)
-        bx, by, bw2, bh2 = cv2.boundingRect(hb)
-        if bw2 > 0:
-            p = HAIR_PAD
-            X0, Y0 = max(0, bx - p), max(0, by - p)
-            X1, Y1 = min(W, bx + bw2 + p), min(H, by + bh2 + p)
-            d = cv2.distanceTransform((hb[Y0:Y1, X0:X1] == 0).astype(np.uint8), cv2.DIST_L2, 3)
-            region[Y0:Y1, X0:X1] |= (d <= p).astype(np.uint8)
+        band = np.zeros((H, W), np.uint8)                         # 모자이크 주변 일정 거리까지만
+        b = int(min(short * BAND, BAND_MAX))
+        cv2.rectangle(band, (int(x1) - b, int(y1) - b), (int(x2) + b, int(y2) + b), 1, -1)
+        hb &= band
+        if hb.any():
+            kk = HAIR_PAD * 2 + 1
+            ell = R.copy()
+            R |= cv2.dilate(hb, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kk, kk)))
+            n_, lab_ = cv2.connectedComponents(R)                       # 원본 모자이크와 이어진 덩어리만 남김
+            keep = np.unique(lab_[ell > 0]); keep = keep[keep > 0]
+            R = np.isin(lab_, keep).astype(np.uint8)
 
-    rx, ry, rw, rh = cv2.boundingRect(region)
-    if rw == 0:
-        return frame, prev_color, 0.0, hair_state
-    m = int(short * 0.25 + 2 * k + 2 * bk + 4)
-    x0, y0 = max(0, rx - m), max(0, ry - m)
-    x1, y1 = min(W, rx + rw + m), min(H, ry + rh + m)
-    sub = frame[y0:y1, x0:x1]
-    core = region[y0:y1, x0:x1]
-    dist = cv2.distanceTransform((core == 0).astype(np.uint8), cv2.DIST_L2, 3)   # 영역 밖 거리 (빠름)
-    outer = (dist <= short * 0.25).astype(np.uint8)
+    # 2) 목표 블러: R 안은 100%, 바깥으로 갈수록 점점 투명 (부드러운 곡선)
+    F = min(FEATHER_MAX, max(20.0, short * SCALE * FEATHER_W))
+    rx, ry, rw, rh = cv2.boundingRect(R)
+    m = int(F + 4)
+    X0, Y0, X1, Y1 = max(0, rx - m), max(0, ry - m), min(W, rx + rw + m), min(H, ry + rh + m)
+    d = cv2.distanceTransform((R[Y0:Y1, X0:X1] == 0).astype(np.uint8), cv2.DIST_L2, 3)
+    t = np.clip(1.0 - d / F, 0, 1)
+    A = np.zeros((H, W), np.float32)
+    A[Y0:Y1, X0:X1] = t * t * (3 - 2 * t)
 
-    # 덮을 영역 안쪽은 100% 덮고, 바깥쪽으로만 옅어지게
-    grow = (dist <= k / 2).astype(np.uint8)
-    alpha = (big_blur_mask(grow * 255, k / 2.0) / 255.0).clip(0, 1)
-    alpha = np.maximum(alpha, core.astype(np.float32))
+    # 3) 작은 움직임엔 가만히: 덮어야 할 곳이 이미 덮여 있으면 그대로 둠
+    C = st["C"]
+    if C is None:
+        C = A
+    else:
+        miss = (R.astype(bool) & (C < 0.97)).sum()
+        if miss > 0.002 * R.sum():          # 삐져나오려 함 → 바로 새 자리로 (예전 자리는 서서히 사라짐)
+            C = np.maximum(A, C * GHOST)
+            st["over"] = 0
+        else:
+            big = (C > 0.5).sum() / max(1, (A > 0.5).sum())
+            st["over"] = st["over"] + 1 if big > SHRINK_RATIO else 0
+            if st["over"] > SHRINK_AFTER:   # 한동안 너무 컸음 → 천천히 줄임
+                C = np.maximum(A, C - 0.08)
+    st["C"] = C
 
-    col = skin_color(sub, core, outer)
-    col = col if prev_color is None else 0.8 * prev_color + 0.2 * col
-
-    filled = sub.copy()
-    filled[core > 0] = col.astype(np.uint8)
-    soft = big_blur(filled, bk / 2.0)
-
-    a = alpha[..., None]
+    # 4) 블러 칠하기
+    cx0, cy0, cw, ch = cv2.boundingRect((C > 0.01).astype(np.uint8))
+    if cw == 0:
+        return frame, None, 0, st
+    pad = int(short * BLUR_FRAC) + 4
+    X0, Y0 = max(0, cx0 - pad), max(0, cy0 - pad)
+    X1, Y1 = min(W, cx0 + cw + pad), min(H, cy0 + ch + pad)
+    sub = frame[Y0:Y1, X0:X1]
+    soft = natural_fill(sub, R[Y0:Y1, X0:X1], max(15.0, short * BLUR_FRAC), C[Y0:Y1, X0:X1])
+    a = C[Y0:Y1, X0:X1][..., None]
     o = (sub.astype(np.float32) * (1 - a) + soft.astype(np.float32) * a).clip(0, 255).astype(np.uint8)
     out = frame.copy()
-    out[y0:y1, x0:x1] = o
-    inner = alpha > 0.95
-    dark = 0.0
-    if inner.any():
-        lum = o[inner].astype(np.float32).mean(1)
-        dark = float((lum < col.mean() - DARK_GAP).mean())
-    return out, col, dark, hair_state
+    out[Y0:Y1, X0:X1] = o
+    left = int(((hb > 0) & (C < 0.9)).sum()) if hb is not None else 0
+    return out, None, left, st
 
 
 def main(src, boxes_json, dst):
