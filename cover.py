@@ -24,6 +24,9 @@ PAD_PX     = 12     # 추가로 늘릴 픽셀
 DARK_GAP   = 35     # 주변 피부보다 이만큼 이상 어두우면 '털 비침'으로 셈
 FEATHER    = 0.35   # 가장자리 옅어지는 폭 (상자 짧은 변 대비 비율)
 BLUR_FRAC  = 0.30   # 안쪽 블러 세기 (상자 짧은 변 대비 비율)
+HAIR       = True   # 원본 모자이크에 붙어 있는 털까지 찾아서 같이 덮기
+HAIR_PAD   = 15     # 찾은 털 덩어리 주변으로 더 덮을 픽셀
+HAIR_REACH = 0.3    # 원본 모자이크에서 얼마나 떨어진 털까지 잡을지 (상자 크기 대비)
 # -----------------------------------------------
 
 
@@ -99,36 +102,80 @@ def big_blur(img, sigma):
     return cv2.resize(small, (w, h), interpolation=cv2.INTER_CUBIC)
 
 
-def cover_frame(frame, cx, cy, w, h, prev_color):
+def hair_mask(frame, box, search=1.0, near=40):
+    """원본 모자이크 주변에서 '어둡고 잔결이 있는'(털 같은) 부분 중 모자이크에 붙어 있는 덩어리만 찾음"""
     H, W = frame.shape[:2]
-    w = w * SCALE + PAD_PX * 2
-    h = h * SCALE + PAD_PX * 2
-    short = max(8.0, min(w, h))
+    x1, y1, x2, y2 = box
+    bw, bh = x2 - x1, y2 - y1
+    X1, Y1 = max(0, int(x1 - bw * search)), max(0, int(y1 - bh * search))
+    X2, Y2 = min(W, int(x2 + bw * search)), min(H, int(y2 + bh * search))
+    full = np.zeros((H, W), np.uint8)
+    if X2 - X1 < 10 or Y2 - Y1 < 10:
+        return full
+    g = cv2.cvtColor(frame[Y1:Y2, X1:X2], cv2.COLOR_BGR2GRAY).astype(np.float32)
+    skin = np.percentile(g, 75)
+    dark = g < skin * 0.55
+    mu = cv2.blur(g, (7, 7))
+    sd = np.sqrt(np.maximum(cv2.blur(g * g, (7, 7)) - mu * mu, 0))
+    tex = cv2.blur((sd > 10).astype(np.float32), (9, 9)) > 0.3
+    m = (dark & tex).astype(np.uint8)
+    m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))
+    touch = np.zeros_like(m)
+    cv2.rectangle(touch, (int(x1 - X1 - near), int(y1 - Y1 - near)), (int(x2 - X1 + near), int(y2 - Y1 + near)), 1, -1)
+    n, lab, st, _ = cv2.connectedComponentsWithStats(m)
+    hit = np.unique(lab[(touch > 0) & (m > 0)])
+    keep = np.isin(lab, [k for k in hit if k > 0 and st[k, cv2.CC_STAT_AREA] > 150])
+    full[Y1:Y2, X1:X2] = keep.astype(np.uint8)
+    return full
+
+
+def big_blur_mask(m, sigma):
+    return big_blur(m.astype(np.float32), sigma)
+
+
+def cover_frame(frame, cx, cy, w, h, prev_color, prev_hair=None):
+    """반환: (결과, 피부색, 털비침비율, 털마스크상태)"""
+    H, W = frame.shape[:2]
+    ew = w * SCALE + PAD_PX * 2
+    eh = h * SCALE + PAD_PX * 2
+    short = max(8.0, min(ew, eh))
     k = int(short * FEATHER) | 1
     bk = int(short * BLUR_FRAC) | 1
 
-    # 덮을 곳 주변만 잘라서 계산 (전체 화면을 다 계산하지 않아서 빠름)
-    m = int(max(w, h) / 2 + short * 0.25 + 2 * k + 2 * bk + 4)
-    x0, y0 = max(0, int(cx) - m), max(0, int(cy) - m)
-    x1, y1 = min(W, int(cx) + m), min(H, int(cy) + m)
-    if x1 - x0 < 4 or y1 - y0 < 4:
-        return frame, prev_color, 0.0
+    # 덮을 영역 = 원본 모자이크 타원 + (붙어 있는 털 덩어리)
+    region = np.zeros((H, W), np.uint8)
+    cv2.ellipse(region, (int(cx), int(cy)), (int(ew / 2), int(eh / 2)), 0, 0, 360, 1, -1)
+    hair_state = None
+    if HAIR:
+        hm = hair_mask(frame, [cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2], near=max(20, min(w, h) * HAIR_REACH)).astype(np.float32)
+        if prev_hair is not None:                       # 앞 프레임과 섞어서 깜빡임 방지
+            hm = np.maximum(hm, prev_hair * 0.7)
+        hair_state = hm
+        hb = (hm > 0.3).astype(np.uint8)
+        if hb.any():
+            kk = HAIR_PAD * 2 + 1
+            hb = cv2.dilate(hb, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kk, kk)))
+            region |= hb
+
+    ys, xs = np.nonzero(region)
+    if len(xs) == 0:
+        return frame, prev_color, 0.0, hair_state
+    m = int(short * 0.25 + 2 * k + 2 * bk + 4)
+    x0, y0 = max(0, xs.min() - m), max(0, ys.min() - m)
+    x1, y1 = min(W, xs.max() + m), min(H, ys.max() + m)
     sub = frame[y0:y1, x0:x1]
-    sh, sw = sub.shape[:2]
-    c = (int(cx) - x0, int(cy) - y0)
+    core = region[y0:y1, x0:x1]
+    ring_k = int(short * 0.25) * 2 + 1
+    outer = cv2.dilate(core, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ring_k, ring_k)))
 
-    # 타원 마스크 (안쪽 100%, 바깥으로 옅어짐)
-    core = np.zeros((sh, sw), np.uint8)
-    cv2.ellipse(core, c, (int(w / 2), int(h / 2)), 0, 0, 360, 255, -1)
-    outer = np.zeros((sh, sw), np.uint8)
-    cv2.ellipse(outer, c, (int(w / 2 + short * 0.25), int(h / 2 + short * 0.25)), 0, 0, 360, 255, -1)
-    alpha = (big_blur(core.astype(np.float32), k / 2.0) / 255.0).clip(0, 1)
+    # 덮을 영역 안쪽은 100% 덮고, 바깥쪽으로만 옅어지게
+    grow = cv2.dilate(core, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)))
+    alpha = (big_blur_mask(grow * 255, k / 2.0) / 255.0).clip(0, 1)
+    alpha = np.maximum(alpha, core.astype(np.float32))
 
-    # 주변 피부색 (시간적으로 부드럽게)
     col = skin_color(sub, core, outer)
     col = col if prev_color is None else 0.8 * prev_color + 0.2 * col
 
-    # 덮을 영역 안을 피부색으로 채운 뒤 블러 -> 검은 털이 비치지 않고 가장자리는 자연스럽게 섞임
     filled = sub.copy()
     filled[core > 0] = col.astype(np.uint8)
     soft = big_blur(filled, bk / 2.0)
@@ -137,13 +184,12 @@ def cover_frame(frame, cx, cy, w, h, prev_color):
     o = (sub.astype(np.float32) * (1 - a) + soft.astype(np.float32) * a).clip(0, 255).astype(np.uint8)
     out = frame.copy()
     out[y0:y1, x0:x1] = o
-    # 점검: 덮은 영역 안에 주변 피부색보다 확 어두운 픽셀이 남았는지 (털 비침)
     inner = alpha > 0.95
     dark = 0.0
     if inner.any():
         lum = o[inner].astype(np.float32).mean(1)
         dark = float((lum < col.mean() - DARK_GAP).mean())
-    return out, col, dark
+    return out, col, dark, hair_state
 
 
 def main(src, boxes_json, dst):
@@ -156,6 +202,7 @@ def main(src, boxes_json, dst):
     tr = smooth_track(boxes)
     vw = cv2.VideoWriter(dst, cv2.VideoWriter_fourcc(*"mp4v"), fps, (W, H))
     col = None
+    hs = None
     bad = []
     i = 0
     while True:
@@ -163,11 +210,12 @@ def main(src, boxes_json, dst):
         if not ok:
             break
         if tr is not None and tr[4][i]:
-            f, col, d = cover_frame(f, tr[0][i], tr[1][i], tr[2][i], tr[3][i], col)
+            f, col, d, hs = cover_frame(f, tr[0][i], tr[1][i], tr[2][i], tr[3][i], col, hs)
             if d > 0.005:
                 bad.append((i, round(d, 4)))
         else:
             col = None
+            hs = None
         vw.write(f)
         i += 1
     vw.release()

@@ -126,17 +126,18 @@ def render(src, boxes_json, dst, job, n):
            "-c:v", "libx264", "-crf", "16", "-preset", "medium", "-pix_fmt", "yuv420p",
            "-c:a", "copy", "-shortest", dst]
     p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
-    col, bad, i = None, [], 0
+    col, hs, bad, i = None, None, [], 0
     while True:
         ok, f = cap.read()
         if not ok:
             break
         if tr is not None and i < len(tr[4]) and tr[4][i]:
-            f, col, d = cover.cover_frame(f, tr[0][i], tr[1][i], tr[2][i], tr[3][i], col)
+            f, col, d, hs = cover.cover_frame(f, tr[0][i], tr[1][i], tr[2][i], tr[3][i], col, hs)
             if d > 0.005:
                 bad.append(i)
         else:
             col = None
+            hs = None
         p.stdin.write(f.tobytes())
         i += 1
         if i % 15 == 0:
@@ -163,6 +164,8 @@ def run_job(jid, src, params):
             cover.SCALE = float(params.get("scale", cover.SCALE))
             cover.BLUR_FRAC = float(params.get("blur", cover.BLUR_FRAC))
             cover.FEATHER = float(params.get("feather", cover.FEATHER))
+            cover.HAIR = params.get("hair", "1") == "1"
+            cover.HAIR_REACH = float(params.get("reach", cover.HAIR_REACH))
             ensure_model(job)
             n = int(cv2.VideoCapture(src).get(cv2.CAP_PROP_FRAME_COUNT))
             t0 = time.time()

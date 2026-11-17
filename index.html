@@ -44,6 +44,12 @@
     <label>또는 파일 경로 붙여넣기 (큰 파일은 이쪽이 빨라요. 복사하지 않고 바로 읽음)</label>
     <input id="path" type="text" placeholder="예: D:\영상\원본.mp4">
 
+    <label style="display:flex;gap:8px;align-items:center;margin-top:16px;color:var(--ink);font-size:14px">
+      <input id="hair" type="checkbox" checked> 원본 모자이크 밖으로 나온 털까지 찾아서 같이 덮기
+    </label>
+    <label>털 찾는 범위 — 클수록 모자이크에서 멀리 떨어진 털까지 잡아요</label>
+    <div class="row"><input id="reach" type="range" min="0" max="1" step="0.05" value="0.3"><span class="val" id="reach_v"></span></div>
+
     <details style="margin-top:16px">
       <summary>덮는 모양 조절 (보통은 그대로)</summary>
       <label>덮는 크기 — 털이 삐져나오면 올리고, 몸·얼굴까지 가리면 내리세요</label>
@@ -66,7 +72,7 @@
 <script>
 const $=id=>document.getElementById(id);
 let file=null;
-["scale","blur","feather"].forEach(k=>{const s=()=>$(k+"_v").textContent=$(k).value;$(k).oninput=s;s();});
+["scale","blur","feather","reach"].forEach(k=>{const s=()=>$(k+"_v").textContent=$(k).value;$(k).oninput=s;s();});
 $("drop").onclick=()=>$("file").click();
 $("file").onchange=e=>pick(e.target.files[0]);
 $("drop").ondragover=e=>{e.preventDefault();$("drop").classList.add("on")};
@@ -79,7 +85,8 @@ $("go").onclick=()=>{
   if(!file&&!path){alert("영상을 고르거나 경로를 넣어 주세요");return}
   const fd=new FormData();
   if(path)fd.append("path",path);else fd.append("file",file);
-  ["scale","blur","feather"].forEach(k=>fd.append(k,$(k).value));
+  ["scale","blur","feather","reach"].forEach(k=>fd.append(k,$(k).value));
+  fd.append("hair",$("hair").checked?"1":"0");
   $("go").disabled=true;$("prog").classList.remove("hide");$("result").innerHTML="";
   const x=new XMLHttpRequest();x.open("POST","/start");
   x.upload.onprogress=e=>{if(e.lengthComputable){$("msg").textContent="올리는 중 "+Math.round(e.loaded*100/e.total)+"%";}};
