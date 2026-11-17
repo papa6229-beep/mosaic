@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>모자이크 생성기</title>
+<style>
+  :root{--bg:#f5f5f4;--card:#fff;--ink:#1c1917;--sub:#78716c;--line:#e7e5e4;--acc:#d97706;--ok:#15803d;--bad:#b91c1c}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 "Pretendard","Malgun Gothic",system-ui,sans-serif}
+  main{max-width:640px;margin:40px auto;padding:0 16px}
+  h1{font-size:22px;margin:0 0 4px}
+  .sub{color:var(--sub);margin:0 0 24px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px;margin-bottom:16px}
+  #drop{border:2px dashed var(--line);border-radius:12px;padding:36px 16px;text-align:center;cursor:pointer;transition:.15s}
+  #drop.on{border-color:var(--acc);background:#fffbeb}
+  #drop b{display:block;font-size:16px;margin-bottom:4px}
+  #fname{margin-top:8px;color:var(--acc);font-weight:600;word-break:break-all}
+  label{display:block;font-size:13px;color:var(--sub);margin:14px 0 4px}
+  input[type=text]{width:100%;padding:10px;border:1px solid var(--line);border-radius:8px;font:inherit}
+  .row{display:grid;grid-template-columns:1fr 60px;gap:10px;align-items:center}
+  input[type=range]{width:100%;accent-color:var(--acc)}
+  .val{text-align:right;font-variant-numeric:tabular-nums}
+  details summary{cursor:pointer;color:var(--sub);font-size:14px}
+  button{width:100%;padding:14px;border:0;border-radius:10px;background:var(--ink);color:#fff;font:inherit;font-weight:600;font-size:16px;cursor:pointer;margin-top:4px}
+  button:disabled{opacity:.4;cursor:default}
+  .bar{height:10px;background:var(--line);border-radius:6px;overflow:hidden;margin:10px 0}
+  .bar i{display:block;height:100%;width:0;background:var(--acc);transition:width .3s}
+  #msg{font-size:14px}
+  .rep div{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--line)}
+  .good{color:var(--ok);font-weight:600}.warn{color:var(--bad);font-weight:600}
+  a.dl{display:block;text-align:center;padding:14px;border-radius:10px;background:var(--ok);color:#fff;font-weight:600;text-decoration:none;margin-top:14px}
+  .hide{display:none}
+</style>
+</head>
+<body>
+<main>
+  <h1>모자이크 생성기</h1>
+  <p class="sub">원본 모자이크 위에 더 크고 자연스러운 블러를 덮어요.</p>
+
+  <div class="card">
+    <div id="drop"><b>영상 파일을 여기에 끌어 놓거나 눌러서 선택</b><span class="sub">mp4 등</span><div id="fname"></div></div>
+    <input id="file" type="file" accept="video/*" class="hide">
+    <label>또는 파일 경로 붙여넣기 (큰 파일은 이쪽이 빨라요. 복사하지 않고 바로 읽음)</label>
+    <input id="path" type="text" placeholder="예: D:\영상\원본.mp4">
+
+    <details style="margin-top:16px">
+      <summary>덮는 모양 조절 (보통은 그대로)</summary>
+      <label>덮는 크기 — 털이 삐져나오면 올리고, 몸·얼굴까지 가리면 내리세요</label>
+      <div class="row"><input id="scale" type="range" min="1" max="4" step="0.05" value="1.25"><span class="val" id="scale_v"></span></div>
+      <label>블러 세기</label>
+      <div class="row"><input id="blur" type="range" min="0.1" max="0.6" step="0.05" value="0.3"><span class="val" id="blur_v"></span></div>
+      <label>가장자리 번짐 폭</label>
+      <div class="row"><input id="feather" type="range" min="0.1" max="0.7" step="0.05" value="0.35"><span class="val" id="feather_v"></span></div>
+    </details>
+  </div>
+
+  <button id="go">모자이크 만들기</button>
+
+  <div class="card hide" id="prog" style="margin-top:16px">
+    <div id="msg">준비 중</div>
+    <div class="bar"><i id="bar"></i></div>
+    <div id="result"></div>
+  </div>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+let file=null;
+["scale","blur","feather"].forEach(k=>{const s=()=>$(k+"_v").textContent=$(k).value;$(k).oninput=s;s();});
+$("drop").onclick=()=>$("file").click();
+$("file").onchange=e=>pick(e.target.files[0]);
+$("drop").ondragover=e=>{e.preventDefault();$("drop").classList.add("on")};
+$("drop").ondragleave=()=>$("drop").classList.remove("on");
+$("drop").ondrop=e=>{e.preventDefault();$("drop").classList.remove("on");pick(e.dataTransfer.files[0])};
+function pick(f){file=f;$("fname").textContent=f?f.name+" ("+(f.size/1e9).toFixed(2)+" GB)":""}
+
+$("go").onclick=()=>{
+  const path=$("path").value.trim();
+  if(!file&&!path){alert("영상을 고르거나 경로를 넣어 주세요");return}
+  const fd=new FormData();
+  if(path)fd.append("path",path);else fd.append("file",file);
+  ["scale","blur","feather"].forEach(k=>fd.append(k,$(k).value));
+  $("go").disabled=true;$("prog").classList.remove("hide");$("result").innerHTML="";
+  const x=new XMLHttpRequest();x.open("POST","/start");
+  x.upload.onprogress=e=>{if(e.lengthComputable){$("msg").textContent="올리는 중 "+Math.round(e.loaded*100/e.total)+"%";}};
+  x.onload=()=>{const r=JSON.parse(x.responseText);if(r.error){fail(r.error);return}poll(r.job)};
+  x.onerror=()=>fail("업로드 실패");x.send(fd);
+};
+function fail(m){$("msg").innerHTML='<span class="warn">'+m+'</span>';$("go").disabled=false}
+function poll(id){
+  fetch("/status/"+id).then(r=>r.json()).then(s=>{
+    $("msg").textContent=s.msg;$("bar").style.width=(s.pct||0)+"%";
+    if(s.error){fail(s.error);return}
+    if(!s.done){setTimeout(()=>poll(id),700);return}
+    const r=s.report;
+    $("result").innerHTML=`<div class="rep">
+      <div><span>전체 프레임</span><span>${r.frames}</span></div>
+      <div><span>덮은 프레임</span><span>${r.covered}</span></div>
+      <div><span>Lada가 놓친 프레임 (앞뒤로 채움)</span><span>${r.missing}</span></div>
+      <div><span>털 비침 의심</span><span class="${r.leak?'warn':'good'}">${r.leak?r.leak+"프레임":"없음"}</span></div>
+      ${r.leak?`<div><span>의심 위치(초)</span><span>${r.leak_times.join(", ")}</span></div>`:""}
+      <div><span>걸린 시간</span><span>${r.sec}초</span></div></div>
+      <a class="dl" href="/download/${id}">결과 영상 받기</a>`;
+    $("go").disabled=false;
+  });
+}
+</script>
+</body>
+</html>
