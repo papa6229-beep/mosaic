@@ -140,12 +140,32 @@ def detect_fake(frames):
     return out
 
 
+def predict_safe(model, frames, dev):
+    """그래픽카드 메모리가 모자라면 한 번에 넣는 장 수를 줄여 다시 시도, 그래도 안 되면 그 묶음만 CPU로"""
+    import torch
+    step = len(frames)
+    while True:
+        try:
+            out = []
+            for s in range(0, len(frames), step):
+                out += model.predict(frames[s:s + step], imgsz=640, conf=0.25, verbose=False, device=dev, half=(dev == 0))
+            return out
+        except RuntimeError as e:
+            if "out of memory" not in str(e).lower() or dev == "cpu":
+                raise
+            torch.cuda.empty_cache()
+            if step > 1:
+                step = max(1, step // 2)
+            else:
+                dev = "cpu"
+
+
 def detect_lada(frames):
     """반환: 프레임마다 (가장 큰 모자이크 상자, 찾은 모자이크 전부 [x1,y1,x2,y2,확신도,윤곽])"""
     import torch
     model = get_model()
     dev = 0 if torch.cuda.is_available() else "cpu"
-    res = model.predict(frames, imgsz=640, conf=0.25, verbose=False, device=dev, half=(dev == 0))
+    res = predict_safe(model, frames, dev)
     out = []
     for r in res:
         if r.boxes is None or len(r.boxes) == 0:
