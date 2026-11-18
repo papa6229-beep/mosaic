@@ -666,6 +666,7 @@ ASPECT_MAX = 1.6    # 블러 타원의 길쭉함 한도 (1 = 원)
 DEAD = 0.25         # 가려야 할 곳 중심이 블러 중심에서 (블러 짧은 반지름 × 이 값) 안에서 움직이면 블러는 가만히
 POS_SMOOTH = 10     # 위치 다듬기 (프레임)
 SIZE_GLIDE = 15     # (예전)
+FADE = (0.2, 0.5, 0.8)   # 나타날 때 불투명도 (0% 다음 프레임부터 20→50→80→100%), 사라질 땐 반대로
 HAIR_BAND = 0.3     # 모자이크 가장자리에서 (모자이크 짧은 변 × 이 값) 안의 털은 무조건 덮음
 HAIR_BAND_MAX = 90  # 그 거리 최대 (픽셀)
 
@@ -706,6 +707,7 @@ def plan(per, info, n, fw=1920, fh=1080):
             seq.setdefault(("m", e[0]), []).append((i, bp, cut, bp))
     out = [[] for _ in range(n)]
     leak = set()
+    cutf = [bool(info[i]["cut"]) if info[i] else False for i in range(n)]
     for key, items in seq.items():
         frames = [it[0] for it in items]
         C, R1, R2, TH = [], [], [], []                      # 빠른 계산: 가장 작게 감싸는 회전 사각형으로 크기·방향
@@ -746,6 +748,7 @@ def plan(per, info, n, fw=1920, fh=1080):
                 b -= 1; moved += 1
             segs[j] = (a, b); segs[j + 1] = (b, segs[j + 1][1])
         prev_r, prev_end = None, -9
+        done_segs = []
         for a, b in segs:
             # 모양(길쭉함·기울기)과 크기: 이 구간에서 한 번만.
             # 구간 내내 '무조건 덮을 곳'이 들어가는 타원 중 가장 작은 모양을 고름 (각도·길쭉함 후보 중에서)
@@ -773,6 +776,7 @@ def plan(per, info, n, fw=1920, fh=1080):
                                gaussian_filter1d(cs[:, 1], POS_SMOOTH, mode="nearest")], 1)
             dead = DEAD * r2
             cur = cs[0].copy()
+            seg_e = []
             for k in range(a, b):
                 d = cs[k - a] - cur
                 L = float(np.hypot(*d))
@@ -793,13 +797,37 @@ def plan(per, info, n, fw=1920, fh=1080):
                 E = (cur.copy(), A)
                 if not contains(E, mpk):
                     leak.add(frames[k])
-                out[frames[k]].append((E[0].tolist(), E[1].tolist()))
-    for i in range(n):                                     # 다른 블러 안에 완전히 들어가는 블러는 뺌
+                el = (E[0].tolist(), E[1].tolist(), 1.0)
+                out[frames[k]].append(el)
+                seg_e.append(el)
+            done_segs.append((frames[a], frames[b - 1], seg_e[0], seg_e[-1], bool(items[a][2])))
+        # 나타날 때·사라질 때·크기가 바뀔 때 부드럽게 (방송본부 방식: 0→20→50→80→100%, 1프레임씩)
+        for j, (f0, f1, e0, e1, cut0) in enumerate(done_segs):
+            joined = j > 0 and done_segs[j - 1][1] == f0 - 1 and not cut0
+            if not cut0:                                   # 화면 전환과 동시에 시작하면 그냥 나타남
+                for m, w in zip((f0 - 3, f0 - 2, f0 - 1), FADE):
+                    if m >= 0 and not any(cutf[m + 1:f0 + 1]):   # 앞 화면으로 넘어가서까지 나타나진 않음
+                        out[m].append((e0[0], e0[1], w))
+            if joined:                                     # 크기가 바뀌는 곳: 옛 블러는 바뀐 뒤 서서히 사라짐
+                pe = done_segs[j - 1][3]
+                for m, w in zip((f0, f0 + 1, f0 + 2), FADE[::-1]):
+                    if m < n:
+                        out[m].append((pe[0], pe[1], w))
+            last = j == len(done_segs) - 1 or done_segs[j + 1][0] != f1 + 1 or done_segs[j + 1][4]
+            if last:
+                for m, w in zip((f1 + 1, f1 + 2, f1 + 3), FADE[::-1]):
+                    if m >= n or cutf[m]:                  # 화면이 바뀌면 거기서 끝
+                        break
+                    out[m].append((e1[0], e1[1], w))
+    for i in range(n):                                     # 다른 블러 안에 완전히 들어가는(그리고 더 진하지 않은) 블러는 뺌
         if len(out[i]) > 1:
-            es = [(np.asarray(c), np.asarray(A)) for c, A in out[i]]
-            keep = [el for k, el in enumerate(out[i])
-                    if not any(j != k and contains(es[j], boundary(es[k], 24)) for j in range(len(es)))]
-            out[i] = keep or out[i][:1]
+            order = sorted(range(len(out[i])), key=lambda k: (-out[i][k][2], -area((np.asarray(out[i][k][0]), np.asarray(out[i][k][1])))))
+            keep = []
+            for k in order:
+                ek = (np.asarray(out[i][k][0]), np.asarray(out[i][k][1]))
+                if not any(contains((np.asarray(q[0]), np.asarray(q[1])), boundary(ek, 24)) for q in keep):
+                    keep.append(out[i][k])
+            out[i] = keep
     return out, sorted(leak)
 
 
@@ -821,9 +849,10 @@ class Painter:
         if not ells:
             self.fill = None
             return frame, None
-        boxes = []
-        for c, A in ells:
-            c, A = np.asarray(c, float), np.asarray(A, float)
+        boxes, ws = [], []
+        for e in ells:
+            c, A = np.asarray(e[0], float), np.asarray(e[1], float)
+            ws.append(float(e[2]) if len(e) > 2 else 1.0)
             r, _ = _axes(A)
             F = float(np.clip(min(r) * FEATHER_W, 20, FEATHER_MAX))
             boxes.append((c, A, r, F, max(r) + F))
@@ -834,18 +863,18 @@ class Painter:
         if X1 - X0 < 4 or Y1 - Y0 < 4:
             return frame, None
         key = (X0, Y0, X1, Y1, tuple(np.round(np.concatenate([np.ravel(c) for c, A, _, _, _ in boxes] +
-                                                             [np.ravel(A) * 1e6 for c, A, _, _, _ in boxes]), 2)))
+                                                             [np.ravel(A) * 1e6 for c, A, _, _, _ in boxes] + [np.array(ws)]), 3)))
         if self.akey == key:                         # 블러가 가만히 있으면 투명도 계산을 다시 하지 않음 (빠르게)
             alpha = self.alpha
         else:
             yy, xx = np.mgrid[Y0:Y1, X0:X1].astype(np.float32)
             alpha = np.zeros((Y1 - Y0, X1 - X0), np.float32)
-            for c, A, r, F, R in boxes:
+            for (c, A, r, F, R), wt in zip(boxes, ws):
                 dx, dy = xx - c[0], yy - c[1]
                 q = A[0, 0] * dx * dx + 2 * A[0, 1] * dx * dy + A[1, 1] * dy * dy
                 rr = np.sqrt(np.maximum(q, 0))
                 t = np.clip(1 - (rr - 1) * np.sqrt(r[0] * r[1]) / F, 0, 1)
-                alpha = np.maximum(alpha, np.where(rr <= 1, 1.0, t * t * (3 - 2 * t)))
+                alpha = np.maximum(alpha, wt * np.where(rr <= 1, 1.0, t * t * (3 - 2 * t)))
             alpha = alpha.astype(np.float32)
             self.akey, self.alpha = key, alpha
             self.a3 = cv2.merge([alpha, alpha, alpha])
