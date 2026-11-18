@@ -234,11 +234,12 @@ def detect_all(src, job, n):
 WARMUP = 30   # 조각 앞부분에서 미리 돌려 두는 프레임 수 (앞 조각과 블러가 자연스럽게 이어지게)
 
 
-def _chunk_worker(src, start, count, W, H, fps, trk, params, enc, seg, threads, counter, q):
+def _chunk_worker(src, start, count, W, H, fps, entries, params, enc, seg, threads, counter, q):
     """한 조각(start부터 count장)을 처리해 seg 파일로 저장. 앞쪽 WARMUP장은 상태만 맞추고 저장하지 않음"""
     try:
+        import cover2
         for k, v in params.items():
-            setattr(cover, k, v)
+            setattr(cover2, k, v)
         w0 = max(0, start - WARMUP)
         total = start + count - w0
         dec = subprocess.Popen([ffmpeg_exe(), "-loglevel", "error", "-ss", f"{w0 / fps:.6f}", "-i", src,
@@ -248,8 +249,8 @@ def _chunk_worker(src, start, count, W, H, fps, trk, params, enc, seg, threads, 
         out = subprocess.Popen([ffmpeg_exe(), "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "bgr24",
                                 "-s", f"{W}x{H}", "-r", f"{fps}", "-i", "-", *encx, "-pix_fmt", "yuv420p", seg],
                                stdin=subprocess.PIPE, stderr=subprocess.PIPE)
-        cx, cy, ww, hh, on = trk
-        col, hs, bad, done = None, None, [], 0
+        R = cover2.Renderer()
+        bad, done = [], 0
         fsz = W * H * 3
         for j in range(total):
             buf = dec.stdout.read(fsz)
@@ -257,12 +258,9 @@ def _chunk_worker(src, start, count, W, H, fps, trk, params, enc, seg, threads, 
                 break
             f = np.frombuffer(buf, np.uint8).reshape(H, W, 3)
             i = w0 + j
-            if on[j]:
-                f, col, d, hs = cover.cover_frame(f.copy(), cx[j], cy[j], ww[j], hh[j], col, hs)
-                if d > 300 and i >= start:
-                    bad.append(i)
-            else:
-                col, hs = None, None
+            f, left = R.process(f, i, entries[j] if j < len(entries) else [])
+            if left > 300 and i >= start:
+                bad.append(i)
             if i >= start:
                 out.stdin.write(f.tobytes())
                 done += 1
@@ -280,22 +278,27 @@ def _chunk_worker(src, start, count, W, H, fps, trk, params, enc, seg, threads, 
 
 def render(src, boxes_json, dst, job, n):
     import multiprocessing as mp
+    import cover2
     cap = cv2.VideoCapture(src)
     fps = cap.get(cv2.CAP_PROP_FPS) or 30
     W = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     H = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     cap.release()
-    boxes = cover.load_boxes(boxes_json, n)
-    tr = cover.smooth_track(boxes)
-    if tr is None:
-        tr = (np.zeros(n), np.zeros(n), np.zeros(n), np.zeros(n), np.zeros(n, bool))
+    # 원본 모자이크 전부(여러 개) → 모자이크마다 따로 추적
+    allp = os.path.join(os.path.dirname(boxes_json), "boxes_all.json")
+    if os.path.exists(allp):
+        all_boxes = json.load(open(allp))
+    else:
+        one = json.load(open(boxes_json))
+        all_boxes = {k: ([v + [1.0, None]] if v else []) for k, v in one.items()}
+    per = cover2.build_tracks(all_boxes, n)
     enc, enc_name = encoder_args()
     cores = os.cpu_count() or 2
     K = max(1, min(cores, 8, n // 150))                    # 조각 수 = 동시에 일할 CPU 코어 수
     if "nvenc" in enc[1]:
         K = min(K, 5)                                    # 그래픽카드 저장은 동시 5개까지
     threads = max(1, cores // K)
-    params = {k: getattr(cover, k) for k in ("SCALE", "BLUR_FRAC", "FEATHER_W", "HAIR", "HAIR_REACH")}
+    params = {k: getattr(cover2, k) for k in ("SCALE", "BLUR_FRAC", "FEATHER_W", "HAIR", "HAIR_REACH")}
     d = os.path.dirname(dst)
     bounds = [round(n * k / K) for k in range(K + 1)]
     ctx = mp.get_context("spawn")
@@ -305,10 +308,9 @@ def render(src, boxes_json, dst, job, n):
     for k in range(K):
         s, e = bounds[k], bounds[k + 1]
         w0 = max(0, s - WARMUP)
-        trk = tuple(np.asarray(t[w0:e]) for t in tr)
         seg = os.path.join(d, f"part{k:02d}.mp4")
         segs.append(seg)
-        p = ctx.Process(target=_chunk_worker, args=(src, s, e - s, W, H, fps, trk, params, enc, seg, threads, counter, q), daemon=True)
+        p = ctx.Process(target=_chunk_worker, args=(src, s, e - s, W, H, fps, per[w0:e], params, enc, seg, threads, counter, q), daemon=True)
         p.start()
         procs.append(p)
     t0 = time.time()
@@ -330,7 +332,6 @@ def render(src, boxes_json, dst, job, n):
     errs = [r[3] for r in results if r[3]]
     if errs:
         raise RuntimeError(errs[0])
-    # 조각 이어 붙이기 + 소리 붙이기
     job["msg"] = "조각 이어 붙이는 중"
     lst = os.path.join(d, "parts.txt")
     with open(lst, "w", encoding="utf-8") as fp:
@@ -347,8 +348,8 @@ def render(src, boxes_json, dst, job, n):
             pass
     bad = sorted(b for r in results for b in r[2])
     frames_done = sum(r[1] for r in results)
-    miss = int(np.isnan(boxes[:, 0]).sum())
-    covered = int(np.asarray(tr[4]).sum())
+    miss = sum(1 for k in range(n) if not all_boxes.get(str(k)))
+    covered = sum(1 for e in per if e)
     return {"frames": frames_done, "missing": miss, "covered": covered, "leak": len(bad),
             "leak_times": [round(x / fps, 2) for x in bad[:30]], "fps": fps, "workers": K,
             "encoder_note": _enc_note}
@@ -361,11 +362,12 @@ def run_job(jid, src, params):
     with run_lock:
         job["msg"] = "시작하는 중"
         try:
-            cover.SCALE = float(params.get("scale", cover.SCALE))
-            cover.BLUR_FRAC = float(params.get("blur", cover.BLUR_FRAC))
-            cover.FEATHER_W = float(params.get("feather", cover.FEATHER_W))
-            cover.HAIR = params.get("hair", "1") == "1"
-            cover.HAIR_REACH = float(params.get("reach", cover.HAIR_REACH))
+            import cover2
+            cover2.SCALE = float(params.get("scale", cover2.SCALE))
+            cover2.BLUR_FRAC = float(params.get("blur", cover2.BLUR_FRAC))
+            cover2.FEATHER_W = float(params.get("feather", cover2.FEATHER_W))
+            cover2.HAIR = params.get("hair", "1") == "1"
+            cover2.HAIR_REACH = float(params.get("reach", cover2.HAIR_REACH))
             ensure_model(job)
             n = int(cv2.VideoCapture(src).get(cv2.CAP_PROP_FRAME_COUNT))
             t0 = time.time()
