@@ -728,6 +728,7 @@ def plan(per, info, n, fw=1920, fh=1080):
     out = [[] for _ in range(n)]
     leak = set()
     cutf = [bool(info[i]["cut"]) if info[i] else False for i in range(n)]
+    segtab = {}
     for key, items in seq.items():
         frames = [it[0] for it in items]
         C, R1, R2, TH = [], [], [], []                      # 빠른 계산: 가장 작게 감싸는 회전 사각형으로 크기·방향
@@ -801,6 +802,8 @@ def plan(per, info, n, fw=1920, fh=1080):
             dead = DEAD * r2
             cur = cs[0].copy()
             seg_e = []
+            sid = len(segtab)
+            segtab[sid] = None
             for k in range(a, b):
                 d = cs[k - a] - cur
                 L = float(np.hypot(*d))
@@ -821,28 +824,29 @@ def plan(per, info, n, fw=1920, fh=1080):
                 E = (cur.copy(), A)
                 if not contains(E, mpk):
                     leak.add(frames[k])
-                el = (E[0].tolist(), E[1].tolist(), 1.0)
+                el = (E[0].tolist(), E[1].tolist(), 1.0, sid)
                 out[frames[k]].append(el)
                 seg_e.append(el)
             done_segs.append((frames[a], frames[b - 1], seg_e[0], seg_e[-1], bool(items[a][2])))
+            segtab[sid] = {"start": frames[a], "end": frames[b - 1], "track": f"{key[0]}{key[1]}"}
         # 나타날 때·사라질 때·크기가 바뀔 때 부드럽게 (방송본부 방식: 0→20→50→80→100%, 1프레임씩)
         for j, (f0, f1, e0, e1, cut0) in enumerate(done_segs):
             joined = j > 0 and done_segs[j - 1][1] == f0 - 1 and not cut0
             if not cut0:                                   # 화면 전환과 동시에 시작하면 그냥 나타남
                 for m, w in zip((f0 - 3, f0 - 2, f0 - 1), FADE):
                     if m >= 0 and not any(cutf[m + 1:f0 + 1]):   # 앞 화면으로 넘어가서까지 나타나진 않음
-                        out[m].append((e0[0], e0[1], w))
+                        out[m].append((e0[0], e0[1], w, e0[3]))
             if joined:                                     # 크기가 바뀌는 곳: 옛 블러는 바뀐 뒤 서서히 사라짐
                 pe = done_segs[j - 1][3]
                 for m, w in zip((f0, f0 + 1, f0 + 2), FADE[::-1]):
                     if m < n:
-                        out[m].append((pe[0], pe[1], w))
+                        out[m].append((pe[0], pe[1], w, pe[3]))
             last = j == len(done_segs) - 1 or done_segs[j + 1][0] != f1 + 1 or done_segs[j + 1][4]
             if last:
                 for m, w in zip((f1 + 1, f1 + 2, f1 + 3), FADE[::-1]):
                     if m >= n or cutf[m]:                  # 화면이 바뀌면 거기서 끝
                         break
-                    out[m].append((e1[0], e1[1], w))
+                    out[m].append((e1[0], e1[1], w, e1[3]))
     for i in range(n):                                     # 다른 블러 안에 완전히 들어가는(그리고 더 진하지 않은) 블러는 뺌
         if len(out[i]) > 1:
             order = sorted(range(len(out[i])), key=lambda k: (-out[i][k][2], -area((np.asarray(out[i][k][0]), np.asarray(out[i][k][1])))))
@@ -852,7 +856,7 @@ def plan(per, info, n, fw=1920, fh=1080):
                 if not any(contains((np.asarray(q[0]), np.asarray(q[1])), boundary(ek, 24)) for q in keep):
                     keep.append(out[i][k])
             out[i] = keep
-    return out, sorted(leak)
+    return out, sorted(leak), segtab
 
 
 class Painter:
@@ -920,3 +924,89 @@ class Painter:
         sf = sub.astype(np.float32)
         out[Y0:Y1, X0:X1] = np.clip(cv2.add(sf, cv2.multiply(cv2.subtract(soft, sf), self.a3)), 0, 255).astype(np.uint8)
         return out, (X0, Y0, alpha)
+
+
+# ======================= 7. 검수 화면에서 고친 내용 적용 =======================
+def _ell_from(cx, cy, rx, ry, ang):
+    return _ell((cx, cy), max(rx, 5.0), max(ry, 5.0), ang)
+
+
+def apply_edits(ells, segtab, edits, n):
+    """검수 화면에서 고친 내용(구간별 이동·크기·삭제·기간, 새로 추가한 블러)을 블러 계획에 적용.
+    edits = {"segs": {구간번호: {"dx","dy","scale","del","start","end"}}, "added": [{"start","end","cx","cy","rx","ry","ang"}]}"""
+    se = {int(k): v for k, v in (edits or {}).get("segs", {}).items()}
+    out = [[] for _ in range(n)]
+    base = {}
+    first = {}                       # 구간마다 처음·마지막 프레임의 타원 (기간을 늘릴 때 씀)
+    for i in range(n):
+        for e in ells[i]:
+            sid = e[3] if len(e) > 3 else None
+            if sid is None or sid not in segtab or segtab[sid] is None:
+                continue
+            st = segtab[sid]
+            if st["start"] <= i <= st["end"] and e[2] >= 1:
+                base.setdefault(sid, {})[i] = e
+                first.setdefault(sid, [e, e])
+                if i == st["start"]:
+                    first[sid][0] = e
+                if i == st["end"]:
+                    first[sid][1] = e
+
+    def tf(e, ed):
+        c = np.asarray(e[0], float) + (ed.get("dx", 0.0), ed.get("dy", 0.0))
+        A = np.asarray(e[1], float) / (float(ed.get("scale", 1.0)) ** 2)
+        return [c.tolist(), A.tolist()]
+
+    def fades(o, sid, c_A_s, c_A_e, a, b):
+        for m, w in zip((a - 3, a - 2, a - 1), FADE):
+            if 0 <= m < n:
+                o[m].append((c_A_s[0], c_A_s[1], w, sid))
+        for m, w in zip((b + 1, b + 2, b + 3), FADE[::-1]):
+            if 0 <= m < n:
+                o[m].append((c_A_e[0], c_A_e[1], w, sid))
+
+    for i in range(n):
+        for e in ells[i]:
+            sid = e[3] if len(e) > 3 else None
+            ed = se.get(sid) if sid is not None else None
+            if ed is None:
+                out[i].append(tuple(e))
+                continue
+            if ed.get("del"):
+                continue
+            st = segtab[sid]
+            a, b = int(ed.get("start", st["start"])), int(ed.get("end", st["end"]))
+            changed_range = (a, b) != (st["start"], st["end"])
+            inside = st["start"] <= i <= st["end"]
+            if not inside and changed_range:
+                continue                                  # 기간을 바꿨으면 원래 페이드는 버리고 새로 붙임
+            if inside and not (a <= i <= b):
+                continue
+            c, A = tf(e, ed)
+            out[i].append((c, A, e[2], sid))
+    for sid, ed in se.items():
+        if ed.get("del") or sid not in segtab or segtab[sid] is None or sid not in first:
+            continue
+        st = segtab[sid]
+        a, b = int(ed.get("start", st["start"])), int(ed.get("end", st["end"]))
+        if (a, b) == (st["start"], st["end"]):
+            continue
+        bs = base.get(sid, {})
+        s_e = tf(bs.get(a, first[sid][0] if a < st["start"] else first[sid][1]), ed)
+        e_e = tf(bs.get(b, first[sid][1] if b > st["end"] else first[sid][0]), ed)
+        for i in range(max(0, a), min(n, b + 1)):
+            if i < st["start"]:
+                out[i].append((s_e[0], s_e[1], 1.0, sid))
+            elif i > st["end"]:
+                out[i].append((e_e[0], e_e[1], 1.0, sid))
+        fades(out, sid, s_e, e_e, a, b)
+    for k, ad in enumerate((edits or {}).get("added", [])):
+        if ad.get("del"):
+            continue
+        c, A = _ell_from(ad["cx"], ad["cy"], ad["rx"], ad["ry"], ad.get("ang", 0.0))
+        el = [c.tolist(), A.tolist()]
+        a, b = int(ad["start"]), int(ad["end"])
+        for i in range(max(0, a), min(n, b + 1)):
+            out[i].append((el[0], el[1], 1.0, f"a{k}"))
+        fades(out, f"a{k}", el, el, a, b)
+    return out

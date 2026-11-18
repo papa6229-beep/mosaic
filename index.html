@@ -68,8 +68,20 @@
     <div class="bar"><i id="bar"></i></div>
     <div id="result"></div>
   </div>
+  <div class="card" id="jobsCard" style="display:none">
+    <b>최근 작업 — 검수·수정하기</b>
+    <div id="jobs" style="margin-top:8px;font-size:14px"></div>
+  </div>
 </main>
 <script>
+function loadJobs(){
+  fetch("/jobs").then(r=>r.json()).then(js=>{
+    if(!js.length)return;
+    document.getElementById("jobsCard").style.display="";
+    document.getElementById("jobs").innerHTML=js.map(j=>`<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--line)"><span>${j.name} <span style="color:var(--sub)">(${j.sec}초 · ${new Date(j.t*1000).toLocaleString()})</span></span><a href="/review/${j.jid}" target="_blank">검수·수정</a></div>`).join("");
+  }).catch(()=>{});
+}
+loadJobs();
 const $=id=>document.getElementById(id);
 let file=null;
 ["scale","blur","feather","reach"].forEach(k=>{const s=()=>$(k+"_v").textContent=$(k).value;$(k).oninput=s;s();});
@@ -115,7 +127,9 @@ function poll(id){
       ${r.encoder_note?`<div style="display:block;font-size:12px;color:var(--sub)">그래픽카드 저장이 안 된 이유: ${r.encoder_note.replace(/</g,"&lt;")}</div>`:""}
       <div><span><b>전체 작업 시간</b></span><span><b>${fmt(r.sec)}</b> (영상 길이의 ${(r.sec/r.video_sec).toFixed(1)}배)</span></div>
       <div><span>1시간 영상이면 (예상)</span><span>${fmt(r.sec/r.video_sec*3600)}</span></div></div>
-      <a class="dl" href="/download/${id}">결과 영상 받기</a>`;
+      <a class="dl" href="/download/${id}">결과 영상 받기</a>
+      <a class="dl" style="background:#d97706" href="/review/${id}" target="_blank">검수·수정하기 (블러 직접 고치기)</a>`;
+    loadJobs();
     $("go").disabled=false;
   });
 }

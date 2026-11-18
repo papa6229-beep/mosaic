@@ -397,21 +397,45 @@ def render(src, boxes_json, dst, job, n):
 
     # 2단계: 계획 (키프레임)
     job["msg"] = "2/3 장면별 블러 크기·위치 정하는 중"
-    ells, leak = cover2.plan(per, info, n, W, H)
+    ells, leak, segtab = cover2.plan(per, info, n, W, H)
     polys = [[e[2] for e in per[i]] for i in range(n)]
     try:                                               # 블러 계획 기록 (구간·위치 확인용, 나중에 편집 프로그램으로 넘길 때도 씀)
         json.dump(ells, open(os.path.join(d, "blur_plan.json"), "w"))
     except Exception:
         pass
 
+    # 검수 화면에서 다시 쓸 수 있게 저장
+    params_save = {k: getattr(cover2, k) for k in ("SCALE", "BLUR_FRAC", "FEATHER_W", "HAIR", "HAIR_REACH", "FEATHER_MAX", "FILL_KEEP")}
+    try:
+        json.dump(segtab, open(os.path.join(d, "segments.json"), "w"))
+        json.dump(polys, open(os.path.join(d, "polys.json"), "w"), separators=(",", ":"))
+        json.dump({"src": src, "W": W, "H": H, "fps": fps, "n": n, "out": os.path.basename(dst), "params": params_save},
+                  open(os.path.join(d, "review.json"), "w"), ensure_ascii=False)
+    except Exception:
+        traceback.print_exc()
+
     # 3단계: 그리기 + 저장
+    results, KP = paint_save(src, ells, polys, dst, job, n, W, H, fps, params)
+    frames_done = sum(r[1] for r in results)
+    miss = sum(1 for k in range(n) if not all_boxes.get(str(k)))
+    covered = sum(1 for e in ells if e)
+    return {"frames": frames_done, "missing": miss, "covered": covered, "leak": len(leak),
+            "leak_times": [round(x / fps, 2) for x in leak[:30]], "fps": fps, "workers": KP, "encoder_note": _enc_note}
+
+
+def paint_save(src, ells, polys, dst, job, n, W, H, fps, params, p0=77, p1=99):
+    """계획된 블러대로 그려서 저장 (CPU 여러 개로 나눠서) → 소리 붙여 하나로"""
+    enc, enc_name = encoder_args()
+    cores = os.cpu_count() or 2
+    K = max(1, min(cores, 8, n // 60))
     KP = min(K, 5) if "nvenc" in enc[1] else K
+    d = os.path.dirname(dst)
     bp = [round(n * k / KP) for k in range(KP + 1)]
     segs = [os.path.join(d, f"part{k:02d}.mp4") for k in range(KP)]
     wp = lambda k: max(0, bp[k] - WARMUP)
     tp = max(1, cores // KP)
     results = _run_parallel(job, KP, n, lambda k: (src, bp[k], bp[k + 1] - bp[k], W, H, fps, ells[wp(k):bp[k + 1]], polys[wp(k):bp[k + 1]],
-                                                      params, enc, segs[k], tp), _paint_worker, f"3/3 블러 그리고 저장 중 ({enc_name})", 77, 99)
+                                                      params, enc, segs[k], tp), _paint_worker, f"블러 그리고 저장 중 ({enc_name})", p0, p1)
     job["msg"] = "조각 이어 붙이는 중"
     lst = os.path.join(d, "parts.txt")
     with open(lst, "w", encoding="utf-8") as fp:
@@ -426,11 +450,7 @@ def render(src, boxes_json, dst, job, n):
             os.remove(s)
         except Exception:
             pass
-    frames_done = sum(r[1] for r in results)
-    miss = sum(1 for k in range(n) if not all_boxes.get(str(k)))
-    covered = sum(1 for e in ells if e)
-    return {"frames": frames_done, "missing": miss, "covered": covered, "leak": len(leak),
-            "leak_times": [round(x / fps, 2) for x in leak[:30]], "fps": fps, "workers": KP, "encoder_note": _enc_note}
+    return results, KP
 
 
 def run_job(jid, src, params):
@@ -536,6 +556,157 @@ def download(jid):
     if not j or not j.get("out"):
         return "아직 없음", 404
     return send_file(j["out"], as_attachment=True)
+
+
+
+# ---------------- 검수·수정 화면 ----------------
+def _jdir(jid):
+    d = os.path.join(JOBS, os.path.basename(jid))
+    if not os.path.exists(os.path.join(d, "review.json")):
+        return None
+    return d
+
+
+@app.get("/jobs")
+def jobs_list():
+    out = []
+    for jid in os.listdir(JOBS):
+        d = os.path.join(JOBS, jid)
+        rp = os.path.join(d, "review.json")
+        if os.path.exists(rp):
+            try:
+                r = json.load(open(rp, encoding="utf-8"))
+                out.append({"jid": jid, "name": os.path.basename(r["src"]), "t": os.path.getmtime(rp),
+                            "sec": round(r["n"] / r["fps"], 1)})
+            except Exception:
+                pass
+    out.sort(key=lambda x: -x["t"])
+    return jsonify(out[:30])
+
+
+@app.get("/review/<jid>")
+def review_page(jid):
+    if not _jdir(jid):
+        return "검수할 수 있는 작업이 아니에요 (이번 버전 이후에 만든 작업만 돼요)", 404
+    return Response(open(os.path.join(BASE, "review.html"), encoding="utf-8").read(), mimetype="text/html")
+
+
+@app.get("/review/<jid>/data")
+def review_data(jid):
+    d = _jdir(jid)
+    if not d:
+        return jsonify(error="없는 작업"), 404
+    r = json.load(open(os.path.join(d, "review.json"), encoding="utf-8"))
+    ep = os.path.join(d, "edits.json")
+    return jsonify(meta={k: r[k] for k in ("W", "H", "fps", "n")} | {"params": r.get("params", {}), "name": os.path.basename(r["src"])},
+                   segments=json.load(open(os.path.join(d, "segments.json"))),
+                   plan=json.load(open(os.path.join(d, "blur_plan.json"))),
+                   edits=json.load(open(ep)) if os.path.exists(ep) else {"segs": {}, "added": []})
+
+
+PLAYABLE = (".mp4", ".m4v", ".webm")
+proxy_state = {}
+
+
+def _proxy_job(jid, src, dst, n):
+    """브라우저가 바로 못 트는 영상(MXF 등)은 검수용 가벼운 미리보기 영상을 만듦 (프레임 수·속도는 그대로)"""
+    tmp = dst + ".part.mp4"
+    try:
+        p = subprocess.Popen([ffmpeg_exe(), "-y", "-loglevel", "error", "-progress", "pipe:1", "-i", src, "-map", "0:v:0",
+                              "-vf", "scale=-2:540", "-c:v", "libx264", "-preset", "veryfast", "-crf", "26", "-g", "15",
+                              "-pix_fmt", "yuv420p", "-an", tmp], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        for line in p.stdout:
+            if line.startswith("frame="):
+                try:
+                    proxy_state[jid] = min(99, int(line.split("=")[1]) * 100 // max(n, 1))
+                except Exception:
+                    pass
+        if p.wait() == 0:
+            os.replace(tmp, dst)
+            proxy_state[jid] = 100
+        else:
+            proxy_state[jid] = -1
+    except Exception:
+        traceback.print_exc()
+        proxy_state[jid] = -1
+
+
+@app.get("/review/<jid>/video-status")
+def review_video_status(jid):
+    d = _jdir(jid)
+    if not d:
+        return jsonify(error="없는 작업"), 404
+    r = json.load(open(os.path.join(d, "review.json"), encoding="utf-8"))
+    if os.path.splitext(r["src"])[1].lower() in PLAYABLE:
+        return jsonify(ready=True)
+    px = os.path.join(d, "proxy.mp4")
+    if os.path.exists(px):
+        return jsonify(ready=True)
+    if jid not in proxy_state:
+        proxy_state[jid] = 0
+        threading.Thread(target=_proxy_job, args=(jid, r["src"], px, r["n"]), daemon=True).start()
+    return jsonify(ready=False, pct=proxy_state.get(jid, 0))
+
+
+@app.get("/review/<jid>/video")
+def review_video(jid):
+    d = _jdir(jid)
+    if not d:
+        return "없음", 404
+    r = json.load(open(os.path.join(d, "review.json"), encoding="utf-8"))
+    px = os.path.join(d, "proxy.mp4")
+    if os.path.splitext(r["src"])[1].lower() not in PLAYABLE and os.path.exists(px):
+        return send_file(px, conditional=True)
+    return send_file(r["src"], conditional=True)
+
+
+@app.post("/review/<jid>/edits")
+def review_save(jid):
+    d = _jdir(jid)
+    if not d:
+        return jsonify(error="없는 작업"), 404
+    json.dump(request.get_json(force=True), open(os.path.join(d, "edits.json"), "w"))
+    return jsonify(ok=True)
+
+
+def run_fix(fid, d):
+    job = state[fid]
+    with run_lock:
+        try:
+            import cover2
+            r = json.load(open(os.path.join(d, "review.json"), encoding="utf-8"))
+            for k, v in r.get("params", {}).items():
+                setattr(cover2, k, v)
+            n, fps = r["n"], r["fps"]
+            ells = json.load(open(os.path.join(d, "blur_plan.json")))
+            segtab = {int(k): v for k, v in json.load(open(os.path.join(d, "segments.json"))).items()}
+            ep = os.path.join(d, "edits.json")
+            edits = json.load(open(ep)) if os.path.exists(ep) else {}
+            ells = cover2.apply_edits(ells, segtab, edits, n)
+            polys = json.load(open(os.path.join(d, "polys.json")))
+            out = os.path.join(d, os.path.splitext(r["out"])[0] + "_수정.mp4")
+            t0 = time.time()
+            res, KP = paint_save(r["src"], ells, polys, out, job, n, r["W"], r["H"], fps, r.get("params", {}), 0, 99)
+            frames = sum(x[1] for x in res)
+            job.update(pct=100, msg="완료", done=True, out=out,
+                       report={"frames": frames, "fps": fps, "sec": round(time.time() - t0, 1), "fix": True})
+        except Exception as e:
+            traceback.print_exc()
+            job.update(error=str(e)[:300], done=True, msg="오류")
+
+
+@app.post("/review/<jid>/render")
+def review_render(jid):
+    d = _jdir(jid)
+    if not d:
+        return jsonify(error="없는 작업"), 404
+    data = request.get_json(silent=True)
+    if data is not None:
+        json.dump(data, open(os.path.join(d, "edits.json"), "w"))
+    fid = os.path.basename(jid) + "_fix_" + uuid.uuid4().hex[:4]
+    state[fid] = {"pct": 0, "msg": "수정본 만들 준비 중", "done": False}
+    threading.Thread(target=run_fix, args=(fid, d), daemon=True).start()
+    return jsonify(job=fid)
 
 
 if __name__ == "__main__":
