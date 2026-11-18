@@ -47,13 +47,13 @@
     <label style="display:flex;gap:8px;align-items:center;margin-top:16px;color:var(--ink);font-size:14px">
       <input id="hair" type="checkbox" checked> 원본 모자이크 밖으로 나온 털까지 찾아서 같이 덮기
     </label>
-    <label>털 찾는 범위 — 클수록 모자이크에서 멀리 떨어진 털까지 잡아요</label>
-    <div class="row"><input id="reach" type="range" min="0" max="1" step="0.05" value="0.3"><span class="val" id="reach_v"></span></div>
+    <label>털 찾는 범위 — 클수록 모자이크에서 멀리 떨어진 음모까지 잡아요 (최대 250픽셀)</label>
+    <div class="row"><input id="reach" type="range" min="0.2" max="1" step="0.05" value="0.8"><span class="val" id="reach_v"></span></div>
 
     <details style="margin-top:16px">
       <summary>덮는 모양 조절 (보통은 그대로)</summary>
-      <label>덮는 크기 — 털이 삐져나오면 올리고, 몸·얼굴까지 가리면 내리세요</label>
-      <div class="row"><input id="scale" type="range" min="1" max="4" step="0.05" value="1.25"><span class="val" id="scale_v"></span></div>
+      <label>덮는 크기 — 원본 모자이크·음모·항문을 감싼 타원을 몇 배로 할지</label>
+      <div class="row"><input id="scale" type="range" min="1" max="2.5" step="0.05" value="1.15"><span class="val" id="scale_v"></span></div>
       <label>블러 세기</label>
       <div class="row"><input id="blur" type="range" min="0.1" max="0.6" step="0.05" value="0.3"><span class="val" id="blur_v"></span></div>
       <label>가장자리 번짐 폭 — 클수록 바깥으로 더 넓게 서서히 투명해져요 (최대 90픽셀)</label>
