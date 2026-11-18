@@ -292,6 +292,8 @@ def render(src, boxes_json, dst, job, n):
         one = json.load(open(boxes_json))
         all_boxes = {k: ([v + [1.0, None]] if v else []) for k, v in one.items()}
     per = cover2.build_tracks(all_boxes, n)
+    job["msg"] = "블러 키프레임 계산 중 (영상 전체를 먼저 보고 필요한 곳에만 찍음)"
+    per = cover2.plan_keyframes(per, n)
     enc, enc_name = encoder_args()
     cores = os.cpu_count() or 2
     K = max(1, min(cores, 8, n // 150))                    # 조각 수 = 동시에 일할 CPU 코어 수

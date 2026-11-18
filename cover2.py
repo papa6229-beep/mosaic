@@ -30,6 +30,7 @@ PRE = 15            # 처음 나타나기 이 프레임 수(0.5초) 전부터 �
 CONFIRM = 2         # 이 횟수 이상 잡혀야 진짜 모자이크로 인정 (엉뚱한 한 번은 무시)
 SHRINK_RATIO = 1.6  # 타원이 필요한 크기의 이 배를 넘는 상태가
 SHRINK_AFTER = 15   # 이 프레임 수 넘게 이어지면 천천히 줄임
+CHASE = 0.35        # 삐져나오려 할 때 새 자리로 따라가는 빠르기 (한 프레임에 남은 거리의 35%)
 FILL_RES = 120      # 블러 재료 계산 크기
 FILL_KEEP = 0.65    # 블러 속 이전 프레임 비율 (클수록 속 색이 천천히 바뀜)
 CUT_DIFF = 28       # 화면 전환 판단 (작은 화면 밝기 차이)
@@ -166,6 +167,75 @@ def lerp(e1, e2, t):
     return (1 - t) * e1[0] + t * e2[0], np.linalg.inv(M)
 
 
+# ======================= 1-2. 키프레임 계획 (포그팀 방식) =======================
+KEY_MAX = 90        # 키프레임 사이 최대 간격 (프레임)
+
+
+def _core_of(box, poly):
+    if poly and len(poly) >= 3:
+        pts = np.asarray(poly, float)
+    else:
+        x1, y1, x2, y2 = box
+        pts = np.array([[x1, y1], [x2, y1], [x2, y2], [x1, y2]], float)
+    return mvee(cv2.convexHull(pts.astype(np.float32)).reshape(-1, 2))
+
+
+def plan_keyframes(per, n):
+    """영상 전체 위치를 먼저 보고, 모자이크마다 '꼭 필요한 순간에만' 키프레임을 찍음.
+    키프레임 사이는 프리미어처럼 직선으로 이어짐. 이어지는 동안 원본 모자이크가 타원 밖으로 나가는 프레임이 없게 고름.
+    반환: 프레임마다 [(추적번호, 상자, 윤곽, 이번에잡힘, 계획된 타원)]"""
+    seq = {}
+    for i in range(n):
+        for tid, box, poly, det in per[i]:
+            seq.setdefault(tid, []).append((i, box, poly, det))
+    plan = {}
+    for tid, items in seq.items():
+        frames = [it[0] for it in items]
+        cores = [_core_of(it[1], it[2]) for it in items]
+        needs = [boundary(grow(c, 1.04, 4), 16) for c in cores]
+        tgts = [grow(c, SCALE, PAD_PX) for c in cores]
+        # 끊는 곳: 프레임이 이어지지 않거나 원본 모자이크가 순간이동한 곳 → 그 자리에서 바로 새로 시작
+        brk = [0]
+        for k in range(1, len(items)):
+            if frames[k] != frames[k - 1] + 1 or _iou(items[k - 1][1], items[k][1]) < 0.3 and items[k][3] and items[k - 1][3]:
+                brk.append(k)
+        brk.append(len(items))
+        for s0, s1 in zip(brk[:-1], brk[1:]):
+            a, Ka = s0, tgts[s0]
+            plan[(tid, frames[a])] = Ka
+            while a < s1 - 1:
+                # ① 가만히 둘 수 있는 데까지 (덮을 곳이 안에 있고, 필요 이상으로 크지 않은 동안)
+                b, big = a, 0
+                while b + 1 < s1 and contains(Ka, needs[b + 1]):
+                    big = big + 1 if area(Ka) > area(tgts[b + 1]) * SHRINK_RATIO else 0
+                    if big > SHRINK_AFTER:
+                        break
+                    b += 1
+                for m in range(a + 1, b + 1):
+                    plan[(tid, frames[m])] = Ka
+                a = b
+                if a >= s1 - 1:
+                    break
+                # ② 여기서 키프레임 → 다음 자리로 직선 이동. 이동 중 덮을 곳이 밖으로 안 나가는 가장 먼 곳까지
+                best, bg = None, None
+                for b in range(a + 1, min(s1, a + KEY_MAX + 1)):
+                    Kb = tgts[b]
+                    if all(contains(lerp(Ka, Kb, (m - a) / (b - a)), needs[m]) for m in range(a + 1, b + 1)):
+                        best, bg = Kb, b
+                    else:
+                        break
+                if best is None:
+                    best, bg = tgts[a + 1], a + 1
+                for m in range(a + 1, bg + 1):
+                    plan[(tid, frames[m])] = lerp(Ka, best, (m - a) / (bg - a))
+                a, Ka = bg, best
+    out = [[] for _ in range(n)]
+    for i in range(n):
+        for tid, box, poly, det in per[i]:
+            out[i].append((tid, box, poly, det, plan.get((tid, i))))
+    return out
+
+
 # ======================= 3. 음모 찾기 =======================
 def hair_mask(frame, box, near, faces=()):
     """원본 모자이크 주변에서 음모(가닥 결이 많고 살색이 빠진 덩어리)만 찾음. 얼굴 근처는 제외"""
@@ -295,15 +365,19 @@ class Renderer:
         self.last = None
         self.pbox = {}
         self.jump = set()
+        self.chase = set()   # 새 자리로 옮겨 가는 중인 추적번호
+        self.goal = {}       # 옮겨 갈 목표 타원
 
     def process(self, frame, i, entries):
         """반환: (결과 프레임, 덮이지 않은 음모 픽셀 수)"""
         H, W = frame.shape[:2]
+        entries = [tuple(e[:4]) + ((e[4] if len(e) > 4 else None),) for e in entries]
+        planned = {e[0]: e[4] for e in entries}
         small = cv2.resize(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), (64, 36), interpolation=cv2.INTER_AREA).astype(np.float32)
         cut = self.prev_small is not None and np.abs(small - self.prev_small).mean() > CUT_DIFF
         self.prev_small = small
         if cut:                                   # 화면이 바뀌면 이전 자리 기억은 버림
-            self.E.clear(); self.over.clear(); self.hair.clear(); self.fill = None; self.must_mem = []
+            self.E.clear(); self.over.clear(); self.hair.clear(); self.chase.clear(); self.fill = None; self.must_mem = []
             entries = [e for e in entries if e[3]]
         if EXPOSE and (i - self.exp_i >= EXPOSE_EVERY or cut):
             try:
@@ -316,7 +390,7 @@ class Renderer:
         must = [b for _, b in self.must_mem]
 
         self.jump = set()
-        for tid, box, poly, det in entries:
+        for tid, box, poly, det, _ in entries:
             if det:
                 pb = self.pbox.get(tid)
                 if pb is not None and _iou(pb, box) < 0.3:
@@ -326,7 +400,7 @@ class Renderer:
         need = np.zeros((H, W), np.uint8)
         hair_px = []
         targets = []
-        for tid, box, poly, det in entries:
+        for tid, box, poly, det, _ in entries:
             alive.add(tid)
             x1, y1, x2, y2 = box
             bw, bh = x2 - x1, y2 - y1
@@ -358,6 +432,7 @@ class Renderer:
                 mx, my = (mb[0] + mb[2]) / 2, (mb[1] + mb[3]) / 2
                 if x1 - reach - bw * 0.5 <= mx <= x2 + reach + bw * 0.5 and y1 - reach - bh * 0.5 <= my <= y2 + reach + bh * 0.5:
                     allp.append(np.array([[mb[0], mb[1]], [mb[2], mb[1]], [mb[2], mb[3]], [mb[0], mb[3]]], float))
+                    cv2.rectangle(need, (int(mb[0]), int(mb[1])), (int(mb[2]), int(mb[3])), 1, -1)   # 얼굴과 겹쳐도 지워지지 않게
             P = np.vstack(allp)
             core = mvee(cv2.convexHull(P.astype(np.float32)).reshape(-1, 2))   # 반드시 덮을 곳을 딱 감싸는 타원
             targets.append((tid, grow(core, SCALE, PAD_PX), core))
@@ -382,13 +457,34 @@ class Renderer:
         for tid, T, core in targets:
             Tb = boundary(T)
             need_b = boundary(grow(core, 1.04, 4))              # 반드시 덮을 곳(+약간) — 이게 벗어날 때만 움직임
+            P_ = planned.get(tid)
+            if P_ is not None:                                   # 키프레임 계획이 있으면 그대로 따름
+                E = P_
+                if not contains(E, need_b):                      # 음모·노출이 계획 밖으로 나오면 이 프레임만 넓혀 감쌈
+                    E = mvee(np.vstack([boundary(E), need_b]))
+                shown.append(E)
+                continue
             E = self.E.get(tid)
             jump = tid in self.jump                              # 원본 모자이크가 순간이동(장면 전환·자세 급변)
             if E is None or jump or not contains(E, core[0][None]):
                 E = T                                            # 처음이거나 완전히 다른 곳으로 이동
                 self.over[tid] = 0
-            elif not contains(E, need_b):
-                E = mvee(np.vstack([boundary(E), Tb]))           # 삐져나오려 함 → 지금 자리와 새 자리를 같이 감싸게 넓힘
+                self.chase.discard(tid)
+            elif tid in self.chase or not contains(E, need_b):
+                # 삐져나오려 함 → 그 순간의 새 자리(목표)를 정하고 몇 프레임에 걸쳐 부드럽게 옮겨 감
+                # (목표는 옮기는 동안 고정 = 키프레임 두 개 사이를 잇는 것과 같음. 매 프레임 흔들리는 탐지값을 쫓지 않음)
+                if tid not in self.chase:
+                    self.goal[tid] = T
+                    self.chase.add(tid)
+                G = self.goal[tid]
+                E2 = lerp(E, G, CHASE)
+                rG, _ = _axes(G[1])
+                if np.hypot(*(E2[0] - G[0])) < 0.05 * min(rG) and abs(area(E2) / area(G) - 1) < 0.1:
+                    E2 = G
+                    self.chase.discard(tid)                      # 목표 도착 → 다시 가만히
+                if not contains(E2, need_b):
+                    E2 = mvee(np.vstack([boundary(E2), need_b]))  # 옮기는 중에도 덮을 곳은 항상 안에
+                E = E2
                 self.over[tid] = 0
             else:                                                # 안에 있으면 가만히
                 if area(E) > area(T) * SHRINK_RATIO:
@@ -403,7 +499,7 @@ class Renderer:
             shown.append(E)
         for tid in list(self.E):
             if tid not in alive:
-                self.E.pop(tid); self.over.pop(tid, None); self.hair.pop(tid, None)
+                self.E.pop(tid); self.over.pop(tid, None); self.hair.pop(tid, None); self.chase.discard(tid)
         if not shown:
             self.fill = None
             self.last = None
@@ -448,6 +544,7 @@ class Renderer:
             soft = FILL_KEEP * self.fill[1] + (1 - FILL_KEEP) * soft   # 블러 속은 천천히만 바뀜
         self.fill = ((X0, Y0, X1, Y1), soft)
         self.last = (X0, Y0, alpha, shown)
+        self.need_crop = nd
         a = alpha[..., None]
         o = (sub.astype(np.float32) * (1 - a) + soft * a).clip(0, 255).astype(np.uint8)
         out = frame.copy()
