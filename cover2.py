@@ -30,7 +30,12 @@ PRE = 15            # 처음 나타나기 이 프레임 수(0.5초) 전부터 �
 CONFIRM = 2         # 이 횟수 이상 잡혀야 진짜 모자이크로 인정 (엉뚱한 한 번은 무시)
 SHRINK_RATIO = 1.6  # 타원이 필요한 크기의 이 배를 넘는 상태가
 SHRINK_AFTER = 15   # 이 프레임 수 넘게 이어지면 천천히 줄임
-CHASE = 0.35        # 삐져나오려 할 때 새 자리로 따라가는 빠르기 (한 프레임에 남은 거리의 35%)
+CHASE = 0.35        # (예전 방식용)
+WIN_MAX = 60        # 키프레임 타원 하나가 앞으로 감싸 둘 최대 프레임 수 (2초)
+WIN_GROW = 1.5      # 앞으로 올 움직임까지 감싸느라 커지는 한도 (지금 필요한 크기의 이 배까지)
+GLIDE_MAX = 15      # 옮길 때 이 프레임 수(0.5초)에 걸쳐 미리 부드럽게 옮김
+OVER_RATIO = 2.2    # 타원이 필요한 크기의 이 배를 넘는 상태가
+OVER_AFTER = 30     # 이 프레임 수(1초) 넘게 이어지면 새 키프레임으로 줄임
 FILL_RES = 120      # 블러 재료 계산 크기
 FILL_KEEP = 0.65    # 블러 속 이전 프레임 비율 (클수록 속 색이 천천히 바뀜)
 CUT_DIFF = 28       # 화면 전환 판단 (작은 화면 밝기 차이)
@@ -165,75 +170,6 @@ def area(e):
 def lerp(e1, e2, t):
     M = (1 - t) * np.linalg.inv(e1[1]) + t * np.linalg.inv(e2[1])
     return (1 - t) * e1[0] + t * e2[0], np.linalg.inv(M)
-
-
-# ======================= 1-2. 키프레임 계획 (포그팀 방식) =======================
-KEY_MAX = 90        # 키프레임 사이 최대 간격 (프레임)
-
-
-def _core_of(box, poly):
-    if poly and len(poly) >= 3:
-        pts = np.asarray(poly, float)
-    else:
-        x1, y1, x2, y2 = box
-        pts = np.array([[x1, y1], [x2, y1], [x2, y2], [x1, y2]], float)
-    return mvee(cv2.convexHull(pts.astype(np.float32)).reshape(-1, 2))
-
-
-def plan_keyframes(per, n):
-    """영상 전체 위치를 먼저 보고, 모자이크마다 '꼭 필요한 순간에만' 키프레임을 찍음.
-    키프레임 사이는 프리미어처럼 직선으로 이어짐. 이어지는 동안 원본 모자이크가 타원 밖으로 나가는 프레임이 없게 고름.
-    반환: 프레임마다 [(추적번호, 상자, 윤곽, 이번에잡힘, 계획된 타원)]"""
-    seq = {}
-    for i in range(n):
-        for tid, box, poly, det in per[i]:
-            seq.setdefault(tid, []).append((i, box, poly, det))
-    plan = {}
-    for tid, items in seq.items():
-        frames = [it[0] for it in items]
-        cores = [_core_of(it[1], it[2]) for it in items]
-        needs = [boundary(grow(c, 1.04, 4), 16) for c in cores]
-        tgts = [grow(c, SCALE, PAD_PX) for c in cores]
-        # 끊는 곳: 프레임이 이어지지 않거나 원본 모자이크가 순간이동한 곳 → 그 자리에서 바로 새로 시작
-        brk = [0]
-        for k in range(1, len(items)):
-            if frames[k] != frames[k - 1] + 1 or _iou(items[k - 1][1], items[k][1]) < 0.3 and items[k][3] and items[k - 1][3]:
-                brk.append(k)
-        brk.append(len(items))
-        for s0, s1 in zip(brk[:-1], brk[1:]):
-            a, Ka = s0, tgts[s0]
-            plan[(tid, frames[a])] = Ka
-            while a < s1 - 1:
-                # ① 가만히 둘 수 있는 데까지 (덮을 곳이 안에 있고, 필요 이상으로 크지 않은 동안)
-                b, big = a, 0
-                while b + 1 < s1 and contains(Ka, needs[b + 1]):
-                    big = big + 1 if area(Ka) > area(tgts[b + 1]) * SHRINK_RATIO else 0
-                    if big > SHRINK_AFTER:
-                        break
-                    b += 1
-                for m in range(a + 1, b + 1):
-                    plan[(tid, frames[m])] = Ka
-                a = b
-                if a >= s1 - 1:
-                    break
-                # ② 여기서 키프레임 → 다음 자리로 직선 이동. 이동 중 덮을 곳이 밖으로 안 나가는 가장 먼 곳까지
-                best, bg = None, None
-                for b in range(a + 1, min(s1, a + KEY_MAX + 1)):
-                    Kb = tgts[b]
-                    if all(contains(lerp(Ka, Kb, (m - a) / (b - a)), needs[m]) for m in range(a + 1, b + 1)):
-                        best, bg = Kb, b
-                    else:
-                        break
-                if best is None:
-                    best, bg = tgts[a + 1], a + 1
-                for m in range(a + 1, bg + 1):
-                    plan[(tid, frames[m])] = lerp(Ka, best, (m - a) / (bg - a))
-                a, Ka = bg, best
-    out = [[] for _ in range(n)]
-    for i in range(n):
-        for tid, box, poly, det in per[i]:
-            out[i].append((tid, box, poly, det, plan.get((tid, i))))
-    return out
 
 
 # ======================= 3. 음모 찾기 =======================
@@ -561,3 +497,188 @@ class Renderer:
                 inside = int((hs & (alpha[ay0 - Y0:ay1 - Y0, ax0 - X0:ax1 - X0] > 0.95)).sum())
             left += total - inside
         return out, left
+
+
+# ======================= 6. 새 방식: 먼저 훑기 → 계획 → 그리기 =======================
+# 프레임마다 반응하지 않음. 영상 전체의 '덮을 곳'을 먼저 모은 뒤 키프레임을 정하고, 그리기는 계획대로만.
+
+class Analyzer:
+    """1단계(훑기): 프레임마다 모자이크별 '반드시 덮을 점들'과, 어느 모자이크에도 안 붙은 노출 상자를 모음"""
+    def __init__(self):
+        self.hair = {}
+        self.exp = ([], [])
+        self.exp_i = -999
+        self.must_mem = []
+        self.prev_small = None
+
+    def analyze(self, frame, i, entries):
+        small = cv2.resize(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), (64, 36), interpolation=cv2.INTER_AREA).astype(np.float32)
+        cut = self.prev_small is not None and np.abs(small - self.prev_small).mean() > CUT_DIFF
+        self.prev_small = small
+        if cut:
+            self.hair.clear(); self.must_mem = []
+        if EXPOSE and (i - self.exp_i >= EXPOSE_EVERY or cut):
+            try:
+                self.exp = exposures(frame)
+            except Exception:
+                self.exp = ([], [])
+            self.exp_i = i
+            self.must_mem = [(j, b) for j, b in self.must_mem if i - j <= 6] + [(i, b) for b in self.exp[0]]
+        faces = self.exp[1]
+        must = [b for _, b in self.must_mem]
+        req = {}
+        used = set()
+        for e in entries:
+            tid, box, poly, det = e[:4]
+            x1, y1, x2, y2 = box
+            bw, bh = x2 - x1, y2 - y1
+            reach = float(np.clip(max(8.0, min(bw, bh)) * HAIR_REACH, REACH_MIN, REACH_MAX))
+            if poly and len(poly) >= 3:
+                pts = [np.asarray(poly, float)]
+            else:
+                pts = [np.array([[x1, y1], [x2, y1], [x2, y2], [x1, y2]], float)]
+            mem = [(j, p) for j, p in self.hair.get(tid, []) if i - j <= HAIR_MEM]
+            if HAIR:
+                hm, (ox, oy) = hair_mask(frame, box, reach, faces)
+                if hm is not None:
+                    hull = cv2.convexHull(cv2.findNonZero(hm)).reshape(-1, 2).astype(float) + (ox, oy)
+                    mem.append((i, hull))
+            self.hair[tid] = mem
+            pts += [p for _, p in mem]
+            for k, mb in enumerate(must):
+                mx, my = (mb[0] + mb[2]) / 2, (mb[1] + mb[3]) / 2
+                if x1 - reach - bw * 0.5 <= mx <= x2 + reach + bw * 0.5 and y1 - reach - bh * 0.5 <= my <= y2 + reach + bh * 0.5:
+                    pts.append(np.array([[mb[0], mb[1]], [mb[2], mb[1]], [mb[2], mb[3]], [mb[0], mb[3]]], float))
+                    used.add(k)
+            P = np.vstack(pts)
+            req[tid] = cv2.convexHull(P.astype(np.float32)).reshape(-1, 2)
+        loose = [list(map(float, mb)) for k, mb in enumerate(must) if k not in used]
+        return {"req": {str(k): v.tolist() for k, v in req.items()}, "loose": loose, "cut": bool(cut)}
+
+
+SWITCH_COST = 40    # 블러를 한 번 바꾸는 비용 (화면 전체를 이 프레임 수만큼 덮는 것과 같은 무게) — 클수록 덜 바꿈
+SEG_MAX = 900       # 고정 블러 한 구간 최대 길이 (프레임, 30초)
+
+
+def _segments(bx, forced, fw, fh):
+    """덮는 면적×시간 + 바꾸는 횟수×SWITCH_COST 가 가장 작게 구간을 나눔. bx: 프레임마다 덮을 곳 상자"""
+    n = len(bx)
+    best = np.full(n + 1, np.inf); best[0] = 0.0
+    arg = np.zeros(n + 1, int)
+    fa = float(fw * fh)
+    for j in range(1, n + 1):
+        lo = max(0, j - SEG_MAX)
+        f = [k for k in forced if lo < k < j]
+        if f:
+            lo = max(f)                                  # 화면 전환 등은 반드시 끊음
+        seg = bx[lo:j][::-1]
+        x1 = np.minimum.accumulate(seg[:, 0]); y1 = np.minimum.accumulate(seg[:, 1])
+        x2 = np.maximum.accumulate(seg[:, 2]); y2 = np.maximum.accumulate(seg[:, 3])
+        L = np.arange(1, len(seg) + 1)
+        cost = (x2 - x1) * (y2 - y1) / fa * L + SWITCH_COST
+        starts = j - L
+        tot = best[starts] + cost
+        k = int(np.argmin(tot))
+        best[j], arg[j] = tot[k], starts[k]
+    out, j = [], n
+    while j > 0:
+        out.append((int(arg[j]), j))
+        j = int(arg[j])
+    return out[::-1]
+
+
+def plan(per, info, n, fw=1920, fh=1080):
+    """2단계(계획): 프리미어 포그 작업처럼 '구간마다 고정 블러'를 정함.
+    - 영상 전체의 덮을 곳(원본 모자이크 + 음모 + 노출)을 먼저 다 보고
+    - 블러가 덮는 면적×시간과 블러를 바꾸는 횟수가 함께 가장 작아지게 구간을 나눔
+    - 구간 안에서는 그 구간의 덮을 곳을 전부 감싸는 타원 하나로 고정 (움직이지도, 모양이 바뀌지도 않음)
+    반환: 프레임마다 [타원, ...]"""
+    loose = {str(i): [b + [1.0, None] for b in (info[i]["loose"] if info[i] else [])] for i in range(n)}
+    mper = build_tracks(loose, n)
+    seq = {}
+    for i in range(n):
+        if not info[i]:
+            continue
+        cut = info[i]["cut"]
+        for e in per[i]:
+            pts = info[i]["req"].get(str(e[0]))
+            if pts is not None:
+                seq.setdefault(("t", e[0]), []).append((i, np.asarray(pts, float), cut))
+        for e in mper[i]:
+            b = e[1]
+            seq.setdefault(("m", e[0]), []).append((i, np.array([[b[0], b[1]], [b[2], b[1]], [b[2], b[3]], [b[0], b[3]]], float), cut))
+    out = [[] for _ in range(n)]
+    for key, items in seq.items():
+        frames = [it[0] for it in items]
+        bx = np.array([[it[1][:, 0].min(), it[1][:, 1].min(), it[1][:, 0].max(), it[1][:, 1].max()] for it in items], float)
+        forced = [k for k in range(1, len(items)) if items[k][2] or frames[k] != frames[k - 1] + 1]
+        sc = SCALE * (1.1 if key[0] == "m" else 1.0)
+        for a, b in _segments(bx, forced, fw, fh):
+            P = cv2.convexHull(np.vstack([items[k][1] for k in range(a, b)]).astype(np.float32)).reshape(-1, 2)
+            E = grow(mvee(P), sc, PAD_PX)
+            el = (E[0].tolist(), E[1].tolist())
+            for k in range(a, b):
+                out[frames[k]].append(el)
+    # 다른 블러 안에 완전히 들어가는 작은 블러는 뺌 (겹쳐 그릴 필요 없음)
+    for i in range(n):
+        if len(out[i]) > 1:
+            es = [(np.asarray(c), np.asarray(A)) for c, A in out[i]]
+            keep = [el for k, el in enumerate(out[i])
+                    if not any(j != k and contains(es[j], boundary(es[k], 24)) for j in range(len(es)))]
+            out[i] = keep or out[i][:1]
+    return out
+
+
+class Painter:
+    """3단계(그리기): 계획된 타원대로만 블러를 그림. 프레임마다 다시 판단하지 않음"""
+    def __init__(self):
+        self.fill = None
+        self.prev_small = None
+
+    def paint(self, frame, ells, polys):
+        H, W = frame.shape[:2]
+        small = cv2.resize(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), (64, 36), interpolation=cv2.INTER_AREA).astype(np.float32)
+        if self.prev_small is not None and np.abs(small - self.prev_small).mean() > CUT_DIFF:
+            self.fill = None
+        self.prev_small = small
+        if not ells:
+            self.fill = None
+            return frame, None
+        boxes = []
+        for c, A in ells:
+            c, A = np.asarray(c, float), np.asarray(A, float)
+            r, _ = _axes(A)
+            F = float(np.clip(min(r) * FEATHER_W, 20, FEATHER_MAX))
+            boxes.append((c, A, r, F, max(r) + F))
+        X0 = int(max(0, min(c[0] - R for c, _, _, _, R in boxes)))
+        Y0 = int(max(0, min(c[1] - R for c, _, _, _, R in boxes)))
+        X1 = int(min(W, max(c[0] + R for c, _, _, _, R in boxes) + 1))
+        Y1 = int(min(H, max(c[1] + R for c, _, _, _, R in boxes) + 1))
+        if X1 - X0 < 4 or Y1 - Y0 < 4:
+            return frame, None
+        yy, xx = np.mgrid[Y0:Y1, X0:X1].astype(np.float32)
+        alpha = np.zeros((Y1 - Y0, X1 - X0), np.float32)
+        for c, A, r, F, R in boxes:
+            dx, dy = xx - c[0], yy - c[1]
+            q = A[0, 0] * dx * dx + 2 * A[0, 1] * dx * dy + A[1, 1] * dy * dy
+            rr = np.sqrt(np.maximum(q, 0))
+            t = np.clip(1 - (rr - 1) * np.sqrt(r[0] * r[1]) / F, 0, 1)
+            alpha = np.maximum(alpha, np.where(rr <= 1, 1.0, t * t * (3 - 2 * t)))
+        need = np.zeros((Y1 - Y0, X1 - X0), np.uint8)
+        for p in polys:
+            if p is not None and len(p) >= 3:
+                cv2.fillPoly(need, [(np.asarray(p, np.float32) - (X0, Y0)).astype(np.int32)], 1)
+        sub = frame[Y0:Y1, X0:X1]
+        minr = min(min(r) for _, _, r, _, _ in boxes)
+        soft = natural_fill(sub, need, max(15.0, 2 * minr * BLUR_FRAC), alpha).astype(np.float32)
+        if self.fill is not None:                    # 블러 속은 이전 프레임과 섞어 천천히만 바뀜 (타원이 옮겨 가는 중에도)
+            (pX0, pY0, pX1, pY1), ps = self.fill
+            ox0, oy0, ox1, oy1 = max(X0, pX0), max(Y0, pY0), min(X1, pX1), min(Y1, pY1)
+            if ox1 > ox0 and oy1 > oy0:
+                cur = soft[oy0 - Y0:oy1 - Y0, ox0 - X0:ox1 - X0]
+                soft[oy0 - Y0:oy1 - Y0, ox0 - X0:ox1 - X0] = FILL_KEEP * ps[oy0 - pY0:oy1 - pY0, ox0 - pX0:ox1 - pX0] + (1 - FILL_KEEP) * cur
+        self.fill = ((X0, Y0, X1, Y1), soft)
+        a = alpha[..., None]
+        out = frame.copy()
+        out[Y0:Y1, X0:X1] = (sub.astype(np.float32) * (1 - a) + soft * a).clip(0, 255).astype(np.uint8)
+        return out, (X0, Y0, alpha)

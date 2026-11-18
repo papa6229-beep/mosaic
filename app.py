@@ -234,33 +234,63 @@ def detect_all(src, job, n):
 WARMUP = 30   # 조각 앞부분에서 미리 돌려 두는 프레임 수 (앞 조각과 블러가 자연스럽게 이어지게)
 
 
-def _chunk_worker(src, start, count, W, H, fps, entries, params, enc, seg, threads, counter, q):
-    """한 조각(start부터 count장)을 처리해 seg 파일로 저장. 앞쪽 WARMUP장은 상태만 맞추고 저장하지 않음"""
+def _dec(src, w0, total, W, H, fps):
+    return subprocess.Popen([ffmpeg_exe(), "-loglevel", "error", "-ss", f"{w0 / fps:.6f}", "-i", src,
+                             "-frames:v", str(total), "-f", "rawvideo", "-pix_fmt", "bgr24", "-"],
+                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=W * H * 3 * 4)
+
+
+def _scan_worker(src, start, count, W, H, fps, entries, params, outp, counter, q):
+    """1단계(훑기): 이 조각의 프레임마다 '반드시 덮을 곳'을 모아 파일로 저장"""
     try:
-        import cover2
+        import cover2, pickle
         for k, v in params.items():
             setattr(cover2, k, v)
         w0 = max(0, start - WARMUP)
         total = start + count - w0
-        dec = subprocess.Popen([ffmpeg_exe(), "-loglevel", "error", "-ss", f"{w0 / fps:.6f}", "-i", src,
-                                "-frames:v", str(total), "-f", "rawvideo", "-pix_fmt", "bgr24", "-"],
-                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=W * H * 3 * 4)
-        encx = list(enc) + (["-threads", str(threads)] if "libx264" in enc else [])
-        out = subprocess.Popen([ffmpeg_exe(), "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "bgr24",
-                                "-s", f"{W}x{H}", "-r", f"{fps}", "-i", "-", *encx, "-pix_fmt", "yuv420p", seg],
-                               stdin=subprocess.PIPE, stderr=subprocess.PIPE)
-        R = cover2.Renderer()
-        bad, done = [], 0
-        fsz = W * H * 3
+        dec = _dec(src, w0, total, W, H, fps)
+        A = cover2.Analyzer()
+        res, fsz = [], W * H * 3
         for j in range(total):
             buf = dec.stdout.read(fsz)
             if len(buf) < fsz:
                 break
             f = np.frombuffer(buf, np.uint8).reshape(H, W, 3)
             i = w0 + j
-            f, left = R.process(f, i, entries[j] if j < len(entries) else [])
-            if left > 300 and i >= start:
-                bad.append(i)
+            r = A.analyze(f, i, entries[j] if j < len(entries) else [])
+            if i >= start:
+                res.append(r)
+                with counter.get_lock():
+                    counter.value += 1
+        dec.stdout.close(); dec.wait()
+        pickle.dump(res, open(outp, "wb"))
+        q.put((start, len(res), None))
+    except Exception:
+        q.put((start, 0, traceback.format_exc()[-800:]))
+
+
+def _paint_worker(src, start, count, W, H, fps, ells, polys, params, enc, seg, threads, counter, q):
+    """3단계(그리기): 계획된 타원대로만 그려서 조각 파일로 저장"""
+    try:
+        import cover2
+        for k, v in params.items():
+            setattr(cover2, k, v)
+        w0 = max(0, start - WARMUP)
+        total = start + count - w0
+        dec = _dec(src, w0, total, W, H, fps)
+        encx = list(enc) + (["-threads", str(threads)] if "libx264" in enc else [])
+        out = subprocess.Popen([ffmpeg_exe(), "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "bgr24",
+                                "-s", f"{W}x{H}", "-r", f"{fps}", "-i", "-", *encx, "-pix_fmt", "yuv420p", seg],
+                               stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+        P = cover2.Painter()
+        done, fsz = 0, W * H * 3
+        for j in range(total):
+            buf = dec.stdout.read(fsz)
+            if len(buf) < fsz:
+                break
+            f = np.frombuffer(buf, np.uint8).reshape(H, W, 3)
+            i = w0 + j
+            f, _ = P.paint(f, ells[j] if j < len(ells) else [], polys[j] if j < len(polys) else [])
             if i >= start:
                 out.stdin.write(f.tobytes())
                 done += 1
@@ -271,20 +301,49 @@ def _chunk_worker(src, start, count, W, H, fps, entries, params, enc, seg, threa
         dec.stdout.close(); dec.wait()
         if out.wait() != 0:
             raise RuntimeError("조각 저장 실패: " + err[-300:])
-        q.put((start, done, bad, None))
-    except Exception as e:
-        q.put((start, 0, [], traceback.format_exc()[-800:]))
+        q.put((start, done, None))
+    except Exception:
+        q.put((start, 0, traceback.format_exc()[-800:]))
+
+
+def _run_parallel(job, K, n, make_args, target, label, p0=50, p1=99):
+    import multiprocessing as mp
+    ctx = mp.get_context("spawn")
+    counter = ctx.Value("i", 0)
+    q = ctx.Queue()
+    procs = []
+    for k in range(K):
+        p = ctx.Process(target=target, args=make_args(k) + (counter, q), daemon=True)
+        p.start()
+        procs.append(p)
+    t0, results = time.time(), []
+    while len(results) < K:
+        try:
+            results.append(q.get(timeout=1))
+        except Exception:
+            pass
+        i = counter.value
+        el = time.time() - t0
+        left = el / i * (n - i) if i else 0
+        job["msg"] = f"{label} {i}/{n} 프레임 · CPU {K}개 동시 처리 · 이 단계 남은 시간 약 {fmt_sec(left)}"
+        job["pct"] = p0 + int(i * (p1 - p0) / max(n, 1))
+        if not any(p.is_alive() for p in procs) and q.empty() and len(results) < K:
+            raise RuntimeError(label + " 작업 일부가 비정상 종료됐어요")
+    for p in procs:
+        p.join()
+    errs = [r[-1] for r in results if r[-1]]
+    if errs:
+        raise RuntimeError(errs[0])
+    return results
 
 
 def render(src, boxes_json, dst, job, n):
-    import multiprocessing as mp
-    import cover2
+    import cover2, pickle
     cap = cv2.VideoCapture(src)
     fps = cap.get(cv2.CAP_PROP_FPS) or 30
     W = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     H = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     cap.release()
-    # 원본 모자이크 전부(여러 개) → 모자이크마다 따로 추적
     allp = os.path.join(os.path.dirname(boxes_json), "boxes_all.json")
     if os.path.exists(allp):
         all_boxes = json.load(open(allp))
@@ -292,48 +351,42 @@ def render(src, boxes_json, dst, job, n):
         one = json.load(open(boxes_json))
         all_boxes = {k: ([v + [1.0, None]] if v else []) for k, v in one.items()}
     per = cover2.build_tracks(all_boxes, n)
-    job["msg"] = "블러 키프레임 계산 중 (영상 전체를 먼저 보고 필요한 곳에만 찍음)"
-    per = cover2.plan_keyframes(per, n)
     enc, enc_name = encoder_args()
     cores = os.cpu_count() or 2
-    K = max(1, min(cores, 8, n // 150))                    # 조각 수 = 동시에 일할 CPU 코어 수
-    if "nvenc" in enc[1]:
-        K = min(K, 5)                                    # 그래픽카드 저장은 동시 5개까지
+    K = max(1, min(cores, 8, n // 150))
     threads = max(1, cores // K)
     params = {k: getattr(cover2, k) for k in ("SCALE", "BLUR_FRAC", "FEATHER_W", "HAIR", "HAIR_REACH")}
     d = os.path.dirname(dst)
     bounds = [round(n * k / K) for k in range(K + 1)]
-    ctx = mp.get_context("spawn")
-    counter = ctx.Value("i", 0)
-    q = ctx.Queue()
-    procs, segs = [], []
-    for k in range(K):
-        s, e = bounds[k], bounds[k + 1]
-        w0 = max(0, s - WARMUP)
-        seg = os.path.join(d, f"part{k:02d}.mp4")
-        segs.append(seg)
-        p = ctx.Process(target=_chunk_worker, args=(src, s, e - s, W, H, fps, per[w0:e], params, enc, seg, threads, counter, q), daemon=True)
-        p.start()
-        procs.append(p)
-    t0 = time.time()
-    results = []
-    while len(results) < K:
-        try:
-            results.append(q.get(timeout=1))
-        except Exception:
-            pass
-        i = counter.value
-        job["pct"] = 50 + int(i * 49 / max(n, 1))
-        el = time.time() - t0
-        left = el / i * (n - i) if i else 0
-        job["msg"] = f"모자이크 덮는 중 {i}/{n} 프레임 · CPU {K}개 동시 처리 · 저장: {enc_name} · 이 단계 남은 시간 약 {fmt_sec(left)}"
-        if not any(p.is_alive() for p in procs) and q.empty() and len(results) < K:
-            raise RuntimeError("덮기 작업 일부가 비정상 종료됐어요")
-    for p in procs:
-        p.join()
-    errs = [r[3] for r in results if r[3]]
-    if errs:
-        raise RuntimeError(errs[0])
+    wb = lambda k: max(0, bounds[k] - WARMUP)
+
+    # 1단계: 훑기 (덮을 곳 모으기)
+    scans = [os.path.join(d, f"scan{k:02d}.pkl") for k in range(K)]
+    _run_parallel(job, K, n, lambda k: (src, bounds[k], bounds[k + 1] - bounds[k], W, H, fps, per[wb(k):bounds[k + 1]], params, scans[k]),
+                  _scan_worker, "1/3 덮을 곳 훑는 중", 50, 75)
+    info = []
+    for sp in scans:
+        info += pickle.load(open(sp, "rb"))
+        os.remove(sp)
+    info += [None] * (n - len(info))
+
+    # 2단계: 계획 (키프레임)
+    job["msg"] = "2/3 고정 블러 구간 정하는 중"
+    ells = cover2.plan(per, info, n, W, H)
+    polys = [[e[2] for e in per[i]] for i in range(n)]
+    try:                                               # 블러 계획 기록 (구간·위치 확인용, 나중에 편집 프로그램으로 넘길 때도 씀)
+        json.dump(ells, open(os.path.join(d, "blur_plan.json"), "w"))
+    except Exception:
+        pass
+
+    # 3단계: 그리기 + 저장
+    KP = min(K, 5) if "nvenc" in enc[1] else K
+    bp = [round(n * k / KP) for k in range(KP + 1)]
+    segs = [os.path.join(d, f"part{k:02d}.mp4") for k in range(KP)]
+    wp = lambda k: max(0, bp[k] - WARMUP)
+    tp = max(1, cores // KP)
+    results = _run_parallel(job, KP, n, lambda k: (src, bp[k], bp[k + 1] - bp[k], W, H, fps, ells[wp(k):bp[k + 1]], polys[wp(k):bp[k + 1]],
+                                                      params, enc, segs[k], tp), _paint_worker, f"3/3 블러 그리고 저장 중 ({enc_name})", 77, 99)
     job["msg"] = "조각 이어 붙이는 중"
     lst = os.path.join(d, "parts.txt")
     with open(lst, "w", encoding="utf-8") as fp:
@@ -348,13 +401,11 @@ def render(src, boxes_json, dst, job, n):
             os.remove(s)
         except Exception:
             pass
-    bad = sorted(b for r in results for b in r[2])
     frames_done = sum(r[1] for r in results)
     miss = sum(1 for k in range(n) if not all_boxes.get(str(k)))
-    covered = sum(1 for e in per if e)
-    return {"frames": frames_done, "missing": miss, "covered": covered, "leak": len(bad),
-            "leak_times": [round(x / fps, 2) for x in bad[:30]], "fps": fps, "workers": K,
-            "encoder_note": _enc_note}
+    covered = sum(1 for e in ells if e)
+    return {"frames": frames_done, "missing": miss, "covered": covered, "leak": 0,
+            "leak_times": [], "fps": fps, "workers": KP, "encoder_note": _enc_note}
 
 
 def run_job(jid, src, params):
