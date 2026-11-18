@@ -592,7 +592,9 @@ SIZE_PCT = 80       # 장면 대표 크기 = 장면 안 프레임별 크기 중 
 ASPECT_MAX = 1.6    # 블러 타원의 길쭉함 한도 (1 = 원)
 DEAD = 0.25         # 가려야 할 곳 중심이 블러 중심에서 (블러 짧은 반지름 × 이 값) 안에서 움직이면 블러는 가만히
 POS_SMOOTH = 10     # 위치 다듬기 (프레임)
-SIZE_GLIDE = 15     # 장면 안에서 크기가 바뀔 때 이 프레임에 걸쳐 바꿈
+SIZE_GLIDE = 15     # (예전)
+HAIR_BAND = 0.5     # 모자이크 가장자리에서 (모자이크 짧은 변 × 이 값) 안의 털은 무조건 덮음
+HAIR_BAND_MAX = 150 # 그 거리 최대 (픽셀)
 
 
 def _ell(c, r1, r2, th):
@@ -620,7 +622,11 @@ def plan(per, info, n, fw=1920, fh=1080):
                 bb = e[1]
                 mp = np.asarray(e[2], float) if e[2] and len(e[2]) >= 3 else \
                     np.array([[bb[0], bb[1]], [bb[2], bb[1]], [bb[2], bb[3]], [bb[0], bb[3]]], float)
-                seq.setdefault(("t", e[0]), []).append((i, np.asarray(pts, float), cut, mp))
+                band = float(np.clip(min(bb[2] - bb[0], bb[3] - bb[1]) * HAIR_BAND, 30, HAIR_BAND_MAX))
+                rq = np.asarray(pts, float).copy()                 # 모자이크 가까이 붙은 털·노출까지만 '무조건 덮을 곳'
+                rq[:, 0] = np.clip(rq[:, 0], bb[0] - band, bb[2] + band)
+                rq[:, 1] = np.clip(rq[:, 1], bb[1] - band, bb[3] + band)
+                seq.setdefault(("t", e[0]), []).append((i, np.asarray(pts, float), cut, np.vstack([mp, rq])))
         for e in mper[i]:
             b = e[1]
             bp = np.array([[b[0], b[1]], [b[2], b[1]], [b[2], b[3]], [b[0], b[3]]], float)
@@ -637,6 +643,27 @@ def plan(per, info, n, fw=1920, fh=1080):
         bx = np.array([[it[1][:, 0].min(), it[1][:, 1].min(), it[1][:, 0].max(), it[1][:, 1].max()] for it in items], float)
         forced = [k for k in range(1, len(items)) if items[k][2] or frames[k] != frames[k - 1] + 1]
         segs = _segments(bx, forced, fw, fh)
+        # 자세가 확 바뀌는 순간: 앞 구간 크기로 못 덮는 끝 프레임들은 다음(큰) 구간으로 넘겨 미리 바꿈
+        def _need(k, U):
+            cc = mvee(items[k][3])[0]
+            d = items[k][3] - cc
+            return float(np.sqrt(np.einsum("ij,jk,ik->i", d, U, d).max()))
+        def _shape(a, b):
+            q1 = np.percentile(R1[a:b], SIZE_PCT); q2 = np.percentile(R2[a:b], SIZE_PCT)
+            ratio = float(np.clip(q1 / max(q2, 1.0), 1.0, ASPECT_MAX))
+            ang = 0.5 * np.arctan2(np.median(np.sin(2 * TH[a:b])), np.median(np.cos(2 * TH[a:b])))
+            base = max(q1 / np.sqrt(2) * SIZE_K / ratio, q2 / np.sqrt(2) * SIZE_K)
+            return ratio, ang, base
+        fset = set(forced)
+        for j in range(len(segs) - 1):
+            a, b = segs[j]
+            if b in fset:
+                continue
+            ratio, ang, base = _shape(a, b)
+            U = _ell((0, 0), ratio, 1.0, ang)[1]
+            while b - a > 1 and _need(b - 1, U) > base:
+                b -= 1
+            segs[j] = (a, b); segs[j + 1] = (b, segs[j + 1][1])
         prev_r, prev_end = None, -9
         for a, b in segs:
             # 모양(길쭉함·기울기): 이 구간에서 한 번만
