@@ -371,8 +371,8 @@ def render(src, boxes_json, dst, job, n):
     info += [None] * (n - len(info))
 
     # 2단계: 계획 (키프레임)
-    job["msg"] = "2/3 고정 블러 구간 정하는 중"
-    ells = cover2.plan(per, info, n, W, H)
+    job["msg"] = "2/3 장면별 블러 크기·위치 정하는 중"
+    ells, leak = cover2.plan(per, info, n, W, H)
     polys = [[e[2] for e in per[i]] for i in range(n)]
     try:                                               # 블러 계획 기록 (구간·위치 확인용, 나중에 편집 프로그램으로 넘길 때도 씀)
         json.dump(ells, open(os.path.join(d, "blur_plan.json"), "w"))
@@ -404,8 +404,8 @@ def render(src, boxes_json, dst, job, n):
     frames_done = sum(r[1] for r in results)
     miss = sum(1 for k in range(n) if not all_boxes.get(str(k)))
     covered = sum(1 for e in ells if e)
-    return {"frames": frames_done, "missing": miss, "covered": covered, "leak": 0,
-            "leak_times": [], "fps": fps, "workers": KP, "encoder_note": _enc_note}
+    return {"frames": frames_done, "missing": miss, "covered": covered, "leak": len(leak),
+            "leak_times": [round(x / fps, 2) for x in leak[:30]], "fps": fps, "workers": KP, "encoder_note": _enc_note}
 
 
 def run_job(jid, src, params):
@@ -416,7 +416,7 @@ def run_job(jid, src, params):
         job["msg"] = "시작하는 중"
         try:
             import cover2
-            cover2.SCALE = float(params.get("scale", cover2.SCALE))
+            cover2.SIZE_K = float(params.get("scale", cover2.SIZE_K))
             cover2.BLUR_FRAC = float(params.get("blur", cover2.BLUR_FRAC))
             cover2.FEATHER_W = float(params.get("feather", cover2.FEATHER_W))
             cover2.HAIR = params.get("hair", "1") == "1"

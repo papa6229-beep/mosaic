@@ -15,7 +15,7 @@ import cv2
 SCALE = 1.15        # 감싸는 타원을 이만큼 키움
 PAD_PX = 12         # 추가 여유 (픽셀)
 FEATHER_W = 0.4     # 가장자리 투명해지는 폭 (타원 짧은 반지름 대비)
-FEATHER_MAX = 90    # 번짐 폭 최대 (픽셀)
+FEATHER_MAX = 150   # 번짐 폭 최대 (픽셀)
 BLUR_FRAC = 0.30    # 블러 세기 (타원 짧은 지름 대비)
 HAIR = True         # 음모 찾아서 같이 덮기
 HAIR_REACH = 0.8    # 음모 인정 거리 (원본 모자이크 짧은 변 대비)
@@ -587,12 +587,26 @@ def _segments(bx, forced, fw, fh):
     return out[::-1]
 
 
+SIZE_K = 1.2        # 블러 지름 = 장면 대표 크기(가려야 할 곳의 가로·세로 폭)의 이 배
+SIZE_PCT = 80       # 장면 대표 크기 = 장면 안 프레임별 크기 중 이 백분위 (큰 쪽)
+ASPECT_MAX = 1.6    # 블러 타원의 길쭉함 한도 (1 = 원)
+DEAD = 0.25         # 가려야 할 곳 중심이 블러 중심에서 (블러 짧은 반지름 × 이 값) 안에서 움직이면 블러는 가만히
+POS_SMOOTH = 10     # 위치 다듬기 (프레임)
+SIZE_GLIDE = 15     # 장면 안에서 크기가 바뀔 때 이 프레임에 걸쳐 바꿈
+
+
+def _ell(c, r1, r2, th):
+    v = np.array([[np.cos(th), -np.sin(th)], [np.sin(th), np.cos(th)]])
+    return np.asarray(c, float), v @ np.diag([1 / r1 ** 2, 1 / r2 ** 2]) @ v.T
+
+
 def plan(per, info, n, fw=1920, fh=1080):
-    """2단계(계획): 프리미어 포그 작업처럼 '구간마다 고정 블러'를 정함.
-    - 영상 전체의 덮을 곳(원본 모자이크 + 음모 + 노출)을 먼저 다 보고
-    - 블러가 덮는 면적×시간과 블러를 바꾸는 횟수가 함께 가장 작아지게 구간을 나눔
-    - 구간 안에서는 그 구간의 덮을 곳을 전부 감싸는 타원 하나로 고정 (움직이지도, 모양이 바뀌지도 않음)
-    반환: 프레임마다 [타원, ...]"""
+    """2단계(계획): 포그팀 방식
+    - 장면(화면 전환 사이, 크게 줌이 바뀌면 그 안에서도 나눔)마다 블러 크기·모양을 '한 번' 정해 고정
+      크기 = 그 장면에서 가려야 할 곳(원본 모자이크+음모+노출) 크기의 큰 쪽 대표값 × SIZE_K, 모양은 둥근 타원
+    - 위치는 가려야 할 곳의 중심을 부드럽게 다듬고, 조금 움직이는 건 무시(가만히), 크게 움직일 때만 천천히 따라감
+    반환: (프레임마다 [타원, ...], 블러 밖으로 나간 가려야 할 곳이 있었던 프레임 목록)"""
+    from scipy.ndimage import gaussian_filter1d
     loose = {str(i): [b + [1.0, None] for b in (info[i]["loose"] if info[i] else [])] for i in range(n)}
     mper = build_tracks(loose, n)
     seq = {}
@@ -603,30 +617,81 @@ def plan(per, info, n, fw=1920, fh=1080):
         for e in per[i]:
             pts = info[i]["req"].get(str(e[0]))
             if pts is not None:
-                seq.setdefault(("t", e[0]), []).append((i, np.asarray(pts, float), cut))
+                bb = e[1]
+                mp = np.asarray(e[2], float) if e[2] and len(e[2]) >= 3 else \
+                    np.array([[bb[0], bb[1]], [bb[2], bb[1]], [bb[2], bb[3]], [bb[0], bb[3]]], float)
+                seq.setdefault(("t", e[0]), []).append((i, np.asarray(pts, float), cut, mp))
         for e in mper[i]:
             b = e[1]
-            seq.setdefault(("m", e[0]), []).append((i, np.array([[b[0], b[1]], [b[2], b[1]], [b[2], b[3]], [b[0], b[3]]], float), cut))
+            bp = np.array([[b[0], b[1]], [b[2], b[1]], [b[2], b[3]], [b[0], b[3]]], float)
+            seq.setdefault(("m", e[0]), []).append((i, bp, cut, bp))
     out = [[] for _ in range(n)]
+    leak = set()
     for key, items in seq.items():
         frames = [it[0] for it in items]
+        cores = [mvee(it[1]) for it in items]
+        C = np.array([c[0] for c in cores])
+        AX = [_axes(c[1]) for c in cores]
+        R1 = np.array([max(r) for r, _ in AX]); R2 = np.array([min(r) for r, _ in AX])
+        TH = np.array([np.arctan2(v[1, int(np.argmax(r))], v[0, int(np.argmax(r))]) for r, v in AX])
         bx = np.array([[it[1][:, 0].min(), it[1][:, 1].min(), it[1][:, 0].max(), it[1][:, 1].max()] for it in items], float)
         forced = [k for k in range(1, len(items)) if items[k][2] or frames[k] != frames[k - 1] + 1]
-        sc = SCALE * (1.1 if key[0] == "m" else 1.0)
-        for a, b in _segments(bx, forced, fw, fh):
-            P = cv2.convexHull(np.vstack([items[k][1] for k in range(a, b)]).astype(np.float32)).reshape(-1, 2)
-            E = grow(mvee(P), sc, PAD_PX)
-            el = (E[0].tolist(), E[1].tolist())
+        segs = _segments(bx, forced, fw, fh)
+        prev_r, prev_end = None, -9
+        for a, b in segs:
+            # 모양(길쭉함·기울기): 이 구간에서 한 번만
+            q1 = np.percentile(R1[a:b], SIZE_PCT); q2 = np.percentile(R2[a:b], SIZE_PCT)
+            ratio = float(np.clip(q1 / max(q2, 1.0), 1.0, ASPECT_MAX))
+            ang = 0.5 * np.arctan2(np.median(np.sin(2 * TH[a:b])), np.median(np.cos(2 * TH[a:b])))
+            U = _ell((0, 0), ratio, 1.0, ang)[1]                  # 짧은 반지름 1인 같은 모양
+            # 크기: 이 구간에서 한 번만. 넉넉한 기본 크기와, 원본 모자이크가 구간 내내 쏙 들어가는 크기 중 큰 쪽
+            base = max(q1 / np.sqrt(2) * SIZE_K / ratio, q2 / np.sqrt(2) * SIZE_K)
+            fit = 0.0
+            mc = []
             for k in range(a, b):
-                out[frames[k]].append(el)
-    # 다른 블러 안에 완전히 들어가는 작은 블러는 뺌 (겹쳐 그릴 필요 없음)
-    for i in range(n):
+                mpk = items[k][3]
+                cc = mvee(mpk)[0]
+                d = mpk - cc
+                fit = max(fit, float(np.sqrt(np.einsum("ij,jk,ik->i", d, U, d).max())))
+                mc.append(cc)
+            r2 = max(base, fit * 1.05) + PAD_PX
+            r1 = r2 * ratio
+            A = U / r2 ** 2
+            # 위치: 다듬은 중심을 '끈'처럼 따라감 — 조금 움직이면 가만히, 많이 움직일 때만 따라감
+            cs = C[a:b].copy()
+            if b - a > 3:
+                cs = np.stack([gaussian_filter1d(cs[:, 0], POS_SMOOTH, mode="nearest"),
+                               gaussian_filter1d(cs[:, 1], POS_SMOOTH, mode="nearest")], 1)
+            dead = DEAD * r2
+            cur = cs[0].copy()
+            for k in range(a, b):
+                d = cs[k - a] - cur
+                L = float(np.hypot(*d))
+                if L > dead:
+                    cur = cur + d * (L - dead) / L
+                # 원본 모자이크가 블러 밖으로 나가려 하면, 들어올 만큼만 옮김 (최우선)
+                mpk = items[k][3]
+                if not contains((cur, A), mpk):
+                    tgt = mc[k - a]
+                    lo, hi = 0.0, 1.0
+                    for _ in range(12):
+                        mid = (lo + hi) / 2
+                        if contains((cur + (tgt - cur) * mid, A), mpk):
+                            hi = mid
+                        else:
+                            lo = mid
+                    cur = cur + (tgt - cur) * hi
+                E = (cur.copy(), A)
+                if not contains(E, mpk):
+                    leak.add(frames[k])
+                out[frames[k]].append((E[0].tolist(), E[1].tolist()))
+    for i in range(n):                                     # 다른 블러 안에 완전히 들어가는 블러는 뺌
         if len(out[i]) > 1:
             es = [(np.asarray(c), np.asarray(A)) for c, A in out[i]]
             keep = [el for k, el in enumerate(out[i])
                     if not any(j != k and contains(es[j], boundary(es[k], 24)) for j in range(len(es)))]
             out[i] = keep or out[i][:1]
-    return out
+    return out, sorted(leak)
 
 
 class Painter:
