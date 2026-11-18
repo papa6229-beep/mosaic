@@ -367,7 +367,7 @@ def render(src, boxes_json, dst, job, n):
     else:
         one = json.load(open(boxes_json))
         all_boxes = {k: ([v + [1.0, None]] if v else []) for k, v in one.items()}
-    per = cover2.build_tracks(all_boxes, n)
+    per = cover2.build_tracks(all_boxes, n, W, H)
     ep = os.path.join(os.path.dirname(boxes_json), "exposures.json")
     ex = None
     if os.path.exists(ep):

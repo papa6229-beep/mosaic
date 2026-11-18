@@ -26,7 +26,10 @@ EXPOSE = True       # 노출 탐지(항문·성기·얼굴) 사용
 EXPOSE_EVERY = 1    # 노출 탐지는 매 프레임 (1프레임만 나오는 노출도 있음)
 EXPOSE_SCORE = 0.35
 HOLD = 45           # Lada가 놓쳐도 이 프레임 수(1.5초)만큼 마지막 자리 유지
-PRE = 15            # 처음 나타나기 이 프레임 수(0.5초) 전부터 미리 덮기
+PRE = 5             # 처음 나타나기 이 프레임 수 전부터 미리 덮기 (그 앞에 페이드 3프레임이 더 붙음)
+TAIL_STABLE = 20    # 오래 안정적으로 잡히던 모자이크가 사라지면 이만큼 더 유지 (Lada가 잠깐 놓친 것일 수 있어서)
+GAP_FILL = 20       # 중간에 Lada가 놓친 빈틈은 이 프레임 수까지만 메움
+TAIL_SHORT = 4      # 잠깐 잡혔던 모자이크·화면 밖으로 나간 모자이크는 이만큼만 유지
 CONFIRM = 2         # 이 횟수 이상 잡혀야 진짜 모자이크로 인정 (엉뚱한 한 번은 무시)
 SHRINK_RATIO = 1.6  # 타원이 필요한 크기의 이 배를 넘는 상태가
 SHRINK_AFTER = 15   # 이 프레임 수 넘게 이어지면 천천히 줄임
@@ -50,7 +53,7 @@ def _iou(a, b):
     return inter / ua if ua > 0 else 0.0
 
 
-def build_tracks(all_boxes, n):
+def build_tracks(all_boxes, n, fw=None, fh=None):
     """all_boxes: {"프레임": [[x1,y1,x2,y2,확신도,윤곽], ...]} → 프레임마다 [(추적번호, 상자, 윤곽, 이번에잡힘)]"""
     tracks = []          # {"id", "box", "poly", "last", "hits": {프레임: (상자, 윤곽)}}
     active = []
@@ -90,12 +93,19 @@ def build_tracks(all_boxes, n):
             continue
         fr = sorted(t["hits"])
         first, last = fr[0], fr[-1]
+        # 사라진 뒤 얼마나 유지할지: 오래 안정적으로 잡히던 것만 조금 길게, 화면 밖으로 나갔으면 바로 끝
+        recent = sum(1 for f in fr if last - 30 <= f <= last)
+        tail = TAIL_STABLE if recent >= 12 else TAIL_SHORT
+        lb = t["hits"][last][0]
+        if fw and fh and (lb[0] <= 4 or lb[1] <= 4 or lb[2] >= fw - 4 or lb[3] >= fh - 4):
+            tail = TAIL_SHORT
+        pre = PRE if len(fr) >= 6 else 0
         k = 0
-        for i in range(max(0, first - PRE), min(n, last + HOLD + 1)):
+        for i in range(max(0, first - pre), min(n, last + tail + 1)):
             while k + 1 < len(fr) and fr[k + 1] <= i:
                 k += 1
             lh = fr[k] if fr[k] <= i else first          # 마지막으로 잡힌 프레임 (처음 전이면 첫 프레임)
-            if i > first and i - lh > HOLD:
+            if i > first and i - lh > (GAP_FILL if i <= last else tail):   # 중간에 잠깐 놓친 건 메움, 오래 빈 건 안 메움
                 continue
             b, p = t["hits"][lh]
             per[i].append((t["id"], b, p, i in t["hits"]))   # 놓친 동안엔 마지막 자리 그대로 (미끄러지지 않음)
@@ -629,7 +639,7 @@ class Analyzer:
         return {"req": {str(k): v.tolist() for k, v in req.items()}, "loose": loose, "cut": bool(cut)}
 
 
-SWITCH_COST = 40    # 블러를 한 번 바꾸는 비용 (화면 전체를 이 프레임 수만큼 덮는 것과 같은 무게) — 클수록 덜 바꿈
+SWITCH_COST = 15    # 블러를 한 번 바꾸는 비용 (화면 전체를 이 프레임 수만큼 덮는 것과 같은 무게) — 클수록 덜 바꿈
 SEG_MAX = 900       # 고정 블러 한 구간 최대 길이 (프레임, 30초)
 
 
@@ -662,6 +672,7 @@ def _segments(bx, forced, fw, fh):
 
 SIZE_K = 0.8        # 블러 지름 = 장면 대표 크기(가려야 할 곳의 가로·세로 폭)의 이 배
 SIZE_PCT = 80       # 장면 대표 크기 = 장면 안 프레임별 크기 중 이 백분위 (큰 쪽)
+MIN_R = 50          # 블러 최소 반지름 (픽셀)
 ASPECT_MAX = 1.6    # 블러 타원의 길쭉함 한도 (1 = 원)
 DEAD = 0.25         # 가려야 할 곳 중심이 블러 중심에서 (블러 짧은 반지름 × 이 값) 안에서 움직이면 블러는 가만히
 POS_SMOOTH = 10     # 위치 다듬기 (프레임)
@@ -683,8 +694,17 @@ def plan(per, info, n, fw=1920, fh=1080):
     - 위치는 가려야 할 곳의 중심을 부드럽게 다듬고, 조금 움직이는 건 무시(가만히), 크게 움직일 때만 천천히 따라감
     반환: (프레임마다 [타원, ...], 블러 밖으로 나간 가려야 할 곳이 있었던 프레임 목록)"""
     from scipy.ndimage import gaussian_filter1d
-    loose = {str(i): [b + [1.0, None] for b in (info[i]["loose"] if info[i] else [])] for i in range(n)}
-    mper = build_tracks(loose, n)
+    # 모자이크와 떨어진 노출 탐지는 앞뒤 5프레임 안에서 2번 이상 더 잡혀야 인정 (한두 프레임 오탐 무시)
+    lraw = [info[i]["loose"] if info[i] else [] for i in range(n)]
+    loose = {}
+    for i in range(n):
+        keep = []
+        for b in lraw[i]:
+            cnt = sum(1 for j in range(max(0, i - 5), min(n, i + 6)) if j != i and any(_iou(b, q) > 0.2 for q in lraw[j]))
+            if cnt >= 2:
+                keep.append(b + [1.0, None])
+        loose[str(i)] = keep
+    mper = build_tracks(loose, n, fw, fh)
     seq = {}
     for i in range(n):
         if not info[i]:
@@ -766,7 +786,11 @@ def plan(per, info, n, fw=1920, fh=1080):
                     if best is None or ar < best[0] - 1e-6:
                         best = (ar, ratio, ang, U_, base_, f_)
             _, ratio, ang, U, base, fit = best
-            r2 = max(base, fit * 1.05) + PAD_PX
+            if max(q1, q2) < 120 and ratio > 1.25:          # 작은 블러는 원에 가깝게
+                ratio = 1.25
+                U = _ell((0, 0), ratio, 1.0, ang)[1]
+                fit = max(float(np.sqrt(np.einsum("ij,jk,ik->i", d, U, d).max())) for d in ds)
+            r2 = max(base, fit * 1.05, MIN_R) + PAD_PX
             r1 = r2 * ratio
             A = U / r2 ** 2
             # 위치: 다듬은 중심을 '끈'처럼 따라감 — 조금 움직이면 가만히, 많이 움직일 때만 따라감
