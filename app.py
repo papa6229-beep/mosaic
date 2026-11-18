@@ -299,7 +299,16 @@ def run_job(jid, src, params):
             job.update(pct=100, msg="완료", done=True, out=out, report=rep)
         except Exception as e:
             traceback.print_exc()
-            job.update(error=str(e), done=True, msg="오류")
+            info = ""
+            try:   # 그래픽카드 상태를 오류와 함께 보여줌 (원인 확인용)
+                import torch
+                if torch.cuda.is_available():
+                    free, total = torch.cuda.mem_get_info()
+                    info = (f" [그래픽카드 {torch.cuda.get_device_name(0)}: 전체 {total / 1e9:.1f}GB 중 남은 {free / 1e9:.1f}GB, "
+                            f"이 프로그램이 쓰는 중 {torch.cuda.memory_reserved() / 1e9:.1f}GB · 진행 {job.get('pct', 0)}%]")
+            except Exception:
+                pass
+            job.update(error=str(e)[:300] + info, done=True, msg="오류")
 
 
 # ---------------- 화면 ----------------
