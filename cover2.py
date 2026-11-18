@@ -27,7 +27,7 @@ EXPOSE_EVERY = 2    # 노출 탐지는 이 프레임마다 한 번 (사이 프�
 EXPOSE_SCORE = 0.35
 HOLD = 45           # Lada가 놓쳐도 이 프레임 수(1.5초)만큼 마지막 자리 유지
 PRE = 15            # 처음 나타나기 이 프레임 수(0.5초) 전부터 미리 덮기
-CONFIRM = 3         # 한 자리에서 이 횟수 이상 잡혀야 진짜 모자이크로 인정 (엉뚱한 한두 번 무시)
+CONFIRM = 2         # 이 횟수 이상 잡혀야 진짜 모자이크로 인정 (엉뚱한 한 번은 무시)
 SHRINK_RATIO = 1.6  # 타원이 필요한 크기의 이 배를 넘는 상태가
 SHRINK_AFTER = 15   # 이 프레임 수 넘게 이어지면 천천히 줄임
 FILL_RES = 120      # 블러 재료 계산 크기
@@ -96,7 +96,12 @@ def build_tracks(all_boxes, n):
     for i in range(n):
         live = [e[1] for e in per[i] if e[3]]
         if live:
-            per[i] = [e for e in per[i] if e[3] or not any(_iou(e[1], b) > 0.1 for b in live)]
+            def near(e, b):          # 기억 자리 근처에서 다른 모자이크가 실제로 잡히면 = 같은 게 움직인 것 → 기억 자리는 버림
+                eb = e[1]
+                size = max(eb[2] - eb[0], eb[3] - eb[1], b[2] - b[0], b[3] - b[1])
+                d = np.hypot((eb[0] + eb[2] - b[0] - b[2]) / 2, (eb[1] + eb[3] - b[1] - b[3]) / 2)
+                return _iou(eb, b) > 0.1 or d < 2.5 * size
+            per[i] = [e for e in per[i] if e[3] or not any(near(e, b) for b in live)]
     return per
 
 
