@@ -141,6 +141,7 @@ def detect_fake(frames):
 
 
 def detect_lada(frames):
+    """반환: 프레임마다 (가장 큰 모자이크 상자, 찾은 모자이크 전부 [x1,y1,x2,y2,확신도,윤곽])"""
     import torch
     model = get_model()
     dev = 0 if torch.cuda.is_available() else "cpu"
@@ -148,16 +149,31 @@ def detect_lada(frames):
     out = []
     for r in res:
         if r.boxes is None or len(r.boxes) == 0:
-            out.append(None)
+            out.append((None, []))
             continue
         b = r.boxes.xyxy.cpu().numpy()
+        conf = r.boxes.conf.cpu().numpy()
+        polys = []
+        try:                                   # 모자이크의 실제 윤곽 (있으면)
+            for p in r.masks.xy:
+                p = cv2.approxPolyDP(np.asarray(p, np.float32).reshape(-1, 1, 2), 2.0, True)
+                polys.append(p.reshape(-1, 2).round().astype(int).tolist())
+        except Exception:
+            polys = []
+        allb = []
+        for k in range(len(b)):
+            allb.append([round(float(v), 1) for v in b[k]] + [round(float(conf[k]), 3), polys[k] if k < len(polys) else None])
         area = (b[:, 2] - b[:, 0]) * (b[:, 3] - b[:, 1])
-        out.append([float(v) for v in b[int(area.argmax())]])   # 가장 큰 모자이크 하나
+        out.append(([float(v) for v in b[int(area.argmax())]], allb))   # 가장 큰 모자이크 + 전부
     return out
 
 
+def detect_fake_all(frames):
+    return [(b, [b + [1.0, None]] if b else []) for b in detect_fake(frames)]
+
+
 def detect_all(src, job, n):
-    detect = detect_fake if FAKE else detect_lada
+    detect = detect_fake_all if FAKE else detect_lada
     if not FAKE:
         get_model(job)
     try:
@@ -165,7 +181,7 @@ def detect_all(src, job, n):
         how = "그래픽카드" if torch.cuda.is_available() else "CPU (느림: 그래픽카드를 못 쓰는 상태)"
     except Exception:
         how = "CPU"
-    boxes, batch, i = {}, [], 0
+    boxes, all_boxes, batch, i = {}, {}, [], 0
     t0 = time.time()
     it = frames(src)
     while True:
@@ -173,8 +189,9 @@ def detect_all(src, job, n):
         if f is not None:
             batch.append(f)
         if batch and (len(batch) == 8 or f is None):
-            for k, b in enumerate(detect(batch)):
+            for k, (b, allb) in enumerate(detect(batch)):
                 boxes[str(i + k)] = b
+                all_boxes[str(i + k)] = allb
             i += len(batch)
             batch = []
             job["pct"] = int(i * 50 / max(n, 1))
@@ -183,7 +200,7 @@ def detect_all(src, job, n):
             job["msg"] = f"원본 모자이크 위치 찾는 중 {i}/{n} 프레임 · {how} · 이 단계 남은 시간 약 {fmt_sec(left)}"
         if f is None:
             break
-    return boxes, i
+    return boxes, all_boxes, i
 
 
 # ---------------- 2단계: 덮기 + 저장 ----------------
@@ -242,11 +259,15 @@ def run_job(jid, src, params):
             ensure_model(job)
             n = int(cv2.VideoCapture(src).get(cv2.CAP_PROP_FRAME_COUNT))
             t0 = time.time()
-            boxes, n2 = detect_all(src, job, n)
+            boxes, all_boxes, n2 = detect_all(src, job, n)
             t_detect = time.time() - t0
             n = max(n, n2)
             bj = os.path.join(JOBS, jid, "boxes.json")
             json.dump(boxes, open(bj, "w"))
+            try:   # 찾은 원본 모자이크 전부 (여러 개·윤곽까지) — 다음 개선용
+                json.dump(all_boxes, open(os.path.join(JOBS, jid, "boxes_all.json"), "w"), separators=(",", ":"))
+            except Exception:
+                traceback.print_exc()
             out = os.path.join(JOBS, jid, os.path.splitext(os.path.basename(src))[0] + "_cover.mp4")
             t1 = time.time()
             rep = render(src, bj, out, job, n)
