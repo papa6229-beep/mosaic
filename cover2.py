@@ -593,8 +593,8 @@ ASPECT_MAX = 1.6    # 블러 타원의 길쭉함 한도 (1 = 원)
 DEAD = 0.25         # 가려야 할 곳 중심이 블러 중심에서 (블러 짧은 반지름 × 이 값) 안에서 움직이면 블러는 가만히
 POS_SMOOTH = 10     # 위치 다듬기 (프레임)
 SIZE_GLIDE = 15     # (예전)
-HAIR_BAND = 0.5     # 모자이크 가장자리에서 (모자이크 짧은 변 × 이 값) 안의 털은 무조건 덮음
-HAIR_BAND_MAX = 150 # 그 거리 최대 (픽셀)
+HAIR_BAND = 0.3     # 모자이크 가장자리에서 (모자이크 짧은 변 × 이 값) 안의 털은 무조건 덮음
+HAIR_BAND_MAX = 90  # 그 거리 최대 (픽셀)
 
 
 def _ell(c, r1, r2, th):
@@ -635,17 +635,21 @@ def plan(per, info, n, fw=1920, fh=1080):
     leak = set()
     for key, items in seq.items():
         frames = [it[0] for it in items]
-        cores = [mvee(it[1]) for it in items]
-        C = np.array([c[0] for c in cores])
-        AX = [_axes(c[1]) for c in cores]
-        R1 = np.array([max(r) for r, _ in AX]); R2 = np.array([min(r) for r, _ in AX])
-        TH = np.array([np.arctan2(v[1, int(np.argmax(r))], v[0, int(np.argmax(r))]) for r, v in AX])
-        bx = np.array([[it[1][:, 0].min(), it[1][:, 1].min(), it[1][:, 0].max(), it[1][:, 1].max()] for it in items], float)
+        C, R1, R2, TH = [], [], [], []                      # 빠른 계산: 가장 작게 감싸는 회전 사각형으로 크기·방향
+        for it in items:
+            (cx, cy), (w, h), a_ = cv2.minAreaRect(it[1].astype(np.float32))
+            if w < h:
+                w, h, a_ = h, w, a_ + 90
+            C.append((cx, cy)); R1.append(w / np.sqrt(2)); R2.append(max(h, 1.0) / np.sqrt(2)); TH.append(np.deg2rad(a_))
+        C, R1, R2, TH = np.array(C, float), np.array(R1), np.array(R2), np.array(TH)
+        bx = np.array([[it[3][:, 0].min(), it[3][:, 1].min(), it[3][:, 0].max(), it[3][:, 1].max()] for it in items], float)
         forced = [k for k in range(1, len(items)) if items[k][2] or frames[k] != frames[k - 1] + 1]
         segs = _segments(bx, forced, fw, fh)
         # 자세가 확 바뀌는 순간: 앞 구간 크기로 못 덮는 끝 프레임들은 다음(큰) 구간으로 넘겨 미리 바꿈
+        def _ctr(P):
+            return (P.min(0) + P.max(0)) / 2
         def _need(k, U):
-            cc = mvee(items[k][3])[0]
+            cc = _ctr(items[k][3])
             d = items[k][3] - cc
             return float(np.sqrt(np.einsum("ij,jk,ik->i", d, U, d).max()))
         def _shape(a, b):
@@ -661,26 +665,31 @@ def plan(per, info, n, fw=1920, fh=1080):
                 continue
             ratio, ang, base = _shape(a, b)
             U = _ell((0, 0), ratio, 1.0, ang)[1]
-            while b - a > 1 and _need(b - 1, U) > base:
-                b -= 1
+            nd = [_need(k, U) for k in range(a, b)]
+            usual = max(base, float(np.percentile(nd, 90)))   # 이 구간에서 평소 필요한 크기
+            moved = 0
+            # 끝부분에 '평소보다 확 큰' 프레임만 다음 구간으로 넘김 (최대 0.5초). 구간을 통째로 넘기지 않음
+            while b - a > 1 and moved < 15 and nd[b - 1 - a] > usual * 1.15:
+                b -= 1; moved += 1
             segs[j] = (a, b); segs[j + 1] = (b, segs[j + 1][1])
         prev_r, prev_end = None, -9
         for a, b in segs:
-            # 모양(길쭉함·기울기): 이 구간에서 한 번만
+            # 모양(길쭉함·기울기)과 크기: 이 구간에서 한 번만.
+            # 구간 내내 '무조건 덮을 곳'이 들어가는 타원 중 가장 작은 모양을 고름 (각도·길쭉함 후보 중에서)
             q1 = np.percentile(R1[a:b], SIZE_PCT); q2 = np.percentile(R2[a:b], SIZE_PCT)
-            ratio = float(np.clip(q1 / max(q2, 1.0), 1.0, ASPECT_MAX))
-            ang = 0.5 * np.arctan2(np.median(np.sin(2 * TH[a:b])), np.median(np.cos(2 * TH[a:b])))
-            U = _ell((0, 0), ratio, 1.0, ang)[1]                  # 짧은 반지름 1인 같은 모양
-            # 크기: 이 구간에서 한 번만. 넉넉한 기본 크기와, 원본 모자이크가 구간 내내 쏙 들어가는 크기 중 큰 쪽
-            base = max(q1 / np.sqrt(2) * SIZE_K / ratio, q2 / np.sqrt(2) * SIZE_K)
-            fit = 0.0
-            mc = []
-            for k in range(a, b):
-                mpk = items[k][3]
-                cc = mvee(mpk)[0]
-                d = mpk - cc
-                fit = max(fit, float(np.sqrt(np.einsum("ij,jk,ik->i", d, U, d).max())))
-                mc.append(cc)
+            mc = [_ctr(items[k][3]) for k in range(a, b)]
+            ds = [items[k][3] - mc[k - a] for k in range(a, b)]
+            best = None
+            for ratio in (1.0, 1.2, 1.4, ASPECT_MAX):
+                for ang in np.linspace(0, np.pi, 12, endpoint=False):
+                    U_ = _ell((0, 0), ratio, 1.0, ang)[1]
+                    f_ = max(float(np.sqrt(np.einsum("ij,jk,ik->i", d, U_, d).max())) for d in ds)
+                    base_ = max(q1 / np.sqrt(2) * SIZE_K / ratio, q2 / np.sqrt(2) * SIZE_K)
+                    r2_ = max(base_, f_ * 1.05)
+                    ar = r2_ * r2_ * ratio
+                    if best is None or ar < best[0] - 1e-6:
+                        best = (ar, ratio, ang, U_, base_, f_)
+            _, ratio, ang, U, base, fit = best
             r2 = max(base, fit * 1.05) + PAD_PX
             r1 = r2 * ratio
             A = U / r2 ** 2
