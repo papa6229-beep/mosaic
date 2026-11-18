@@ -14,16 +14,16 @@ import cv2
 # ---------- 조절 값 ----------
 SCALE = 1.15        # 감싸는 타원을 이만큼 키움
 PAD_PX = 12         # 추가 여유 (픽셀)
-FEATHER_W = 0.4     # 가장자리 투명해지는 폭 (타원 짧은 반지름 대비)
+FEATHER_W = 0.5     # 가장자리 투명해지는 폭 (타원 짧은 반지름 대비)
 FEATHER_MAX = 150   # 번짐 폭 최대 (픽셀)
-BLUR_FRAC = 0.30    # 블러 세기 (타원 짧은 지름 대비)
+BLUR_FRAC = 0.20    # 블러 세기 (타원 짧은 지름 대비)
 HAIR = True         # 음모 찾아서 같이 덮기
 HAIR_REACH = 0.8    # 음모 인정 거리 (원본 모자이크 짧은 변 대비)
 REACH_MIN, REACH_MAX = 40, 250   # 음모 인정 거리 최소/최대 (픽셀)
 HAIR_TEX = 2.2      # 음모: 가닥 결이 맨살의 이 배수보다 큼
 HAIR_MEM = 8        # 음모를 놓쳐도 이 프레임 수만큼 기억
 EXPOSE = True       # 노출 탐지(항문·성기·얼굴) 사용
-EXPOSE_EVERY = 2    # 노출 탐지는 이 프레임마다 한 번 (사이 프레임은 직전 결과 사용)
+EXPOSE_EVERY = 1    # 노출 탐지는 매 프레임 (1프레임만 나오는 노출도 있음)
 EXPOSE_SCORE = 0.35
 HOLD = 45           # Lada가 놓쳐도 이 프레임 수(1.5초)만큼 마지막 자리 유지
 PRE = 15            # 처음 나타나기 이 프레임 수(0.5초) 전부터 미리 덮기
@@ -260,7 +260,11 @@ def natural_fill(sub, need, sigma, cov):
         small = cv2.inpaint(small, msk, 3, cv2.INPAINT_TELEA)
     s2 = max(1.0, sigma / f)
     k = int(s2 * 3) * 2 + 1
-    small = cv2.GaussianBlur(small, (k, k), s2)
+    if hasattr(cv2, "stackBlur") and k > 15:          # 아주 센 흐림은 빠른 방식으로 (모양은 가우시안과 거의 같음)
+        k2 = int(s2 * 2.5) * 2 + 1
+        small = cv2.stackBlur(small, (k2, k2))
+    else:
+        small = cv2.GaussianBlur(small, (k, k), s2)
     return cv2.resize(small, (w, h), interpolation=cv2.INTER_CUBIC)
 
 
@@ -286,6 +290,72 @@ def exposures(frame):
                             "ARMPITS_EXPOSED", "ARMPITS_COVERED", "FEET_EXPOSED", "FEET_COVERED"):
             faces.append((d["class"], b))
     return must, faces
+
+
+MUST_CLS = ("ANUS_EXPOSED", "FEMALE_GENITALIA_EXPOSED", "MALE_GENITALIA_EXPOSED")
+FACE_CLS = ("FACE_FEMALE", "FACE_MALE", "FEMALE_BREAST_EXPOSED", "FEMALE_BREAST_COVERED",
+            "ARMPITS_EXPOSED", "ARMPITS_COVERED", "FEET_EXPOSED", "FEET_COVERED")
+
+
+class NudeBatch:
+    """노출 탐지(NudeNet)를 여러 프레임 한꺼번에. 그래픽카드가 있으면 그래픽카드로 (같은 모델을 torch로 옮겨 실행)"""
+    def __init__(self, size=320):
+        import os, nudenet
+        mod = nudenet.nudenet
+        self.labels = getattr(mod, "__labels")
+        path = os.path.join(os.path.dirname(mod.__file__), "320n.onnx")
+        self.size, self.how, self.torch, self.sess = size, "CPU", None, None
+        try:
+            import torch, onnx, onnx2torch
+            if torch.cuda.is_available():
+                self.torch = onnx2torch.convert(onnx.load(path)).eval().cuda().half()
+                self.how = "그래픽카드"
+        except Exception:
+            self.torch = None
+        if self.torch is None:
+            import onnxruntime
+            self.sess = onnxruntime.InferenceSession(path)
+            self.inp = self.sess.get_inputs()[0].name
+
+    def detect(self, frames):
+        blobs, meta = [], []
+        for f in frames:
+            h, w = f.shape[:2]
+            m = max(h, w)
+            pad = cv2.copyMakeBorder(f, 0, m - h, 0, m - w, cv2.BORDER_CONSTANT)
+            blobs.append(cv2.dnn.blobFromImage(pad, 1 / 255.0, (self.size, self.size), (0, 0, 0), swapRB=False, crop=False))   # 원래 NudeNet과 같은 색 순서
+            meta.append((w, h, m))
+        x = np.vstack(blobs)
+        if self.torch is not None:
+            import torch
+            with torch.no_grad():
+                out = self.torch(torch.from_numpy(x).cuda().half()).float().cpu().numpy()
+        else:
+            out = self.sess.run(None, {self.inp: x})[0]
+        res = []
+        for o, (w, h, m) in zip(out, meta):
+            o = o.T                                   # (2100, 4+클래스)
+            sc = o[:, 4:]; cid = sc.argmax(1); ms = sc.max(1)
+            keep = ms >= 0.2
+            o, cid, ms = o[keep], cid[keep], ms[keep]
+            k = m / self.size
+            bx = np.stack([(o[:, 0] - o[:, 2] / 2) * k, (o[:, 1] - o[:, 3] / 2) * k, o[:, 2] * k, o[:, 3] * k], 1)
+            bx[:, 0] = bx[:, 0].clip(0, w); bx[:, 1] = bx[:, 1].clip(0, h)
+            bx[:, 2] = np.minimum(bx[:, 2], w - bx[:, 0]); bx[:, 3] = np.minimum(bx[:, 3], h - bx[:, 1])
+            idx = cv2.dnn.NMSBoxes(bx.tolist(), ms.tolist(), 0.25, 0.45) if len(bx) else []
+            must, faces = [], []
+            for j in np.array(idx).reshape(-1):
+                if ms[j] < EXPOSE_SCORE:
+                    continue
+                x0, y0, ww, hh = [float(v) for v in bx[j]]
+                b = [x0, y0, x0 + ww, y0 + hh]
+                c = self.labels[int(cid[j])]
+                if c in MUST_CLS:
+                    must.append(b)
+                elif c in FACE_CLS:
+                    faces.append((c, b))
+            res.append({"must": must, "faces": faces})
+        return res
 
 
 class Renderer:
@@ -511,13 +581,16 @@ class Analyzer:
         self.must_mem = []
         self.prev_small = None
 
-    def analyze(self, frame, i, entries):
+    def analyze(self, frame, i, entries, exp=None):
         small = cv2.resize(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), (64, 36), interpolation=cv2.INTER_AREA).astype(np.float32)
         cut = self.prev_small is not None and np.abs(small - self.prev_small).mean() > CUT_DIFF
         self.prev_small = small
         if cut:
             self.hair.clear(); self.must_mem = []
-        if EXPOSE and (i - self.exp_i >= EXPOSE_EVERY or cut):
+        if exp is not None:                       # 위치 찾기 단계에서 그래픽카드로 매 프레임 미리 찾아 둔 결과
+            self.exp = (exp["must"], [tuple(f) for f in exp["faces"]])
+            self.must_mem = [(j, b) for j, b in self.must_mem if i - j <= 6] + [(i, b) for b in self.exp[0]]
+        elif EXPOSE and (i - self.exp_i >= EXPOSE_EVERY or cut):
             try:
                 self.exp = exposures(frame)
             except Exception:
@@ -587,7 +660,7 @@ def _segments(bx, forced, fw, fh):
     return out[::-1]
 
 
-SIZE_K = 1.2        # 블러 지름 = 장면 대표 크기(가려야 할 곳의 가로·세로 폭)의 이 배
+SIZE_K = 0.8        # 블러 지름 = 장면 대표 크기(가려야 할 곳의 가로·세로 폭)의 이 배
 SIZE_PCT = 80       # 장면 대표 크기 = 장면 안 프레임별 크기 중 이 백분위 (큰 쪽)
 ASPECT_MAX = 1.6    # 블러 타원의 길쭉함 한도 (1 = 원)
 DEAD = 0.25         # 가려야 할 곳 중심이 블러 중심에서 (블러 짧은 반지름 × 이 값) 안에서 움직이면 블러는 가만히
@@ -735,6 +808,9 @@ class Painter:
     def __init__(self):
         self.fill = None
         self.prev_small = None
+        self.akey = None
+        self.alpha = None
+        self.a3 = None
 
     def paint(self, frame, ells, polys):
         H, W = frame.shape[:2]
@@ -757,14 +833,22 @@ class Painter:
         Y1 = int(min(H, max(c[1] + R for c, _, _, _, R in boxes) + 1))
         if X1 - X0 < 4 or Y1 - Y0 < 4:
             return frame, None
-        yy, xx = np.mgrid[Y0:Y1, X0:X1].astype(np.float32)
-        alpha = np.zeros((Y1 - Y0, X1 - X0), np.float32)
-        for c, A, r, F, R in boxes:
-            dx, dy = xx - c[0], yy - c[1]
-            q = A[0, 0] * dx * dx + 2 * A[0, 1] * dx * dy + A[1, 1] * dy * dy
-            rr = np.sqrt(np.maximum(q, 0))
-            t = np.clip(1 - (rr - 1) * np.sqrt(r[0] * r[1]) / F, 0, 1)
-            alpha = np.maximum(alpha, np.where(rr <= 1, 1.0, t * t * (3 - 2 * t)))
+        key = (X0, Y0, X1, Y1, tuple(np.round(np.concatenate([np.ravel(c) for c, A, _, _, _ in boxes] +
+                                                             [np.ravel(A) * 1e6 for c, A, _, _, _ in boxes]), 2)))
+        if self.akey == key:                         # 블러가 가만히 있으면 투명도 계산을 다시 하지 않음 (빠르게)
+            alpha = self.alpha
+        else:
+            yy, xx = np.mgrid[Y0:Y1, X0:X1].astype(np.float32)
+            alpha = np.zeros((Y1 - Y0, X1 - X0), np.float32)
+            for c, A, r, F, R in boxes:
+                dx, dy = xx - c[0], yy - c[1]
+                q = A[0, 0] * dx * dx + 2 * A[0, 1] * dx * dy + A[1, 1] * dy * dy
+                rr = np.sqrt(np.maximum(q, 0))
+                t = np.clip(1 - (rr - 1) * np.sqrt(r[0] * r[1]) / F, 0, 1)
+                alpha = np.maximum(alpha, np.where(rr <= 1, 1.0, t * t * (3 - 2 * t)))
+            alpha = alpha.astype(np.float32)
+            self.akey, self.alpha = key, alpha
+            self.a3 = cv2.merge([alpha, alpha, alpha])
         need = np.zeros((Y1 - Y0, X1 - X0), np.uint8)
         for p in polys:
             if p is not None and len(p) >= 3:
@@ -779,7 +863,7 @@ class Painter:
                 cur = soft[oy0 - Y0:oy1 - Y0, ox0 - X0:ox1 - X0]
                 soft[oy0 - Y0:oy1 - Y0, ox0 - X0:ox1 - X0] = FILL_KEEP * ps[oy0 - pY0:oy1 - pY0, ox0 - pX0:ox1 - pX0] + (1 - FILL_KEEP) * cur
         self.fill = ((X0, Y0, X1, Y1), soft)
-        a = alpha[..., None]
         out = frame.copy()
-        out[Y0:Y1, X0:X1] = (sub.astype(np.float32) * (1 - a) + soft * a).clip(0, 255).astype(np.uint8)
+        sf = sub.astype(np.float32)
+        out[Y0:Y1, X0:X1] = np.clip(cv2.add(sf, cv2.multiply(cv2.subtract(soft, sf), self.a3)), 0, 255).astype(np.uint8)
         return out, (X0, Y0, alpha)

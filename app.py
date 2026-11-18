@@ -208,7 +208,16 @@ def detect_all(src, job, n):
         how = "그래픽카드" if torch.cuda.is_available() else "CPU (느림: 그래픽카드를 못 쓰는 상태)"
     except Exception:
         how = "CPU"
-    boxes, all_boxes, batch, i = {}, {}, [], 0
+    boxes, all_boxes, exps, batch, i = {}, {}, {}, [], 0
+    nude = None
+    if not FAKE:
+        try:                                             # 노출 탐지도 여기서 같이 (매 프레임, 그래픽카드가 있으면 그래픽카드로)
+            import cover2
+            nude = cover2.NudeBatch()
+            job["nude_how"] = nude.how
+        except Exception:
+            traceback.print_exc()
+            nude = None
     t0 = time.time()
     it = frames(src)
     while True:
@@ -219,15 +228,23 @@ def detect_all(src, job, n):
             for k, (b, allb) in enumerate(detect(batch)):
                 boxes[str(i + k)] = b
                 all_boxes[str(i + k)] = allb
+            if nude is not None:
+                try:
+                    for k, e in enumerate(nude.detect(batch)):
+                        exps[str(i + k)] = e
+                except Exception:
+                    traceback.print_exc()
+                    nude = None
+                    exps = {}
             i += len(batch)
             batch = []
             job["pct"] = int(i * 50 / max(n, 1))
             el = time.time() - t0
             left = el / max(i, 1) * (n - i)
-            job["msg"] = f"원본 모자이크 위치 찾는 중 {i}/{n} 프레임 · {how} · 이 단계 남은 시간 약 {fmt_sec(left)}"
+            job["msg"] = f"원본 모자이크 위치·노출 찾는 중 {i}/{n} 프레임 · {how} · 이 단계 남은 시간 약 {fmt_sec(left)}"
         if f is None:
             break
-    return boxes, all_boxes, i
+    return boxes, all_boxes, exps if (nude is not None and len(exps) == i) else None, i
 
 
 # ---------------- 2단계: 덮기 + 저장 ----------------
@@ -240,7 +257,7 @@ def _dec(src, w0, total, W, H, fps):
                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=W * H * 3 * 4)
 
 
-def _scan_worker(src, start, count, W, H, fps, entries, params, outp, counter, q):
+def _scan_worker(src, start, count, W, H, fps, entries, exps, params, outp, counter, q):
     """1단계(훑기): 이 조각의 프레임마다 '반드시 덮을 곳'을 모아 파일로 저장"""
     try:
         import cover2, pickle
@@ -257,7 +274,7 @@ def _scan_worker(src, start, count, W, H, fps, entries, params, outp, counter, q
                 break
             f = np.frombuffer(buf, np.uint8).reshape(H, W, 3)
             i = w0 + j
-            r = A.analyze(f, i, entries[j] if j < len(entries) else [])
+            r = A.analyze(f, i, entries[j] if j < len(entries) else [], exps[j] if exps is not None and j < len(exps) else None)
             if i >= start:
                 res.append(r)
                 with counter.get_lock():
@@ -351,9 +368,17 @@ def render(src, boxes_json, dst, job, n):
         one = json.load(open(boxes_json))
         all_boxes = {k: ([v + [1.0, None]] if v else []) for k, v in one.items()}
     per = cover2.build_tracks(all_boxes, n)
+    ep = os.path.join(os.path.dirname(boxes_json), "exposures.json")
+    ex = None
+    if os.path.exists(ep):
+        try:
+            ed = json.load(open(ep))
+            ex = [ed.get(str(i), {"must": [], "faces": []}) for i in range(n)]
+        except Exception:
+            ex = None
     enc, enc_name = encoder_args()
     cores = os.cpu_count() or 2
-    K = max(1, min(cores, 8, n // 150))
+    K = max(1, min(cores, 8, n // 60))
     threads = max(1, cores // K)
     params = {k: getattr(cover2, k) for k in ("SCALE", "BLUR_FRAC", "FEATHER_W", "HAIR", "HAIR_REACH")}
     d = os.path.dirname(dst)
@@ -362,7 +387,7 @@ def render(src, boxes_json, dst, job, n):
 
     # 1단계: 훑기 (덮을 곳 모으기)
     scans = [os.path.join(d, f"scan{k:02d}.pkl") for k in range(K)]
-    _run_parallel(job, K, n, lambda k: (src, bounds[k], bounds[k + 1] - bounds[k], W, H, fps, per[wb(k):bounds[k + 1]], params, scans[k]),
+    _run_parallel(job, K, n, lambda k: (src, bounds[k], bounds[k + 1] - bounds[k], W, H, fps, per[wb(k):bounds[k + 1]], (ex[wb(k):bounds[k + 1]] if ex else None), params, scans[k]),
                   _scan_worker, "1/3 덮을 곳 훑는 중", 50, 75)
     info = []
     for sp in scans:
@@ -424,7 +449,7 @@ def run_job(jid, src, params):
             ensure_model(job)
             n = int(cv2.VideoCapture(src).get(cv2.CAP_PROP_FRAME_COUNT))
             t0 = time.time()
-            boxes, all_boxes, n2 = detect_all(src, job, n)
+            boxes, all_boxes, exps, n2 = detect_all(src, job, n)
             t_detect = time.time() - t0
             n = max(n, n2)
             bj = os.path.join(JOBS, jid, "boxes.json")
@@ -433,6 +458,9 @@ def run_job(jid, src, params):
                 json.dump(all_boxes, open(os.path.join(JOBS, jid, "boxes_all.json"), "w"), separators=(",", ":"))
             except Exception:
                 traceback.print_exc()
+            ep = os.path.join(JOBS, jid, "exposures.json")
+            if exps is not None:
+                json.dump(exps, open(ep, "w"), separators=(",", ":"))
             out = os.path.join(JOBS, jid, os.path.splitext(os.path.basename(src))[0] + "_cover.mp4")
             t1 = time.time()
             rep = render(src, bj, out, job, n)

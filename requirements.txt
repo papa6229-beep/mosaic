@@ -6,3 +6,5 @@ ultralytics
 imageio-ffmpeg
 psutil
 nudenet
+onnx
+onnx2torch
