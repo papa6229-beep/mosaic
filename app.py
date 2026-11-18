@@ -58,18 +58,25 @@ def fmt_sec(s):
 _enc = None
 
 
+_enc_note = ""
+
+
 def encoder_args():
-    """그래픽카드 인코더(NVENC)가 되면 그걸로, 안 되면 CPU(x264)로 저장"""
-    global _enc
+    """그래픽카드 인코더(NVENC)가 되면 그걸로, 안 되면 CPU(x264)로 저장. 실패 이유는 _enc_note에 남김"""
+    global _enc, _enc_note
     if _enc is None:
-        test = [ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=black:s=256x256:d=0.2",
-                "-c:v", "h264_nvenc", "-f", "null", "-"]
+        test = [ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=black:s=1920x1080:d=0.3",
+                "-pix_fmt", "yuv420p", "-c:v", "h264_nvenc", "-preset", "p4", "-f", "null", "-"]
         try:
-            ok = subprocess.run(test, capture_output=True, timeout=30).returncode == 0
-        except Exception:
+            r = subprocess.run(test, capture_output=True, timeout=60)
+            ok = r.returncode == 0
+            if not ok:
+                _enc_note = r.stderr.decode("utf-8", "ignore").strip()[-300:]
+        except Exception as e:
             ok = False
-        _enc = (["-c:v", "h264_nvenc", "-preset", "p5", "-rc", "vbr", "-cq", "17", "-b:v", "0"], "그래픽카드(NVENC)") if ok \
-            else (["-c:v", "libx264", "-crf", "16", "-preset", "fast"], "CPU(x264)")
+            _enc_note = str(e)[:300]
+        _enc = (["-c:v", "h264_nvenc", "-preset", "p4", "-rc", "vbr", "-cq", "17", "-b:v", "0"], "그래픽카드(NVENC)") if ok \
+            else (["-c:v", "libx264", "-crf", "16", "-preset", "veryfast"], "CPU(x264)")
     return _enc
 
 
@@ -224,44 +231,127 @@ def detect_all(src, job, n):
 
 
 # ---------------- 2단계: 덮기 + 저장 ----------------
+WARMUP = 30   # 조각 앞부분에서 미리 돌려 두는 프레임 수 (앞 조각과 블러가 자연스럽게 이어지게)
+
+
+def _chunk_worker(src, start, count, W, H, fps, trk, params, enc, seg, threads, counter, q):
+    """한 조각(start부터 count장)을 처리해 seg 파일로 저장. 앞쪽 WARMUP장은 상태만 맞추고 저장하지 않음"""
+    try:
+        for k, v in params.items():
+            setattr(cover, k, v)
+        w0 = max(0, start - WARMUP)
+        total = start + count - w0
+        dec = subprocess.Popen([ffmpeg_exe(), "-loglevel", "error", "-ss", f"{w0 / fps:.6f}", "-i", src,
+                                "-frames:v", str(total), "-f", "rawvideo", "-pix_fmt", "bgr24", "-"],
+                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=W * H * 3 * 4)
+        encx = list(enc) + (["-threads", str(threads)] if "libx264" in enc else [])
+        out = subprocess.Popen([ffmpeg_exe(), "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "bgr24",
+                                "-s", f"{W}x{H}", "-r", f"{fps}", "-i", "-", *encx, "-pix_fmt", "yuv420p", seg],
+                               stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+        cx, cy, ww, hh, on = trk
+        col, hs, bad, done = None, None, [], 0
+        fsz = W * H * 3
+        for j in range(total):
+            buf = dec.stdout.read(fsz)
+            if len(buf) < fsz:
+                break
+            f = np.frombuffer(buf, np.uint8).reshape(H, W, 3)
+            i = w0 + j
+            if on[j]:
+                f, col, d, hs = cover.cover_frame(f.copy(), cx[j], cy[j], ww[j], hh[j], col, hs)
+                if d > 300 and i >= start:
+                    bad.append(i)
+            else:
+                col, hs = None, None
+            if i >= start:
+                out.stdin.write(f.tobytes())
+                done += 1
+                with counter.get_lock():
+                    counter.value += 1
+        out.stdin.close()
+        err = out.stderr.read().decode("utf-8", "ignore")
+        dec.stdout.close(); dec.wait()
+        if out.wait() != 0:
+            raise RuntimeError("조각 저장 실패: " + err[-300:])
+        q.put((start, done, bad, None))
+    except Exception as e:
+        q.put((start, 0, [], traceback.format_exc()[-800:]))
+
+
 def render(src, boxes_json, dst, job, n):
+    import multiprocessing as mp
     cap = cv2.VideoCapture(src)
     fps = cap.get(cv2.CAP_PROP_FPS) or 30
     W = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     H = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    cap.release()
     boxes = cover.load_boxes(boxes_json, n)
     tr = cover.smooth_track(boxes)
-    cmd = [ffmpeg_exe(), "-y", "-loglevel", "error",
-           "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{W}x{H}", "-r", f"{fps}", "-i", "-",
-           "-i", src, "-map", "0:v", "-map", "1:a?",
-           *encoder_args()[0], "-pix_fmt", "yuv420p",
-           "-c:a", "copy", "-shortest", dst]
-    p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
-    cap.release()
-    col, hs, bad, i = None, None, [], 0
+    if tr is None:
+        tr = (np.zeros(n), np.zeros(n), np.zeros(n), np.zeros(n), np.zeros(n, bool))
+    enc, enc_name = encoder_args()
+    cores = os.cpu_count() or 2
+    K = max(1, min(cores, 8, n // 150))                    # 조각 수 = 동시에 일할 CPU 코어 수
+    if "nvenc" in enc[1]:
+        K = min(K, 5)                                    # 그래픽카드 저장은 동시 5개까지
+    threads = max(1, cores // K)
+    params = {k: getattr(cover, k) for k in ("SCALE", "BLUR_FRAC", "FEATHER_W", "HAIR", "HAIR_REACH")}
+    d = os.path.dirname(dst)
+    bounds = [round(n * k / K) for k in range(K + 1)]
+    ctx = mp.get_context("spawn")
+    counter = ctx.Value("i", 0)
+    q = ctx.Queue()
+    procs, segs = [], []
+    for k in range(K):
+        s, e = bounds[k], bounds[k + 1]
+        w0 = max(0, s - WARMUP)
+        trk = tuple(np.asarray(t[w0:e]) for t in tr)
+        seg = os.path.join(d, f"part{k:02d}.mp4")
+        segs.append(seg)
+        p = ctx.Process(target=_chunk_worker, args=(src, s, e - s, W, H, fps, trk, params, enc, seg, threads, counter, q), daemon=True)
+        p.start()
+        procs.append(p)
     t0 = time.time()
-    for f in frames(src):
-        if tr is not None and i < len(tr[4]) and tr[4][i]:
-            f, col, d, hs = cover.cover_frame(f, tr[0][i], tr[1][i], tr[2][i], tr[3][i], col, hs)
-            if d > 300:          # 덮이지 않은 털이 300픽셀 넘게 남은 프레임
-                bad.append(i)
-        else:
-            col = None
-            hs = None
-        p.stdin.write(f.tobytes())
-        i += 1
-        if i % 15 == 0:
-            job["pct"] = 50 + int(i * 50 / max(n, 1))
-            el = time.time() - t0
-            job["msg"] = f"모자이크 덮는 중 {i}/{n} 프레임 · 저장: {encoder_args()[1]} · 이 단계 남은 시간 약 {fmt_sec(el / i * (n - i))}"
-    p.stdin.close()
-    err = p.stderr.read().decode("utf-8", "ignore")
-    if p.wait() != 0:
-        raise RuntimeError("영상 저장 실패: " + err[-500:])
+    results = []
+    while len(results) < K:
+        try:
+            results.append(q.get(timeout=1))
+        except Exception:
+            pass
+        i = counter.value
+        job["pct"] = 50 + int(i * 49 / max(n, 1))
+        el = time.time() - t0
+        left = el / i * (n - i) if i else 0
+        job["msg"] = f"모자이크 덮는 중 {i}/{n} 프레임 · CPU {K}개 동시 처리 · 저장: {enc_name} · 이 단계 남은 시간 약 {fmt_sec(left)}"
+        if not any(p.is_alive() for p in procs) and q.empty() and len(results) < K:
+            raise RuntimeError("덮기 작업 일부가 비정상 종료됐어요")
+    for p in procs:
+        p.join()
+    errs = [r[3] for r in results if r[3]]
+    if errs:
+        raise RuntimeError(errs[0])
+    # 조각 이어 붙이기 + 소리 붙이기
+    job["msg"] = "조각 이어 붙이는 중"
+    lst = os.path.join(d, "parts.txt")
+    with open(lst, "w", encoding="utf-8") as fp:
+        for s in segs:
+            fp.write("file '" + s.replace("\\", "/").replace("'", "'\\''") + "'\n")
+    r = subprocess.run([ffmpeg_exe(), "-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", lst, "-i", src,
+                        "-map", "0:v", "-map", "1:a?", "-c", "copy", "-shortest", dst], capture_output=True)
+    if r.returncode != 0:
+        raise RuntimeError("영상 저장 실패: " + r.stderr.decode("utf-8", "ignore")[-500:])
+    for s in segs + [lst]:
+        try:
+            os.remove(s)
+        except Exception:
+            pass
+    bad = sorted(b for r in results for b in r[2])
+    frames_done = sum(r[1] for r in results)
     miss = int(np.isnan(boxes[:, 0]).sum())
-    covered = int(tr[4].sum()) if tr is not None else 0
-    return {"frames": i, "missing": miss, "covered": covered, "leak": len(bad),
-            "leak_times": [round(x / fps, 2) for x in bad[:30]], "fps": fps}
+    covered = int(np.asarray(tr[4]).sum())
+    return {"frames": frames_done, "missing": miss, "covered": covered, "leak": len(bad),
+            "leak_times": [round(x / fps, 2) for x in bad[:30]], "fps": fps, "workers": K,
+            "encoder_note": _enc_note}
 
 
 def run_job(jid, src, params):
