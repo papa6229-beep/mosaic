@@ -89,9 +89,11 @@
       <div class="row"><label>시작</label><input type="number" id="iStart" min="0"><button id="bSetStart" title="지금 프레임을 시작으로 ([)">← 지금</button></div>
       <div class="row"><label>끝</label><input type="number" id="iEnd" min="0"><button id="bSetEnd" title="지금 프레임을 끝으로 (])">← 지금</button></div>
       <div class="row"><label>크기</label><input type="range" id="iScale" min="0.3" max="2.5" step="0.01"><span id="scaleV" class="muted"></span></div>
+      <div class="row"><span class="muted" id="keyInfo"></span></div>
+      <div class="row"><button id="bKeyDel" title="지금 프레임의 키프레임 지우기 (K)">◆ 이 프레임 키 지우기</button><button id="bKeyAll">키프레임 모두 지우기</button></div>
       <div class="row"><label>흐림 세기</label><input type="range" id="iBlur" min="0.5" max="3" step="0.05"><span id="blurV" class="muted"></span></div>
       <div class="row"><button id="bReset">이 블러 원래대로</button><button id="bDel" class="danger">이 블러 삭제 (Del)</button></div>
-      <div class="muted">위치·크기·기간을 고치면 이 블러 구간 전체에 똑같이 적용돼요.</div>
+      <div class="muted">옮기거나 크기를 바꾸면 <b>지금 프레임에 키프레임 ◆</b>이 찍혀요. 다른 프레임에서 또 바꾸면 두 키프레임 사이는 부드럽게 이동해요. 키프레임이 하나면 구간 전체가 같은 위치·크기예요.</div>
     </div>
     <hr>
     <div class="muted" id="sumEd"></div>
@@ -99,7 +101,8 @@
       <b>스페이스</b> 재생/멈춤 · <b>← →</b> 1프레임 · <b>Shift+← →</b> 1초<br>
       블러 <b>클릭</b> 선택 · <b>끌기</b> 위치 이동 · <b>노란 점 끌기</b> 크기<br>
       <b>[</b> <b>]</b> 지금 프레임을 시작/끝으로 · <b>Del</b> 삭제 · <b>Esc</b> 선택 해제<br>
-      <b>N</b> 새 블러 그리기 · <b>Ctrl+Z</b> 되돌리기 · <b>, .</b> 이전/다음 구간
+      <b>N</b> 새 블러 그리기 · <b>Ctrl+Z</b> 되돌리기 · <b>, .</b> 이전/다음 구간<br>
+      옮기기·크기 바꾸기 = 그 프레임에 키프레임 <b>◆</b> · <b>K</b> 지금 프레임 키 지우기
     </div>
     <hr>
     <div id="out"></div>
@@ -133,9 +136,19 @@ function inside(e, x, y) {
 
 // ---------- 고친 내용 적용 (서버와 같은 규칙) ----------
 function segEd(sid) { return ED.segs[String(sid)]; }
-function tf(c, A, ed) {
-  const s = ed.scale ?? 1;
-  return { cx: c[0] + (ed.dx || 0), cy: c[1] + (ed.dy || 0), A: A.map(r => r.map(v => v / (s * s))) };
+function offAt(ed, f) {             // 그 프레임의 이동·크기 (키프레임 사이는 직선으로 부드럽게)
+  const ks = (ed && ed.keys) ? [...ed.keys].sort((p, q) => p.f - q.f) : [];
+  if (!ks.length) return { dx: (ed && ed.dx) || 0, dy: (ed && ed.dy) || 0, scale: (ed && ed.scale) ?? 1 };
+  if (f <= ks[0].f) return { dx: ks[0].dx, dy: ks[0].dy, scale: ks[0].scale };
+  const L = ks[ks.length - 1]; if (f >= L.f) return { dx: L.dx, dy: L.dy, scale: L.scale };
+  for (let i = 0; i < ks.length - 1; i++) { const a = ks[i], b = ks[i + 1];
+    if (a.f <= f && f <= b.f) { const t = (f - a.f) / Math.max(1, b.f - a.f);
+      return { dx: a.dx + (b.dx - a.dx) * t, dy: a.dy + (b.dy - a.dy) * t, scale: a.scale + (b.scale - a.scale) * t }; } }
+  return { dx: L.dx, dy: L.dy, scale: L.scale };
+}
+function tf(c, A, ed, f) {
+  const o = offAt(ed, f), s = o.scale;
+  return { cx: c[0] + o.dx, cy: c[1] + o.dy, A: A.map(r => r.map(v => v / (s * s))) };
 }
 function baseAt(sid, f) {           // 그 구간의 f 프레임 원래 타원 (불투명 100%)
   for (const e of (PLAN[f] || [])) if (e[3] === sid && e[2] >= 1) return e;
@@ -153,13 +166,13 @@ function ellsAt(f) {
     const ins = f >= st.start && f <= st.end;
     if (!ins && changed) continue;
     if (ins && !(f >= a && f <= b)) continue;
-    out.push({ ...tf(e[0], e[1], ed), w: e[2], sid, kind: "s", k: ed.blur ?? 1 });
+    out.push({ ...tf(e[0], e[1], ed, f), w: e[2], sid, kind: "s", k: ed.blur ?? 1 });
   }
   for (const [k, ed] of Object.entries(ED.segs)) {      // 기간을 늘린 구간, 새 페이드
     const sid = +k, st = SEG[sid]; if (!st || ed.del) continue;
     const a = ed.start ?? st.start, b = ed.end ?? st.end;
     if (a === st.start && b === st.end) continue;
-    const ext = (fr, fb) => { const e = baseAt(sid, fr) || baseAt(sid, fb); return e ? tf(e[0], e[1], ed) : null; };
+    const ext = (fr, fb) => { const e = baseAt(sid, fr) || baseAt(sid, fb); return e ? tf(e[0], e[1], ed, f) : null; };
     const kk = ed.blur ?? 1;
     if (f >= a && f < st.start) { const e = ext(st.start, st.start); if (e) out.push({ ...e, w: 1, sid, kind: "s", k: kk }); }
     if (f <= b && f > st.end) { const e = ext(st.end, st.end); if (e) out.push({ ...e, w: 1, sid, kind: "s", k: kk }); }
@@ -173,7 +186,8 @@ function ellsAt(f) {
     if (f >= ad.start && f <= ad.end) w = 1;
     else { const fi = [ad.start - 3, ad.start - 2, ad.start - 1].indexOf(f), fo = [ad.end + 1, ad.end + 2, ad.end + 3].indexOf(f);
            if (fi >= 0) w = FADE[fi]; else if (fo >= 0) w = FADE[2 - fo]; }
-    if (w > 0) out.push({ cx: ad.cx, cy: ad.cy, A: makeA(ad.rx, ad.ry, ad.ang || 0), w, sid: "a" + k, kind: "a", ai: k, k: ad.blur ?? 1 });
+    if (w > 0) { const o = ad.keys && ad.keys.length ? offAt(ad, f) : { dx: 0, dy: 0, scale: 1 };
+      out.push({ cx: ad.cx + o.dx, cy: ad.cy + o.dy, A: makeA(ad.rx * o.scale, ad.ry * o.scale, ad.ang || 0), w, sid: "a" + k, kind: "a", ai: k, k: ad.blur ?? 1 }); }
   });
   return out;
 }
@@ -314,7 +328,11 @@ function drawTL() {
     tctx.fillStyle = "rgba(255,255,255,.18)";                            // 페이드 부분
     tctx.fillRect(tx(a - 3), y + 4, Math.max(1, tx(a) - tx(a - 3)), ROWH - 12);
     tctx.fillRect(x1, y + 4, Math.max(1, tx(b + 4) - x1), ROWH - 12);
-    if (isSel) { tctx.fillStyle = "#f59e0b"; tctx.fillRect(x0 - 3, y - 1, 6, ROWH - 2); tctx.fillRect(x1 - 3, y - 1, 6, ROWH - 2); }
+    if (isSel) { tctx.fillStyle = "#f59e0b"; tctx.fillRect(x0 - 3, y - 1, 6, ROWH - 2); tctx.fillRect(x1 - 3, y - 1, 6, ROWH - 2);
+      const ed = String(id).startsWith("a") ? ED.added[+String(id).slice(1)] : segEd(id);
+      for (const k of ((ed && ed.keys) || [])) { const kx = tx(k.f + 0.5), ky = y + (ROWH - 4) / 2;
+        tctx.fillStyle = "#1c1917"; tctx.beginPath(); tctx.moveTo(kx, ky - 6); tctx.lineTo(kx + 6, ky); tctx.lineTo(kx, ky + 6); tctx.lineTo(kx - 6, ky); tctx.fill();
+        tctx.fillStyle = "#fde047"; tctx.beginPath(); tctx.moveTo(kx, ky - 4); tctx.lineTo(kx + 4, ky); tctx.lineTo(kx, ky + 4); tctx.lineTo(kx - 4, ky); tctx.fill(); } }
   };
   for (const [k, st] of Object.entries(SEG)) { if (!st) continue; const ed = segEd(+k) || {}; if (ed.del) continue;
     bar(+k, ed.start ?? st.start, ed.end ?? st.end, Object.keys(ed).length ? "#d97706" : "#a8a29e"); }
@@ -364,6 +382,16 @@ function edOf(id) {                // 선택한 블러의 고침 기록 (없으�
   if (String(id).startsWith("a")) return ED.added[+String(id).slice(1)];
   return ED.segs[String(id)] || (ED.segs[String(id)] = {});
 }
+function setKey(id, f, vals) {      // 이 프레임에 키프레임을 찍음 (없으면 지금 모습으로 새로 만들고 바꿈)
+  const ed = edOf(id);
+  if (!ed.keys || !ed.keys.length) {
+    const o = String(id).startsWith("a") ? { dx: 0, dy: 0, scale: 1 } : offAt(ed, f);
+    ed.keys = [{ f, dx: o.dx, dy: o.dy, scale: o.scale }]; delete ed.dx; delete ed.dy; delete ed.scale;
+  }
+  let k = ed.keys.find(k => k.f === f);
+  if (!k) { const o = offAt(ed, f); k = { f, dx: o.dx, dy: o.dy, scale: o.scale }; ed.keys.push(k); ed.keys.sort((p, q) => p.f - q.f); }
+  Object.assign(k, vals);
+}
 function msg(t, c) { const m = $("msg"); m.textContent = t; m.className = c || ""; }
 
 function toVid(ev) {
@@ -382,14 +410,14 @@ OV.addEventListener("pointerdown", ev => {
     const e = es.find(e => String(e.sid) === String(sel));
     if (e) { const a = axesOf(e.A), hx = e.cx + a.rx * Math.cos(a.ang), hy = e.cy + a.rx * Math.sin(a.ang);
       if (Math.hypot(x - hx, y - hy) * s < 14 * devicePixelRatio) {
-        snapshot(); const ed = edOf(sel);
-        drag = { type: "scale", e, d0: Math.hypot(hx - e.cx, hy - e.cy), s0: ed.scale ?? 1, rx0: ed.rx, ry0: ed.ry }; return; } }
+        snapshot(); const o = offAt(edOf(sel), cur);
+        drag = { type: "scale", e, d0: Math.hypot(hx - e.cx, hy - e.cy), s0: o.scale }; return; } }
   }
   const hit = [...es].reverse().find(e => inside(e, x, y)) || [...all].reverse().find(e => inside(e, x, y));   // 나타나는 중(점선)인 블러도 선택 가능
   if (hit) {
     sel = hit.sid; snapshot();
-    const ed = edOf(sel);
-    drag = { type: "move", x0: x, y0: y, dx0: ed.dx || 0, dy0: ed.dy || 0, cx0: ed.cx, cy0: ed.cy, moved: false };
+    const o = offAt(edOf(sel), cur);
+    drag = { type: "move", x0: x, y0: y, dx0: o.dx, dy0: o.dy, moved: false };
   } else { sel = null; }
   drawTL(); draw(); updSide();
 });
@@ -397,15 +425,12 @@ OV.addEventListener("pointermove", ev => {
   if (!drag) return;
   const [x, y] = toVid(ev);
   if (drag.type === "new") { drag.x1 = x; drag.y1 = y; draw(); return; }
-  const ed = edOf(sel);
   if (drag.type === "move") {
     drag.moved = true;
-    if (String(sel).startsWith("a")) { ed.cx = drag.cx0 + x - drag.x0; ed.cy = drag.cy0 + y - drag.y0; }
-    else { ed.dx = drag.dx0 + x - drag.x0; ed.dy = drag.dy0 + y - drag.y0; }
+    setKey(sel, cur, { dx: drag.dx0 + x - drag.x0, dy: drag.dy0 + y - drag.y0 });
   } else if (drag.type === "scale") {
-    const ref = drag.e, d = Math.hypot(x - ref.cx, y - ref.cy), r = Math.max(0.2, d / drag.d0);
-    if (String(sel).startsWith("a")) { ed.rx = Math.max(10, drag.rx0 * r); ed.ry = Math.max(10, drag.ry0 * r); }
-    else ed.scale = Math.min(4, Math.max(0.2, drag.s0 * r));
+    const ref = drag.e, d = Math.hypot(x - ref.cx, y - ref.cy), r = Math.max(0.05, d / drag.d0);
+    setKey(sel, cur, { scale: Math.min(4, Math.max(0.1, drag.s0 * r)) });
   }
   draw(); updSide();
 });
@@ -469,11 +494,13 @@ function updSide() {
   $("selInfo").textContent = `${fmt(a)} ~ ${fmt(b)} (${b - a + 1}프레임, ${((b - a + 1) / M.fps).toFixed(1)}초)`;
   if (document.activeElement !== $("iStart")) $("iStart").value = a;
   if (document.activeElement !== $("iEnd")) $("iEnd").value = b;
-  const ed = isA ? null : (segEd(sel) || {});
-  $("iScale").disabled = isA;
-  $("iScale").value = isA ? 1 : (ed.scale ?? 1);
-  $("scaleV").textContent = isA ? "노란 점으로 조절" : `${Math.round((ed.scale ?? 1) * 100)}%`;
-  const bk = (isA ? ED.added[+String(sel).slice(1)].blur : ed.blur) ?? 1;
+  const ed = isA ? ED.added[+String(sel).slice(1)] : (segEd(sel) || {});
+  const o = offAt(isA && !(ed.keys && ed.keys.length) ? {} : ed, cur);
+  $("iScale").value = o.scale; $("scaleV").textContent = `${Math.round(o.scale * 100)}%`;
+  const nk = (ed.keys || []).length, onKey = (ed.keys || []).some(k => k.f === cur);
+  $("keyInfo").textContent = nk ? `키프레임 ${nk}개${onKey ? " · 지금 프레임에 키프레임 있음 ◆" : ""}` : "키프레임 없음 (옮기거나 크기를 바꾸면 이 프레임에 찍혀요)";
+  $("bKeyDel").disabled = !onKey; $("bKeyAll").disabled = !nk;
+  const bk = ed.blur ?? 1;
   $("iBlur").value = bk; $("blurV").textContent = `${Math.round(bk * 100)}%`;
 }
 $("iStart").onchange = () => { if (sel == null) return; snapshot(); const [, b] = segRange(sel); edOf(sel).start = Math.max(0, Math.min(+$("iStart").value, b)); changed(); };
@@ -482,12 +509,15 @@ $("bSetStart").onclick = () => setEdge("start");
 $("bSetEnd").onclick = () => setEdge("end");
 function setEdge(which) { if (sel == null) return; snapshot(); const [a, b] = segRange(sel); const ed = edOf(sel);
   if (which === "start") ed.start = Math.min(cur, b); else ed.end = Math.max(cur, a); changed(); }
-$("iScale").oninput = () => { if (sel == null || String(sel).startsWith("a")) return; if (!$("iScale").dataset.snap) { snapshot(); $("iScale").dataset.snap = 1; }
-  edOf(sel).scale = +$("iScale").value; draw(); updSide(); };
+$("iScale").oninput = () => { if (sel == null) return; if (!$("iScale").dataset.snap) { snapshot(); $("iScale").dataset.snap = 1; }
+  setKey(sel, cur, { scale: +$("iScale").value }); draw(); updSide(); };
 $("iScale").onchange = () => { delete $("iScale").dataset.snap; changed(); };
 $("iBlur").oninput = () => { if (sel == null) return; if (!$("iBlur").dataset.snap) { snapshot(); $("iBlur").dataset.snap = 1; }
   edOf(sel).blur = +$("iBlur").value; draw(); updSide(); };
 $("iBlur").onchange = () => { delete $("iBlur").dataset.snap; changed(); };
+$("bKeyDel").onclick = () => { if (sel == null) return; const ed = edOf(sel); if (!ed.keys) return;
+  snapshot(); ed.keys = ed.keys.filter(k => k.f !== cur); changed(); };
+$("bKeyAll").onclick = () => { if (sel == null) return; const ed = edOf(sel); if (!ed.keys) return; snapshot(); delete ed.keys; changed(); };
 $("bDel").onclick = delSel;
 function delSel() { if (sel == null) return; snapshot(); edOf(sel).del = true; sel = null; changed(); msg("삭제했어요 (Ctrl+Z로 되돌리기)", "ok"); }
 $("bReset").onclick = () => { if (sel == null) return; snapshot();
@@ -525,6 +555,7 @@ document.addEventListener("keydown", ev => {
   else if (k === "Delete" || k === "Backspace") { ev.preventDefault(); delSel(); }
   else if (k === "Escape") { sel = null; setTool(null); drawTL(); draw(); updSide(); }
   else if ((ev.ctrlKey || ev.metaKey) && (k === "z" || k === "Z")) { ev.preventDefault(); undo(); }
+  else if (k === "k" || k === "K") $("bKeyDel").click();
   else if (k === "[") setEdge("start");
   else if (k === "]") setEdge("end");
   else if (k === "n" || k === "N") setTool(tool === "draw" ? null : "draw");

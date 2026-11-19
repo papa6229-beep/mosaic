@@ -939,9 +939,29 @@ def _ell_from(cx, cy, rx, ry, ang):
     return _ell((cx, cy), max(rx, 5.0), max(ry, 5.0), ang)
 
 
+def edit_offset(ed, f):
+    """그 프레임에서의 이동·크기. 키프레임이 있으면 키프레임 사이를 직선으로 부드럽게 잇고, 처음·끝 바깥은 가까운 키프레임 그대로"""
+    keys = sorted((ed or {}).get("keys") or [], key=lambda k: k["f"])
+    if not keys:
+        return float(ed.get("dx", 0.0)), float(ed.get("dy", 0.0)), float(ed.get("scale", 1.0))
+    if f <= keys[0]["f"]:
+        k = keys[0]
+        return float(k["dx"]), float(k["dy"]), float(k["scale"])
+    if f >= keys[-1]["f"]:
+        k = keys[-1]
+        return float(k["dx"]), float(k["dy"]), float(k["scale"])
+    for k0, k1 in zip(keys[:-1], keys[1:]):
+        if k0["f"] <= f <= k1["f"]:
+            t = (f - k0["f"]) / max(1, k1["f"] - k0["f"])
+            return tuple(float(k0[q] + (k1[q] - k0[q]) * t) for q in ("dx", "dy", "scale"))
+    k = keys[-1]
+    return float(k["dx"]), float(k["dy"]), float(k["scale"])
+
+
 def apply_edits(ells, segtab, edits, n):
-    """검수 화면에서 고친 내용(구간별 이동·크기·삭제·기간, 새로 추가한 블러)을 블러 계획에 적용.
-    edits = {"segs": {구간번호: {"dx","dy","scale","del","start","end"}}, "added": [{"start","end","cx","cy","rx","ry","ang"}]}"""
+    """검수 화면에서 고친 내용(구간별 이동·크기·삭제·기간·흐림 세기·키프레임, 새로 추가한 블러)을 블러 계획에 적용.
+    edits = {"segs": {구간번호: {"dx","dy","scale" 또는 "keys":[{"f","dx","dy","scale"}], "del","start","end","blur"}},
+             "added": [{"start","end","cx","cy","rx","ry","ang","blur", "keys"}]}"""
     se = {int(k): v for k, v in (edits or {}).get("segs", {}).items()}
     out = [[] for _ in range(n)]
     base = {}
@@ -960,18 +980,11 @@ def apply_edits(ells, segtab, edits, n):
                 if i == st["end"]:
                     first[sid][1] = e
 
-    def tf(e, ed):
-        c = np.asarray(e[0], float) + (ed.get("dx", 0.0), ed.get("dy", 0.0))
-        A = np.asarray(e[1], float) / (float(ed.get("scale", 1.0)) ** 2)
+    def tf(e, ed, f):
+        dx, dy, sc = edit_offset(ed, f)
+        c = np.asarray(e[0], float) + (dx, dy)
+        A = np.asarray(e[1], float) / (sc ** 2)
         return [c.tolist(), A.tolist()]
-
-    def fades(o, sid, c_A_s, c_A_e, a, b, k=1.0):
-        for m, w in zip((a - 3, a - 2, a - 1), FADE):
-            if 0 <= m < n:
-                o[m].append((c_A_s[0], c_A_s[1], w, sid, k))
-        for m, w in zip((b + 1, b + 2, b + 3), FADE[::-1]):
-            if 0 <= m < n:
-                o[m].append((c_A_e[0], c_A_e[1], w, sid, k))
 
     for i in range(n):
         for e in ells[i]:
@@ -990,7 +1003,7 @@ def apply_edits(ells, segtab, edits, n):
                 continue                                  # 기간을 바꿨으면 원래 페이드는 버리고 새로 붙임
             if inside and not (a <= i <= b):
                 continue
-            c, A = tf(e, ed)
+            c, A = tf(e, ed, i)
             out[i].append((c, A, e[2], sid, float(ed.get("blur", 1.0))))
     for sid, ed in se.items():
         if ed.get("del") or sid not in segtab or segtab[sid] is None or sid not in first:
@@ -1000,21 +1013,39 @@ def apply_edits(ells, segtab, edits, n):
         if (a, b) == (st["start"], st["end"]):
             continue
         bs = base.get(sid, {})
-        s_e = tf(bs.get(a, first[sid][0] if a < st["start"] else first[sid][1]), ed)
-        e_e = tf(bs.get(b, first[sid][1] if b > st["end"] else first[sid][0]), ed)
+        es_ = bs.get(a, first[sid][0]) if a >= st["start"] else first[sid][0]
+        ee_ = bs.get(b, first[sid][1]) if b <= st["end"] else first[sid][1]
+        kb = float(ed.get("blur", 1.0))
         for i in range(max(0, a), min(n, b + 1)):
             if i < st["start"]:
-                out[i].append((s_e[0], s_e[1], 1.0, sid, float(ed.get("blur", 1.0))))
+                c, A = tf(first[sid][0], ed, i)
+                out[i].append((c, A, 1.0, sid, kb))
             elif i > st["end"]:
-                out[i].append((e_e[0], e_e[1], 1.0, sid, float(ed.get("blur", 1.0))))
-        fades(out, sid, s_e, e_e, a, b, float(ed.get("blur", 1.0)))
+                c, A = tf(first[sid][1], ed, i)
+                out[i].append((c, A, 1.0, sid, kb))
+        for m, w in zip((a - 3, a - 2, a - 1), FADE):
+            if 0 <= m < n:
+                c, A = tf(es_, ed, m)
+                out[m].append((c, A, w, sid, kb))
+        for m, w in zip((b + 1, b + 2, b + 3), FADE[::-1]):
+            if 0 <= m < n:
+                c, A = tf(ee_, ed, m)
+                out[m].append((c, A, w, sid, kb))
     for k, ad in enumerate((edits or {}).get("added", [])):
         if ad.get("del"):
             continue
-        c, A = _ell_from(ad["cx"], ad["cy"], ad["rx"], ad["ry"], ad.get("ang", 0.0))
-        el = [c.tolist(), A.tolist()]
         a, b = int(ad["start"]), int(ad["end"])
+        kb = float(ad.get("blur", 1.0))
+
+        def el_at(f):
+            dx, dy, sc = edit_offset(ad if ad.get("keys") else {}, f)
+            c, A = _ell_from(ad["cx"] + dx, ad["cy"] + dy, ad["rx"] * sc, ad["ry"] * sc, ad.get("ang", 0.0))
+            return c.tolist(), A.tolist()
         for i in range(max(0, a), min(n, b + 1)):
-            out[i].append((el[0], el[1], 1.0, f"a{k}", float(ad.get("blur", 1.0))))
-        fades(out, f"a{k}", el, el, a, b, float(ad.get("blur", 1.0)))
+            c, A = el_at(i)
+            out[i].append((c, A, 1.0, f"a{k}", kb))
+        for m, w in list(zip((a - 3, a - 2, a - 1), FADE)) + list(zip((b + 1, b + 2, b + 3), FADE[::-1])):
+            if 0 <= m < n:
+                c, A = el_at(m)
+                out[m].append((c, A, w, f"a{k}", kb))
     return out
