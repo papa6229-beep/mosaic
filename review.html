@@ -254,17 +254,25 @@ function draw() {
 
 // ---------- 타임라인 ----------
 const OVW = $("ovw"), TL = $("tl"), wctx = OVW.getContext("2d"), tctx = TL.getContext("2d");
-let rows = [];
-function buildRows() {
-  const keys = new Set();
-  for (const st of Object.values(SEG)) if (st) keys.add(st.track);
-  rows = [...keys].sort();
-  if (ED.added.some(a => !a.del)) rows.push("추가");
+let rows = [], lane = {};
+function allBars() {                // 지금 보이는 블러 구간 전부 [id, 시작, 끝]
+  const out = [];
+  for (const [k, st] of Object.entries(SEG)) { if (!st) continue; const ed = segEd(+k) || {}; if (ed.del) continue;
+    out.push([+k, ed.start ?? st.start, ed.end ?? st.end]); }
+  ED.added.forEach((ad, k) => { if (!ad.del) out.push(["a" + k, ad.start, ad.end]); });
+  return out;
 }
-function rowOf(id) {
-  if (String(id).startsWith("a")) return rows.indexOf("추가");
-  return rows.indexOf(SEG[id].track);
+function buildRows() {              // 시간이 겹치지 않는 블러끼리 같은 줄에 (줄 수를 최소로)
+  const bars = allBars().sort((p, q) => p[1] - q[1]), ends = [];
+  lane = {};
+  for (const [id, a, b] of bars) {
+    let r = ends.findIndex(e => e < a - 4);
+    if (r < 0) { r = ends.length; ends.push(0); }
+    ends[r] = b + 4; lane[String(id)] = r;
+  }
+  rows = ends.length ? ends.map((_, i) => i) : [0];
 }
+function rowOf(id) { const r = lane[String(id)]; return r == null ? -1 : r; }
 const ROWH = 16;
 function drawTL() {
   if (!M) return;
@@ -312,7 +320,10 @@ function drawTL() {
   $("zlab").textContent = `${(tlSpan / M.fps).toFixed(tlSpan / M.fps < 10 ? 1 : 0)}초`;
 }
 function niceStep(x) { for (const s of [0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300]) if (s >= x) return s; return 600; }
-function fmt(f) { const s = Math.floor(f / M.fps); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}:${String(f - Math.round(s * M.fps)).padStart(2, "0")}`; }
+function fmt(f) {                  // 분:초:프레임 (프리미어처럼 1초 = 30칸)
+  const fr = Math.round(M.fps) || 30, s = Math.floor(f / fr);
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}:${String(f % fr).padStart(2, "0")}`;
+}
 
 // ---------- 재생·이동 ----------
 function setFrame(f, seek = true) {
@@ -362,7 +373,7 @@ OV.addEventListener("pointerdown", ev => {
   const [x, y] = toVid(ev);
   OV.setPointerCapture(ev.pointerId);
   if (tool === "draw") { drag = { type: "new", x0: x, y0: y, x1: x, y1: y }; return; }
-  const es = ellsAt(cur).filter(e => e.w >= 1);
+  const all = ellsAt(cur), es = all.filter(e => e.w >= 1);
   const { s } = view();
   if (sel != null) {                                  // 크기 손잡이
     const e = es.find(e => String(e.sid) === String(sel));
@@ -371,7 +382,7 @@ OV.addEventListener("pointerdown", ev => {
         snapshot(); const ed = edOf(sel);
         drag = { type: "scale", e, d0: Math.hypot(hx - e.cx, hy - e.cy), s0: ed.scale ?? 1, rx0: ed.rx, ry0: ed.ry }; return; } }
   }
-  const hit = [...es].reverse().find(e => inside(e, x, y));
+  const hit = [...es].reverse().find(e => inside(e, x, y)) || [...all].reverse().find(e => inside(e, x, y));   // 나타나는 중(점선)인 블러도 선택 가능
   if (hit) {
     sel = hit.sid; snapshot();
     const ed = edOf(sel);
@@ -426,9 +437,7 @@ TL.addEventListener("pointerdown", ev => {
     }
   }
   let hit = null;
-  for (const [k, st] of Object.entries(SEG)) { if (!st) continue; const ed = segEd(+k) || {}; if (ed.del) continue;
-    const a = ed.start ?? st.start, b = ed.end ?? st.end; if (rows.indexOf(st.track) === ri && f >= a && f <= b + 1) hit = +k; }
-  ED.added.forEach((ad, k) => { if (!ad.del && rows.indexOf("추가") === ri && f >= ad.start && f <= ad.end + 1) hit = "a" + k; });
+  for (const [id, a, b] of allBars()) if (rowOf(id) === ri && f >= a && f <= b + 1) hit = id;
   sel = hit;
   V.pause(); setFrame(f);
   drag = { type: "tlSeek" }; TL.setPointerCapture(ev.pointerId);
