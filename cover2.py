@@ -940,10 +940,11 @@ def _ell_from(cx, cy, rx, ry, ang):
 
 
 def edit_offset(ed, f):
-    """그 프레임에서의 이동·크기·회전(라디안). 키프레임이 있으면 키프레임 사이를 직선으로 부드럽게 잇고, 처음·끝 바깥은 가까운 키프레임 그대로"""
+    """그 프레임에서의 이동·크기·회전(라디안)·길이 배율(sx)·폭 배율(sy). 키프레임이 있으면 키프레임 사이를 직선으로 부드럽게 잇고, 처음·끝 바깥은 가까운 키프레임 그대로"""
     ed = ed or {}
     keys = sorted(ed.get("keys") or [], key=lambda k: k["f"])
-    g = lambda k: (float(k.get("dx", 0.0)), float(k.get("dy", 0.0)), float(k.get("scale", 1.0)), float(k.get("rot", 0.0)))
+    g = lambda k: (float(k.get("dx", 0.0)), float(k.get("dy", 0.0)), float(k.get("scale", 1.0)), float(k.get("rot", 0.0)),
+                   float(k.get("sx", 1.0)), float(k.get("sy", 1.0)))
     if not keys:
         return g(ed)
     if f <= keys[0]["f"]:
@@ -954,8 +955,32 @@ def edit_offset(ed, f):
         if k0["f"] <= f <= k1["f"]:
             t = (f - k0["f"]) / max(1, k1["f"] - k0["f"])
             a, b = g(k0), g(k1)
-            return tuple(a[q] + (b[q] - a[q]) * t for q in range(4))
+            return tuple(a[q] + (b[q] - a[q]) * t for q in range(6))
     return g(keys[-1])
+
+
+def _axesA(A):
+    """타원 행렬 → (긴반지름, 짧은반지름, 긴축 각도). 검수 화면(axesOf)과 같은 식"""
+    a, b, c = float(A[0][0]), float(A[0][1]), float(A[1][1])
+    m = (a + c) / 2
+    d = np.sqrt(((a - c) / 2) ** 2 + b * b)
+    lmin, lmax = m - d, m + d
+    ang = (0.0 if a <= c else np.pi / 2) if abs(b) < 1e-12 else np.arctan2(lmin - a, b)
+    return 1 / np.sqrt(lmin), 1 / np.sqrt(lmax), ang
+
+
+def _makeA(rx, ry, ang):
+    c, s_ = np.cos(ang), np.sin(ang)
+    p, q = 1 / (rx * rx), 1 / (ry * ry)
+    return np.array([[p * c * c + q * s_ * s_, (p - q) * c * s_], [(p - q) * c * s_, p * s_ * s_ + q * c * c]])
+
+
+def _stretchA(A, sx, sy):
+    """타원의 긴축 방향으로 sx배, 짧은축 방향으로 sy배"""
+    if sx == 1 and sy == 1:
+        return np.asarray(A, float)
+    rx, ry, ang = _axesA(A)
+    return _makeA(rx * sx, ry * sy, ang)
 
 
 def _rotA(A, th):
@@ -968,7 +993,7 @@ def _rotA(A, th):
 
 def apply_edits(ells, segtab, edits, n):
     """검수 화면에서 고친 내용(구간별 이동·크기·삭제·기간·흐림 세기·키프레임, 새로 추가한 블러)을 블러 계획에 적용.
-    edits = {"segs": {구간번호: {"dx","dy","scale" 또는 "keys":[{"f","dx","dy","scale"}], "del","start","end","blur"}},
+    edits = {"segs": {구간번호: {"dx","dy","scale" 또는 "keys":[{"f","dx","dy","scale","rot","sx","sy"}], "del","start","end","blur"}},
              "added": [{"start","end","cx","cy","rx","ry","ang","blur", "keys"}]}"""
     se = {int(k): v for k, v in (edits or {}).get("segs", {}).items()}
     out = [[] for _ in range(n)]
@@ -989,9 +1014,9 @@ def apply_edits(ells, segtab, edits, n):
                     first[sid][1] = e
 
     def tf(e, ed, f):
-        dx, dy, sc, rot = edit_offset(ed, f)
+        dx, dy, sc, rot, sx, sy = edit_offset(ed, f)
         c = np.asarray(e[0], float) + (dx, dy)
-        A = _rotA(np.asarray(e[1], float) / (sc ** 2), rot)
+        A = _rotA(_stretchA(e[1], sx, sy) / (sc ** 2), rot)
         return [c.tolist(), A.tolist()]
 
     for i in range(n):
@@ -1046,8 +1071,8 @@ def apply_edits(ells, segtab, edits, n):
         kb = float(ad.get("blur", 1.0))
 
         def el_at(f):
-            dx, dy, sc, rot = edit_offset(ad if ad.get("keys") else {}, f)
-            c, A = _ell_from(ad["cx"] + dx, ad["cy"] + dy, ad["rx"] * sc, ad["ry"] * sc, ad.get("ang", 0.0) + rot)
+            dx, dy, sc, rot, sx, sy = edit_offset(ad if ad.get("keys") else {}, f)
+            c, A = _ell_from(ad["cx"] + dx, ad["cy"] + dy, ad["rx"] * sc * sx, ad["ry"] * sc * sy, ad.get("ang", 0.0) + rot)
             return c.tolist(), A.tolist()
         for i in range(max(0, a), min(n, b + 1)):
             c, A = el_at(i)

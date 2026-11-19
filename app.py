@@ -629,13 +629,32 @@ PLAYABLE = (".mp4", ".m4v", ".webm")
 proxy_state = {}
 
 
+def _audio_args(src, idx):
+    """원본의 소리를 검수용 미리보기에 넣는 ffmpeg 인자 (소리가 없으면 빈 목록).
+    방송용 MXF는 왼쪽·오른쪽이 따로 된 모노 트랙이 많아서, 첫 두 트랙이 모노면 합쳐서 스테레오로 만듦"""
+    try:
+        err = subprocess.run([ffmpeg_exe(), "-hide_banner", "-i", src], capture_output=True, text=True,
+                             encoding="utf-8", errors="ignore").stderr
+    except Exception:
+        return []
+    auds = [l for l in err.splitlines() if "Stream #" in l and "Audio:" in l]
+    if not auds:
+        return []
+    mono = lambda l: "mono" in l or "1 channels" in l
+    tail = ["-c:a", "aac", "-b:a", "160k", "-ac", "2", "-ar", "48000"]
+    if len(auds) >= 2 and mono(auds[0]) and mono(auds[1]):
+        return ["-filter_complex", f"[{idx}:a:0][{idx}:a:1]amerge=inputs=2[aud]", "-map", "[aud]"] + tail
+    return ["-map", f"{idx}:a:0"] + tail
+
+
 def _proxy_job(jid, src, dst, n):
-    """브라우저가 바로 못 트는 영상(MXF 등)은 검수용 가벼운 미리보기 영상을 만듦 (프레임 수·속도는 그대로)"""
+    """브라우저가 바로 못 트는 영상(MXF 등)은 검수용 가벼운 미리보기 영상(소리 포함)을 만듦 (프레임 수·속도는 그대로)"""
     tmp = dst + ".part.mp4"
     try:
         p = subprocess.Popen([ffmpeg_exe(), "-y", "-loglevel", "error", "-progress", "pipe:1", "-i", src, "-map", "0:v:0",
                               "-vf", "scale=-2:540", "-c:v", "libx264", "-preset", "veryfast", "-crf", "26", "-g", "15",
-                              "-pix_fmt", "yuv420p", "-an", tmp], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+                              "-pix_fmt", "yuv420p"] + _audio_args(src, 0) + [tmp],
+                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
         for line in p.stdout:
             if line.startswith("frame="):
                 try:
@@ -652,6 +671,29 @@ def _proxy_job(jid, src, dst, n):
         proxy_state[jid] = -1
 
 
+audio_state = {}
+
+
+def _audio_job(jid, src, px, dst):
+    """예전에 소리 없이 만든 미리보기에 원본 소리만 붙임 (영상은 다시 안 만들고 그대로 복사해서 빠름)"""
+    tmp = dst + ".part.mp4"
+    try:
+        aa = _audio_args(src, 1)
+        if not aa:
+            audio_state[jid] = -1                 # 원본에 소리가 없음
+            return
+        r = subprocess.run([ffmpeg_exe(), "-y", "-loglevel", "error", "-i", px, "-i", src, "-map", "0:v:0", "-c:v", "copy"]
+                           + aa + [tmp], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if r.returncode == 0:
+            os.replace(tmp, dst)
+            audio_state[jid] = 100
+        else:
+            audio_state[jid] = -1
+    except Exception:
+        traceback.print_exc()
+        audio_state[jid] = -1
+
+
 @app.get("/review/<jid>/video-status")
 def review_video_status(jid):
     d = _jdir(jid)
@@ -659,13 +701,18 @@ def review_video_status(jid):
         return jsonify(error="없는 작업"), 404
     r = json.load(open(os.path.join(d, "review.json"), encoding="utf-8"))
     if os.path.splitext(r["src"])[1].lower() in PLAYABLE:
-        return jsonify(ready=True)
-    px = os.path.join(d, "proxy.mp4")
-    if os.path.exists(px):
-        return jsonify(ready=True)
+        return jsonify(ready=True, audio="ok")
+    pav, px = os.path.join(d, "proxy_av.mp4"), os.path.join(d, "proxy.mp4")
+    if os.path.exists(pav):
+        return jsonify(ready=True, audio="ok")
+    if os.path.exists(px):                      # 소리 없는 예전 미리보기 → 소리만 붙이는 중
+        if jid not in audio_state:
+            audio_state[jid] = 0
+            threading.Thread(target=_audio_job, args=(jid, r["src"], px, pav), daemon=True).start()
+        return jsonify(ready=True, audio="none" if audio_state.get(jid) == -1 else "pending")
     if jid not in proxy_state:
         proxy_state[jid] = 0
-        threading.Thread(target=_proxy_job, args=(jid, r["src"], px, r["n"]), daemon=True).start()
+        threading.Thread(target=_proxy_job, args=(jid, r["src"], pav, r["n"]), daemon=True).start()
     return jsonify(ready=False, pct=proxy_state.get(jid, 0))
 
 
@@ -675,9 +722,11 @@ def review_video(jid):
     if not d:
         return "없음", 404
     r = json.load(open(os.path.join(d, "review.json"), encoding="utf-8"))
-    px = os.path.join(d, "proxy.mp4")
-    if os.path.splitext(r["src"])[1].lower() not in PLAYABLE and os.path.exists(px):
-        return send_file(px, conditional=True)
+    if os.path.splitext(r["src"])[1].lower() not in PLAYABLE:
+        for nm in ("proxy_av.mp4", "proxy.mp4"):
+            px = os.path.join(d, nm)
+            if os.path.exists(px):
+                return send_file(px, conditional=True, mimetype="video/mp4")
     return send_file(r["src"], conditional=True)
 
 
