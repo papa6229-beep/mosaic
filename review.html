@@ -76,7 +76,7 @@
     </div>
     <div id="tlwrap">
       <canvas id="ovw" title="전체 영상: 누르면 그 위치로 · 주황 상자 끌기 = 보는 범위 이동 · 상자 양 끝 끌기 = 보는 범위 넓히기/좁히기"></canvas>
-      <canvas id="tl" title="막대 클릭 = 선택(재생 위치는 그대로) · 빈 곳 클릭 = 그 위치로 · 막대 양 끝 끌기 = 기간 · Ctrl/Shift+클릭 = 여러 개 선택 · Shift+끌기 = 상자로 여러 개 선택"></canvas>
+      <canvas id="tl" title="막대 클릭 = 선택하고 그 위치로 · 빈 곳 클릭 = 그 위치로 · 막대 양 끝 끌기 = 기간 · Ctrl/Shift+클릭 = 여러 개 선택 · Shift+끌기 = 상자로 여러 개 선택"></canvas>
       <div id="hsb" title="끌어서 타임라인을 좌우로 이동"><div id="hsbT"></div></div>
       <div class="ctl" style="margin-top:4px">
         <span class="muted">타임라인 보기 범위</span>
@@ -120,7 +120,7 @@
       <b>[</b> <b>]</b> 시작/끝을 지금 위치로 (선택 없으면 가장 가까운 블러를 끌어옴)<br>
       <b>Home / End</b> 선택한 블러 처음/끝으로 · <b>G</b> 고른 블러 합치기<br>
       <b>Del</b> 삭제 · <b>Esc</b> 선택 해제 · <b>N</b> 새 블러 · <b>Ctrl+Z</b> 되돌리기 · <b>, .</b> 이전/다음 구간<br>
-      타임라인: 막대 <b>클릭</b> 선택만 · <b>Ctrl/Shift+클릭</b> 여러 개 · <b>Shift+끌기</b> 상자 선택 · 막대 끝 끌기 = 기간 (재생선에 착 붙음) · <b>K</b> 지금 프레임 키 지우기
+      타임라인: 막대 <b>클릭</b> 선택 · <b>Ctrl/Shift+클릭</b> 여러 개 · <b>Shift+끌기</b> 상자 선택 · 막대 끝 끌기 = 기간 (재생선에 착 붙음) · <b>K</b> 지금 프레임 키 지우기
     </div>
     <hr>
     <div id="out"></div>
@@ -692,10 +692,7 @@ TL.addEventListener("pointerdown", ev => {
   const eg = tlEdgeAt(ev);                             // 막대 끝 잡기 = 기간 바꾸기 (재생 위치는 그대로)
   if (eg) { if (!isSel(eg.id)) selectOnly(eg.id); else sel = idOf(eg.id);
     snapshot(); V.pause(); drag = { type: eg.type, moved: false, cur0: cur }; drawTL(); draw(); updSide(); return; }
-  if (hit != null) {                                   // 막대 클릭 = 선택만 (재생 위치는 그대로)
-    if (!isSel(hit)) selectOnly(hit); else sel = idOf(hit);
-    drawTL(); draw(); updSide(); return;
-  }
+  if (hit != null) { if (!isSel(hit)) selectOnly(hit); else sel = idOf(hit); }   // 막대 클릭 = 선택 + 그 위치로
   V.pause(); setFrame(f);                              // 빈 곳 = 그 위치로 (선택은 그대로)
   drag = { type: "tlSeek" };
 });
