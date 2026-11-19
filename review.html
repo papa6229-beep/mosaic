@@ -467,10 +467,12 @@ function drawTL() {
     tctx.strokeStyle = "#38bdf8"; tctx.lineWidth = 1; tctx.setLineDash([4, 3]); tctx.strokeRect(x0, y0, Math.abs(drag.x1 - drag.x0), Math.abs(drag.y1 - drag.y0)); tctx.setLineDash([]);
   }
   if (drag && (drag.type === "tlStart" || drag.type === "tlEnd") && sel != null) {   // 끌고 있는 끝의 시간 표시
+    const gx = tx(drag.cur0); tctx.strokeStyle = "#4ade80"; tctx.lineWidth = 1.5; tctx.setLineDash([4, 3]);   // 처음 재생선 자리
+    tctx.beginPath(); tctx.moveTo(gx, 0); tctx.lineTo(gx, h); tctx.stroke(); tctx.setLineDash([]);
     const [a, b] = segRange(sel), f = drag.type === "tlStart" ? a : b, x = tx(drag.type === "tlStart" ? a : b + 1), y = 16 + rowOf(sel) * ROWH;
-    const t = fmt(f) + (f === cur ? " · 재생선" : ""); tctx.font = "bold 11px sans-serif";
+    const t = fmt(f) + (f === drag.cur0 ? " · 재생선에 붙음" : ""); tctx.font = "bold 11px sans-serif";
     const tw = tctx.measureText(t).width + 10, lx = Math.min(w - tw, Math.max(0, x - tw / 2));
-    tctx.fillStyle = f === cur ? "#4ade80" : "#fafaf9"; tctx.fillRect(lx, Math.max(0, y - 16), tw, 15);
+    tctx.fillStyle = f === drag.cur0 ? "#4ade80" : "#fafaf9"; tctx.fillRect(lx, Math.max(0, y - 16), tw, 15);
     tctx.fillStyle = "#1c1917"; tctx.fillText(t, lx + 5, Math.max(0, y - 16) + 11);
   }
   // 아래 좌우 이동 막대
@@ -689,7 +691,7 @@ TL.addEventListener("pointerdown", ev => {
   }
   const eg = tlEdgeAt(ev);                             // 막대 끝 잡기 = 기간 바꾸기 (재생 위치는 그대로)
   if (eg) { if (!isSel(eg.id)) selectOnly(eg.id); else sel = idOf(eg.id);
-    snapshot(); drag = { type: eg.type, moved: false }; drawTL(); draw(); updSide(); return; }
+    snapshot(); V.pause(); drag = { type: eg.type, moved: false, cur0: cur }; drawTL(); draw(); updSide(); return; }
   if (hit != null) {                                   // 막대 클릭 = 선택만 (재생 위치는 그대로)
     if (!isSel(hit)) selectOnly(hit); else sel = idOf(hit);
     drawTL(); draw(); updSide(); return;
@@ -714,9 +716,10 @@ TL.addEventListener("pointermove", ev => {
   }
   const ed = edOf(sel), [a, b] = segRange(sel), r = TL.getBoundingClientRect(), snap = 8 * tlSpan / r.width;
   drag.moved = true;
-  if (drag.type === "tlStart") { let v = Math.abs(f - cur) < snap ? cur : f; ed.start = Math.min(v, b); }
-  else { let v = Math.abs(f - 1 - cur) < snap ? cur : f - 1; ed.end = Math.max(a, v); }    // 재생선 가까이 오면 착 붙음
-  drawTL(); draw(); updSide();
+  const c0 = drag.cur0;                                // 처음 재생선 자리 가까이 오면 착 붙음
+  if (drag.type === "tlStart") { let v = Math.abs(f - c0) < snap ? c0 : f; ed.start = Math.min(v, b); }
+  else { let v = Math.abs(f - 1 - c0) < snap ? c0 : f - 1; ed.end = Math.max(a, v); }
+  setFrame(drag.type === "tlStart" ? ed.start : ed.end);   // 끄는 동안 영상도 그 프레임을 보여 줌
 });
 TL.addEventListener("pointerup", () => {
   const d = drag; if (!d) return; drag = null;
