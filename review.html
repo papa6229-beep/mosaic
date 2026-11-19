@@ -115,7 +115,7 @@
     <div class="keys">
       <b>스페이스</b> 재생/멈춤 · <b>← →</b> 1프레임 · <b>Shift+← →</b> 1초 · <b>S</b> 소리<br>
       블러 <b>클릭</b> 선택 · <b>Shift+클릭</b> 여러 개 선택 · <b>A</b> 지금 화면의 블러 모두 선택<br>
-      안쪽 <b>끌기</b> 위치 · <b>테두리 선 끌기</b> 크기 · <b>주황 점</b> 길이 · <b>보라 점</b> 폭 · <b>Ctrl+휠</b> 흐림 세기<br>
+      안쪽 <b>끌기</b> 위치 · <b>테두리·점 끌기</b> 그 방향으로만 크기 · <b>Shift+끌기</b> 같은 비율로 · <b>Ctrl+휠</b> 흐림 세기<br>
       <b>초록 ↻ 손잡이</b> 또는 <b>Ctrl+끌기</b> 회전 (Shift: 15도씩) · <b>Q / E</b> 5도씩<br>
       <b>[</b> <b>]</b> 시작/끝을 지금 위치로 (선택 없으면 가장 가까운 블러를 끌어옴)<br>
       <b>Home / End</b> 선택한 블러 처음/끝으로 · <b>G</b> 고른 블러 합치기<br>
@@ -563,7 +563,8 @@ OV.addEventListener("pointerdown", ev => {
     snapshot(); const o = curOff(sel, cur), a = axOf(hh.e);
     if (hh.h.kind === "rot") { drag = { type: "rot", e: hh.e, a0: Math.atan2(y - hh.e.cy, x - hh.e.cx), r0: o.rot }; return; }
     const dir = hh.h.kind === "sx" ? a.ang : a.ang + Math.PI / 2;
-    drag = { type: "stretch", kind: hh.h.kind, e: hh.e, dir, d0: Math.max(3, hh.h.kind === "sx" ? a.rx : a.ry), s0: o[hh.h.kind] };
+    const d0 = Math.max(3, hh.h.kind === "sx" ? a.rx : a.ry);
+    drag = { type: "stretch", kind: hh.h.kind, e: hh.e, dir, d0, r0: d0, s0: o[hh.h.kind], sc0: o.scale };
     return;
   }
   const hit = [...es].reverse().find(e => inside(e, x, y)) || [...all].reverse().find(e => inside(e, x, y));   // 나타나는 중(점선)인 블러도 선택 가능
@@ -578,11 +579,15 @@ OV.addEventListener("pointerdown", ev => {
     drawTL(); draw(); updSide(); return;
   }
   const edge = edgeHit(all, x, y);                   // 테두리 선을 잡으면 크기 조절
-  if (edge || (ev.altKey && sel != null)) {
+  if (edge || (ev.altKey && sel != null)) {               // 그냥 끌기 = 잡은 쪽 방향으로만, Shift+끌기 = 같은 비율로
     const e = edge || all.find(e => String(e.sid) === String(sel));
     if (e) { if (!isSel(e.sid)) selectOnly(e.sid); else sel = idOf(e.sid);
-      snapshot(); const o = curOff(sel, cur);
-      drag = { type: "scale", e, d0: Math.max(5, Math.hypot(x - e.cx, y - e.cy)), s0: o.scale }; drawTL(); draw(); updSide(); return; }
+      snapshot(); const o = curOff(sel, cur), a = axOf(e), dx = x - e.cx, dy = y - e.cy;
+      const u = dx * Math.cos(a.ang) + dy * Math.sin(a.ang), v = -dx * Math.sin(a.ang) + dy * Math.cos(a.ang);
+      const kind = Math.abs(u) / Math.max(a.rx, 1) >= Math.abs(v) / Math.max(a.ry, 1) ? "sx" : "sy";
+      const dir = kind === "sx" ? a.ang : a.ang + Math.PI / 2;
+      drag = { type: "stretch", kind, e, dir, d0: Math.max(5, Math.abs(kind === "sx" ? u : v)), r0: Math.max(5, Math.hypot(dx, dy)), s0: o[kind], sc0: o.scale };
+      drawTL(); draw(); updSide(); return; }
   }
   if (hit) {
     if (!isSel(hit.sid)) selectOnly(hit.sid); else sel = idOf(hit.sid);
@@ -619,8 +624,13 @@ OV.addEventListener("pointermove", ev => {
     const ref = drag.e, d = Math.hypot(x - ref.cx, y - ref.cy), r = Math.max(0.05, d / drag.d0);
     setKey(sel, cur, { scale: Math.min(4, Math.max(0.1, drag.s0 * r)) });
   } else if (drag.type === "stretch") {
-    const d = Math.abs((x - drag.e.cx) * Math.cos(drag.dir) + (y - drag.e.cy) * Math.sin(drag.dir));
-    setKey(sel, cur, { [drag.kind]: Math.min(6, Math.max(0.1, drag.s0 * Math.max(3, d) / drag.d0)) });
+    if (ev.shiftKey) {                                   // Shift = 같은 비율로 (어도비처럼)
+      const r = Math.hypot(x - drag.e.cx, y - drag.e.cy) / drag.r0;
+      setKey(sel, cur, { [drag.kind]: drag.s0, scale: Math.min(4, Math.max(0.1, drag.sc0 * Math.max(0.05, r))) });
+    } else {                                             // 그냥 = 잡은 쪽 방향으로만
+      const d = Math.abs((x - drag.e.cx) * Math.cos(drag.dir) + (y - drag.e.cy) * Math.sin(drag.dir));
+      setKey(sel, cur, { [drag.kind]: Math.min(6, Math.max(0.1, drag.s0 * Math.max(3, d) / drag.d0)), scale: drag.sc0 });
+    }
   } else if (drag.type === "rot") {
     let r = drag.r0 + Math.atan2(y - drag.e.cy, x - drag.e.cx) - drag.a0;
     if (ev.shiftKey) r = Math.round(r / (Math.PI / 12)) * (Math.PI / 12);      // Shift: 15도씩
