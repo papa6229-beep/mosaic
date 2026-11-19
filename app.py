@@ -257,8 +257,28 @@ def _dec(src, w0, total, W, H, fps):
                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=W * H * 3 * 4)
 
 
+def _low_priority():
+    """생성 작업은 낮은 우선순위로 (작업 중에도 컴퓨터를 쓸 수 있게). ffmpeg 같은 하위 작업도 그대로 물려받음"""
+    try:
+        import psutil
+        pr = psutil.Process()
+        if os.name == "nt":
+            pr.nice(psutil.BELOW_NORMAL_PRIORITY_CLASS)
+        else:
+            pr.nice(10)
+    except Exception:
+        pass
+
+
+def _cpu_workers(n):
+    """동시에 쓸 CPU 수: 하나는 항상 비워 둠 (최대 8개)"""
+    cores = os.cpu_count() or 2
+    return max(1, min(cores - 1, 8, n // 60))
+
+
 def _scan_worker(src, start, count, W, H, fps, entries, exps, params, outp, counter, q):
     """1단계(훑기): 이 조각의 프레임마다 '반드시 덮을 곳'을 모아 파일로 저장"""
+    _low_priority()
     try:
         import cover2, pickle
         for k, v in params.items():
@@ -288,6 +308,7 @@ def _scan_worker(src, start, count, W, H, fps, entries, exps, params, outp, coun
 
 def _paint_worker(src, start, count, W, H, fps, ells, polys, params, enc, seg, threads, counter, q):
     """3단계(그리기): 계획된 타원대로만 그려서 조각 파일로 저장"""
+    _low_priority()
     try:
         import cover2
         for k, v in params.items():
@@ -378,8 +399,8 @@ def render(src, boxes_json, dst, job, n):
             ex = None
     enc, enc_name = encoder_args()
     cores = os.cpu_count() or 2
-    K = max(1, min(cores, 8, n // 60))
-    threads = max(1, cores // K)
+    K = _cpu_workers(n)
+    threads = max(1, (cores - 1) // K)
     params = {k: getattr(cover2, k) for k in ("SCALE", "BLUR_FRAC", "FEATHER_W", "HAIR", "HAIR_REACH")}
     d = os.path.dirname(dst)
     bounds = [round(n * k / K) for k in range(K + 1)]
@@ -427,13 +448,13 @@ def paint_save(src, ells, polys, dst, job, n, W, H, fps, params, p0=77, p1=99):
     """계획된 블러대로 그려서 저장 (CPU 여러 개로 나눠서) → 소리 붙여 하나로"""
     enc, enc_name = encoder_args()
     cores = os.cpu_count() or 2
-    K = max(1, min(cores, 8, n // 60))
+    K = _cpu_workers(n)
     KP = min(K, 5) if "nvenc" in enc[1] else K
     d = os.path.dirname(dst)
     bp = [round(n * k / KP) for k in range(KP + 1)]
     segs = [os.path.join(d, f"part{k:02d}.mp4") for k in range(KP)]
     wp = lambda k: max(0, bp[k] - WARMUP)
-    tp = max(1, cores // KP)
+    tp = max(1, (cores - 1) // KP)
     results = _run_parallel(job, KP, n, lambda k: (src, bp[k], bp[k + 1] - bp[k], W, H, fps, ells[wp(k):bp[k + 1]], polys[wp(k):bp[k + 1]],
                                                       params, enc, segs[k], tp), _paint_worker, f"블러 그리고 저장 중 ({enc_name})", p0, p1)
     job["msg"] = "조각 이어 붙이는 중"
