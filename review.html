@@ -89,6 +89,7 @@
       <div class="row"><label>시작</label><input type="number" id="iStart" min="0"><button id="bSetStart" title="지금 프레임을 시작으로 ([)">← 지금</button></div>
       <div class="row"><label>끝</label><input type="number" id="iEnd" min="0"><button id="bSetEnd" title="지금 프레임을 끝으로 (])">← 지금</button></div>
       <div class="row"><label>크기</label><input type="range" id="iScale" min="0.3" max="2.5" step="0.01"><span id="scaleV" class="muted"></span></div>
+      <div class="row"><label>흐림 세기</label><input type="range" id="iBlur" min="0.5" max="3" step="0.05"><span id="blurV" class="muted"></span></div>
       <div class="row"><button id="bReset">이 블러 원래대로</button><button id="bDel" class="danger">이 블러 삭제 (Del)</button></div>
       <div class="muted">위치·크기·기간을 고치면 이 블러 구간 전체에 똑같이 적용돼요.</div>
     </div>
@@ -152,18 +153,19 @@ function ellsAt(f) {
     const ins = f >= st.start && f <= st.end;
     if (!ins && changed) continue;
     if (ins && !(f >= a && f <= b)) continue;
-    out.push({ ...tf(e[0], e[1], ed), w: e[2], sid, kind: "s" });
+    out.push({ ...tf(e[0], e[1], ed), w: e[2], sid, kind: "s", k: ed.blur ?? 1 });
   }
   for (const [k, ed] of Object.entries(ED.segs)) {      // 기간을 늘린 구간, 새 페이드
     const sid = +k, st = SEG[sid]; if (!st || ed.del) continue;
     const a = ed.start ?? st.start, b = ed.end ?? st.end;
     if (a === st.start && b === st.end) continue;
     const ext = (fr, fb) => { const e = baseAt(sid, fr) || baseAt(sid, fb); return e ? tf(e[0], e[1], ed) : null; };
-    if (f >= a && f < st.start) { const e = ext(st.start, st.start); if (e) out.push({ ...e, w: 1, sid, kind: "s" }); }
-    if (f <= b && f > st.end) { const e = ext(st.end, st.end); if (e) out.push({ ...e, w: 1, sid, kind: "s" }); }
+    const kk = ed.blur ?? 1;
+    if (f >= a && f < st.start) { const e = ext(st.start, st.start); if (e) out.push({ ...e, w: 1, sid, kind: "s", k: kk }); }
+    if (f <= b && f > st.end) { const e = ext(st.end, st.end); if (e) out.push({ ...e, w: 1, sid, kind: "s", k: kk }); }
     const fi = [a - 3, a - 2, a - 1].indexOf(f), fo = [b + 1, b + 2, b + 3].indexOf(f);
-    if (fi >= 0) { const e = ext(Math.max(a, st.start), st.start); if (e) out.push({ ...e, w: FADE[fi], sid, kind: "s" }); }
-    if (fo >= 0) { const e = ext(Math.min(b, st.end), st.end); if (e) out.push({ ...e, w: FADE[2 - fo], sid, kind: "s" }); }
+    if (fi >= 0) { const e = ext(Math.max(a, st.start), st.start); if (e) out.push({ ...e, w: FADE[fi], sid, kind: "s", k: kk }); }
+    if (fo >= 0) { const e = ext(Math.min(b, st.end), st.end); if (e) out.push({ ...e, w: FADE[2 - fo], sid, kind: "s", k: kk }); }
   }
   ED.added.forEach((ad, k) => {
     if (ad.del) return;
@@ -171,7 +173,7 @@ function ellsAt(f) {
     if (f >= ad.start && f <= ad.end) w = 1;
     else { const fi = [ad.start - 3, ad.start - 2, ad.start - 1].indexOf(f), fo = [ad.end + 1, ad.end + 2, ad.end + 3].indexOf(f);
            if (fi >= 0) w = FADE[fi]; else if (fo >= 0) w = FADE[2 - fo]; }
-    if (w > 0) out.push({ cx: ad.cx, cy: ad.cy, A: makeA(ad.rx, ad.ry, ad.ang || 0), w, sid: "a" + k, kind: "a", k });
+    if (w > 0) out.push({ cx: ad.cx, cy: ad.cy, A: makeA(ad.rx, ad.ry, ad.ang || 0), w, sid: "a" + k, kind: "a", ai: k, k: ad.blur ?? 1 });
   });
   return out;
 }
@@ -206,7 +208,8 @@ function draw() {
     sctx.drawImage(V, 0, 0, sw, sh);
     let minr = 1e9;
     for (const e of es) { const a = axesOf(e.A); minr = Math.min(minr, a.ry); }
-    const sigma = Math.max(15, 2 * minr * (M.params.BLUR_FRAC ?? 0.2)) * k;
+    const kmax = Math.max(...es.map(e => e.k ?? 1));
+    const sigma = Math.max(15, 2 * minr * (M.params.BLUR_FRAC ?? 0.2)) * kmax * k;
     bctx.filter = `blur(${sigma.toFixed(1)}px)`; bctx.drawImage(small, 0, 0); bctx.filter = "none";
     mctx.clearRect(0, 0, sw, sh);
     for (const e of es) {
@@ -470,6 +473,8 @@ function updSide() {
   $("iScale").disabled = isA;
   $("iScale").value = isA ? 1 : (ed.scale ?? 1);
   $("scaleV").textContent = isA ? "노란 점으로 조절" : `${Math.round((ed.scale ?? 1) * 100)}%`;
+  const bk = (isA ? ED.added[+String(sel).slice(1)].blur : ed.blur) ?? 1;
+  $("iBlur").value = bk; $("blurV").textContent = `${Math.round(bk * 100)}%`;
 }
 $("iStart").onchange = () => { if (sel == null) return; snapshot(); const [, b] = segRange(sel); edOf(sel).start = Math.max(0, Math.min(+$("iStart").value, b)); changed(); };
 $("iEnd").onchange = () => { if (sel == null) return; snapshot(); const [a] = segRange(sel); edOf(sel).end = Math.min(M.n - 1, Math.max(+$("iEnd").value, a)); changed(); };
@@ -480,6 +485,9 @@ function setEdge(which) { if (sel == null) return; snapshot(); const [a, b] = se
 $("iScale").oninput = () => { if (sel == null || String(sel).startsWith("a")) return; if (!$("iScale").dataset.snap) { snapshot(); $("iScale").dataset.snap = 1; }
   edOf(sel).scale = +$("iScale").value; draw(); updSide(); };
 $("iScale").onchange = () => { delete $("iScale").dataset.snap; changed(); };
+$("iBlur").oninput = () => { if (sel == null) return; if (!$("iBlur").dataset.snap) { snapshot(); $("iBlur").dataset.snap = 1; }
+  edOf(sel).blur = +$("iBlur").value; draw(); updSide(); };
+$("iBlur").onchange = () => { delete $("iBlur").dataset.snap; changed(); };
 $("bDel").onclick = delSel;
 function delSel() { if (sel == null) return; snapshot(); edOf(sel).del = true; sel = null; changed(); msg("삭제했어요 (Ctrl+Z로 되돌리기)", "ok"); }
 $("bReset").onclick = () => { if (sel == null) return; snapshot();

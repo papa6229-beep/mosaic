@@ -919,7 +919,8 @@ class Painter:
                 cv2.fillPoly(need, [(np.asarray(p, np.float32) - (X0, Y0)).astype(np.int32)], 1)
         sub = frame[Y0:Y1, X0:X1]
         minr = min(min(r) for _, _, r, _, _ in boxes)
-        soft = natural_fill(sub, need, max(15.0, 2 * minr * BLUR_FRAC), alpha).astype(np.float32)
+        kmax = max([float(e[4]) if len(e) > 4 and e[4] else 1.0 for e in ells] or [1.0])   # 검수 화면에서 고친 흐림 세기 (배수)
+        soft = natural_fill(sub, need, max(15.0, 2 * minr * BLUR_FRAC) * kmax, alpha).astype(np.float32)
         if self.fill is not None:                    # 블러 속은 이전 프레임과 섞어 천천히만 바뀜 (타원이 옮겨 가는 중에도)
             (pX0, pY0, pX1, pY1), ps = self.fill
             ox0, oy0, ox1, oy1 = max(X0, pX0), max(Y0, pY0), min(X1, pX1), min(Y1, pY1)
@@ -964,13 +965,13 @@ def apply_edits(ells, segtab, edits, n):
         A = np.asarray(e[1], float) / (float(ed.get("scale", 1.0)) ** 2)
         return [c.tolist(), A.tolist()]
 
-    def fades(o, sid, c_A_s, c_A_e, a, b):
+    def fades(o, sid, c_A_s, c_A_e, a, b, k=1.0):
         for m, w in zip((a - 3, a - 2, a - 1), FADE):
             if 0 <= m < n:
-                o[m].append((c_A_s[0], c_A_s[1], w, sid))
+                o[m].append((c_A_s[0], c_A_s[1], w, sid, k))
         for m, w in zip((b + 1, b + 2, b + 3), FADE[::-1]):
             if 0 <= m < n:
-                o[m].append((c_A_e[0], c_A_e[1], w, sid))
+                o[m].append((c_A_e[0], c_A_e[1], w, sid, k))
 
     for i in range(n):
         for e in ells[i]:
@@ -990,7 +991,7 @@ def apply_edits(ells, segtab, edits, n):
             if inside and not (a <= i <= b):
                 continue
             c, A = tf(e, ed)
-            out[i].append((c, A, e[2], sid))
+            out[i].append((c, A, e[2], sid, float(ed.get("blur", 1.0))))
     for sid, ed in se.items():
         if ed.get("del") or sid not in segtab or segtab[sid] is None or sid not in first:
             continue
@@ -1003,10 +1004,10 @@ def apply_edits(ells, segtab, edits, n):
         e_e = tf(bs.get(b, first[sid][1] if b > st["end"] else first[sid][0]), ed)
         for i in range(max(0, a), min(n, b + 1)):
             if i < st["start"]:
-                out[i].append((s_e[0], s_e[1], 1.0, sid))
+                out[i].append((s_e[0], s_e[1], 1.0, sid, float(ed.get("blur", 1.0))))
             elif i > st["end"]:
-                out[i].append((e_e[0], e_e[1], 1.0, sid))
-        fades(out, sid, s_e, e_e, a, b)
+                out[i].append((e_e[0], e_e[1], 1.0, sid, float(ed.get("blur", 1.0))))
+        fades(out, sid, s_e, e_e, a, b, float(ed.get("blur", 1.0)))
     for k, ad in enumerate((edits or {}).get("added", [])):
         if ad.get("del"):
             continue
@@ -1014,6 +1015,6 @@ def apply_edits(ells, segtab, edits, n):
         el = [c.tolist(), A.tolist()]
         a, b = int(ad["start"]), int(ad["end"])
         for i in range(max(0, a), min(n, b + 1)):
-            out[i].append((el[0], el[1], 1.0, f"a{k}"))
-        fades(out, f"a{k}", el, el, a, b)
+            out[i].append((el[0], el[1], 1.0, f"a{k}", float(ad.get("blur", 1.0))))
+        fades(out, f"a{k}", el, el, a, b, float(ad.get("blur", 1.0)))
     return out
