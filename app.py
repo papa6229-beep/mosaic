@@ -660,6 +660,43 @@ def review_video(jid):
     return send_file(r["src"], conditional=True)
 
 
+_rv_cache = {}
+
+
+@app.post("/review/<jid>/frame/<int:f>")
+def review_frame(jid, f):
+    """멈춘 화면용: 수정본과 똑같은 방식으로 이 프레임에 블러를 그려서 돌려줌 (화면 = 결과물)"""
+    d = _jdir(jid)
+    if not d:
+        return "없음", 404
+    import cover2
+    c = _rv_cache.get(jid)
+    if c is None:
+        r = json.load(open(os.path.join(d, "review.json"), encoding="utf-8"))
+        c = {"r": r, "polys": json.load(open(os.path.join(d, "polys.json"))), "cap": None, "pos": -1, "lock": threading.Lock()}
+        _rv_cache.clear()
+        _rv_cache[jid] = c
+    r = c["r"]
+    ells = (request.get_json(silent=True) or {}).get("ells", [])
+    with c["lock"]:
+        for k, v in r.get("params", {}).items():
+            if k in ("BLUR_FRAC", "FEATHER_W", "FEATHER_MAX", "FILL_KEEP"):
+                setattr(cover2, k, v)
+        if c["cap"] is None:
+            c["cap"] = cv2.VideoCapture(r["src"])
+        cap = c["cap"]
+        if f != c["pos"] + 1:                       # 바로 다음 프레임이 아니면 그 자리로 이동
+            cap.set(cv2.CAP_PROP_POS_FRAMES, f)
+        ok, frame = cap.read()
+        c["pos"] = f if ok else -1
+    if not ok:
+        return "프레임을 못 읽음", 500
+    P = cover2.Painter()
+    out, _ = P.paint(frame, [tuple(e) for e in ells], c["polys"][f] if f < len(c["polys"]) else [])
+    ok, buf = cv2.imencode(".jpg", out, [cv2.IMWRITE_JPEG_QUALITY, 85])
+    return Response(buf.tobytes(), mimetype="image/jpeg", headers={"Cache-Control": "no-store"})
+
+
 @app.post("/review/<jid>/edits")
 def review_save(jid):
     d = _jdir(jid)

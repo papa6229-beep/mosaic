@@ -99,7 +99,7 @@
     <div class="muted" id="sumEd"></div>
     <div class="keys">
       <b>스페이스</b> 재생/멈춤 · <b>← →</b> 1프레임 · <b>Shift+← →</b> 1초<br>
-      블러 <b>클릭</b> 선택 · <b>끌기</b> 위치 이동 · <b>노란 점 끌기</b> 크기<br>
+      블러 <b>클릭</b> 선택 · 안쪽 <b>끌기</b> 위치 · <b>테두리 선 끌기</b>(또는 Alt+끌기) 크기 · <b>휠</b> 흐림 세기<br>
       <b>[</b> <b>]</b> 지금 프레임을 시작/끝으로 · <b>Del</b> 삭제 · <b>Esc</b> 선택 해제<br>
       <b>N</b> 새 블러 그리기 · <b>Ctrl+Z</b> 되돌리기 · <b>, .</b> 이전/다음 구간<br>
       옮기기·크기 바꾸기 = 그 프레임에 키프레임 <b>◆</b> · <b>K</b> 지금 프레임 키 지우기
@@ -201,6 +201,25 @@ function segRange(id) {            // 선택한 블러의 (시작, 끝)
 const small = document.createElement("canvas"), sctx = small.getContext("2d", { willReadFrequently: false });
 const blurC = document.createElement("canvas"), bctx = blurC.getContext("2d");
 const maskC = document.createElement("canvas"), mctx = maskC.getContext("2d");
+const padC = document.createElement("canvas"), pctx = padC.getContext("2d");
+const pbC = document.createElement("canvas"), pbctx = pbC.getContext("2d");
+let exact = { f: -1, key: "", img: null }, exactT = null, exactBusy = false;
+function ellKey(f) { return f + "|" + JSON.stringify(ellsAt(f).map(e => [e.cx, e.cy, e.A, e.w, e.k ?? 1])); }
+function wantExact() {              // 멈춰 있으면 실제 수정본과 똑같이 그린 화면을 받아 옴
+  clearTimeout(exactT);
+  if (!showPreview || !V.paused || drag) return;
+  exactT = setTimeout(() => {
+    const f = cur, key = ellKey(f);
+    if (exact.key === key || exactBusy) return;
+    const ells = ellsAt(f).map(e => [[e.cx, e.cy], e.A, e.w, String(e.sid), e.k ?? 1]);
+    if (!ells.length) { exact = { f, key, img: null }; return; }
+    exactBusy = true;
+    fetch(`/review/${JID}/frame/${f}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ells }) })
+      .then(r => r.ok ? r.blob() : Promise.reject(r.status)).then(b => createImageBitmap(b))
+      .then(img => { exactBusy = false; exact = { f, key, img }; if (cur === f) draw(); else wantExact(); })
+      .catch(() => { exactBusy = false; });
+  }, 200);
+}
 function fit() {
   const r = V.getBoundingClientRect();
   OV.width = Math.round(r.width * devicePixelRatio); OV.height = Math.round(r.height * devicePixelRatio);
@@ -216,7 +235,11 @@ function draw() {
   const { s, ox, oy } = view();
   octx.clearRect(0, 0, OV.width, OV.height);
   const es = ellsAt(cur);
-  if (showPreview && es.length && V.readyState >= 2) {
+  let mode = "";
+  const useExact = showPreview && V.paused && !drag && exact.f === cur && exact.img && exact.key === ellKey(cur);
+  if (useExact) { octx.drawImage(exact.img, ox, oy, M.W * s, M.H * s); mode = "정확한 결과 (수정본과 같음)"; }
+  else if (showPreview && es.length && V.readyState >= 2) {
+    mode = V.paused ? "빠른 미리보기 → 정확한 결과 불러오는 중…" : "빠른 미리보기";
     const sw = Math.min(640, M.W), k = sw / M.W, sh = Math.round(M.H * k);
     for (const c of [small, blurC, maskC]) { c.width = sw; c.height = sh; }
     sctx.drawImage(V, 0, 0, sw, sh);
@@ -224,7 +247,17 @@ function draw() {
     for (const e of es) { const a = axesOf(e.A); minr = Math.min(minr, a.ry); }
     const kmax = Math.max(...es.map(e => e.k ?? 1));
     const sigma = Math.max(15, 2 * minr * (M.params.BLUR_FRAC ?? 0.2)) * kmax * k;
-    bctx.filter = `blur(${sigma.toFixed(1)}px)`; bctx.drawImage(small, 0, 0); bctx.filter = "none";
+    // 화면 가장자리 바깥을 가장자리 색으로 채운 뒤 흐림 (안 그러면 가장자리가 투명하게 비쳐 보임)
+    const pd = Math.ceil(sigma * 3) + 2;
+    padC.width = sw + 2 * pd; padC.height = sh + 2 * pd;
+    pctx.drawImage(small, pd, pd);
+    pctx.drawImage(small, 0, 0, sw, 1, pd, 0, sw, pd); pctx.drawImage(small, 0, sh - 1, sw, 1, pd, sh + pd, sw, pd);
+    pctx.drawImage(small, 0, 0, 1, sh, 0, pd, pd, sh); pctx.drawImage(small, sw - 1, 0, 1, sh, sw + pd, pd, pd, sh);
+    pctx.drawImage(small, 0, 0, 1, 1, 0, 0, pd, pd); pctx.drawImage(small, sw - 1, 0, 1, 1, sw + pd, 0, pd, pd);
+    pctx.drawImage(small, 0, sh - 1, 1, 1, 0, sh + pd, pd, pd); pctx.drawImage(small, sw - 1, sh - 1, 1, 1, sw + pd, sh + pd, pd, pd);
+    pbC.width = padC.width; pbC.height = padC.height;
+    pbctx.filter = `blur(${sigma.toFixed(1)}px)`; pbctx.drawImage(padC, 0, 0); pbctx.filter = "none";
+    bctx.drawImage(pbC, pd, pd, sw, sh, 0, 0, sw, sh);
     mctx.clearRect(0, 0, sw, sh);
     for (const e of es) {
       const a = axesOf(e.A);
@@ -241,6 +274,13 @@ function draw() {
     bctx.globalCompositeOperation = "destination-in"; bctx.drawImage(maskC, 0, 0); bctx.globalCompositeOperation = "source-over";
     octx.drawImage(blurC, ox, oy, M.W * s, M.H * s);
   }
+  if (mode && es.length) {
+    octx.save(); octx.font = `${12 * devicePixelRatio}px sans-serif`;
+    const tw = octx.measureText(mode).width + 12 * devicePixelRatio;
+    octx.fillStyle = "rgba(0,0,0,.55)"; octx.fillRect(ox + 8, oy + 8, tw, 20 * devicePixelRatio);
+    octx.fillStyle = useExact ? "#4ade80" : "#fde047"; octx.fillText(mode, ox + 14, oy + 8 + 14 * devicePixelRatio); octx.restore();
+  }
+  if (!useExact) wantExact();
   for (const e of es) {
     const isSel = sel != null && String(e.sid) === String(sel);
     if (!showOutline && !isSel) continue;
@@ -413,6 +453,12 @@ OV.addEventListener("pointerdown", ev => {
         snapshot(); const o = offAt(edOf(sel), cur);
         drag = { type: "scale", e, d0: Math.hypot(hx - e.cx, hy - e.cy), s0: o.scale }; return; } }
   }
+  const edge = edgeHit(all, x, y);                   // 테두리 선을 잡으면 크기 조절
+  if (edge || (ev.altKey && sel != null)) {
+    const e = edge || all.find(e => String(e.sid) === String(sel));
+    if (e) { sel = e.sid; snapshot(); const o = offAt(edOf(sel), cur);
+      drag = { type: "scale", e, d0: Math.max(5, Math.hypot(x - e.cx, y - e.cy)), s0: o.scale }; drawTL(); draw(); updSide(); return; }
+  }
   const hit = [...es].reverse().find(e => inside(e, x, y)) || [...all].reverse().find(e => inside(e, x, y));   // 나타나는 중(점선)인 블러도 선택 가능
   if (hit) {
     sel = hit.sid; snapshot();
@@ -421,7 +467,22 @@ OV.addEventListener("pointerdown", ev => {
   } else { sel = null; }
   drawTL(); draw(); updSide();
 });
+function edgeHit(list, x, y) {      // 마우스가 블러 테두리 선 가까이(화면에서 10픽셀 안)에 있는지
+  const { s } = view();
+  const order = [...list].sort((p, q) => (String(q.sid) === String(sel)) - (String(p.sid) === String(sel)));
+  for (const e of order) {
+    const dx = x - e.cx, dy = y - e.cy, A = e.A;
+    const q = Math.sqrt(Math.max(0, A[0][0] * dx * dx + 2 * A[0][1] * dx * dy + A[1][1] * dy * dy));
+    const r = Math.hypot(dx, dy) / Math.max(q, 1e-6);            // 그 방향의 반지름
+    if (Math.abs(q - 1) * r * s < 10 * devicePixelRatio) return e;
+  }
+  return null;
+}
 OV.addEventListener("pointermove", ev => {
+  if (!drag && M) {                                  // 커서 모양: 테두리 = 크기, 안쪽 = 이동
+    const [x, y] = toVid(ev), all = ellsAt(cur);
+    OV.style.cursor = tool === "draw" ? "crosshair" : edgeHit(all, x, y) || (ev.altKey && sel != null) ? "nwse-resize" : all.some(e => inside(e, x, y)) ? "move" : "default";
+  }
   if (!drag) return;
   const [x, y] = toVid(ev);
   if (drag.type === "new") { drag.x1 = x; drag.y1 = y; draw(); return; }
@@ -434,6 +495,18 @@ OV.addEventListener("pointermove", ev => {
   }
   draw(); updSide();
 });
+let wheelSnap = null;
+OV.addEventListener("wheel", ev => {                // 휠 = 흐림 세기 (선택한 블러, 없으면 마우스 아래 블러)
+  if (!M) return;
+  const [x, y] = toVid(ev);
+  if (sel == null) { const h = [...ellsAt(cur)].reverse().find(e => inside(e, x, y)); if (!h) return; sel = h.sid; }
+  ev.preventDefault();
+  if (!wheelSnap) snapshot();
+  clearTimeout(wheelSnap); wheelSnap = setTimeout(() => { wheelSnap = null; changed(); }, 500);
+  const ed = edOf(sel), v = Math.min(3, Math.max(0.5, (ed.blur ?? 1) + (ev.deltaY < 0 ? 0.1 : -0.1)));
+  ed.blur = Math.round(v * 100) / 100;
+  drawTL(); draw(); updSide();
+}, { passive: false });
 OV.addEventListener("pointerup", ev => {
   if (!drag) return;
   const d = drag; drag = null;
