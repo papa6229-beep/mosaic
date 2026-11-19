@@ -28,7 +28,7 @@
   #tlwrap{margin-top:8px;background:var(--panel);border-radius:8px;padding:6px}
   #ovw,#tl{display:block;width:100%}
   #ovw{height:40px;cursor:pointer;margin-bottom:4px}
-  #hsb{position:relative;height:16px;margin-top:6px;background:var(--bg);border-radius:8px;cursor:pointer;touch-action:none}
+  #hsb{position:relative;height:16px;margin-bottom:6px;background:var(--bg);border-radius:8px;cursor:pointer;touch-action:none}
   #hsbT{position:absolute;top:2px;bottom:2px;min-width:16px;background:#78716c;border-radius:6px;cursor:grab}
   #hsbT:hover,#hsbT.on{background:var(--acc)}
   #tl{cursor:pointer}
@@ -75,22 +75,22 @@
       <span class="tc"><b id="tc">0:00:00</b> · 프레임 <span id="fn">0</span> / <span id="fnN">0</span></span>
     </div>
     <div id="tlwrap">
-      <canvas id="ovw" title="전체 영상: 누르면 그 위치로 · 주황 상자 끌기 = 보는 범위 이동 · 상자 양 끝 끌기 = 보는 범위 넓히기/좁히기"></canvas>
-      <canvas id="tl" title="막대 클릭 = 선택하고 그 위치로 · 빈 곳 클릭 = 그 위치로 · 막대 양 끝 끌기 = 기간 · Ctrl/Shift+클릭 = 여러 개 선택 · Shift+끌기 = 상자로 여러 개 선택"></canvas>
-      <div id="hsb" title="끌어서 타임라인을 좌우로 이동"><div id="hsbT"></div></div>
-      <div class="ctl" style="margin-top:4px">
+      <div class="ctl" style="margin:0 0 6px">
         <span class="muted">타임라인 보기 범위</span>
         <button id="bZin">＋</button><button id="bZout">－</button>
         <span class="muted" id="zlab"></span>
         <span class="muted" style="margin-left:auto">이전/다음 블러 구간: <b>,</b> / <b>.</b></span>
         <button id="bPrevSeg">◀ 이전 구간</button><button id="bNextSeg">다음 구간 ▶</button>
       </div>
+      <div id="hsb" title="끌어서 타임라인을 좌우로 이동 (타임라인 위에서 Shift+휠도 돼요)"><div id="hsbT"></div></div>
+      <canvas id="ovw" title="전체 영상: 누르면 그 위치로 · 주황 상자 끌기 = 보는 범위 이동 · 상자 양 끝 끌기 = 보는 범위 넓히기/좁히기"></canvas>
+      <canvas id="tl" title="막대 클릭 = 선택하고 그 위치로 · 빈 곳 클릭 = 그 위치로 · 막대 양 끝 끌기 = 기간 · Ctrl/Shift+클릭 = 여러 개 선택 · Shift+끌기 = 상자로 여러 개 선택"></canvas>
     </div>
   </div>
   <div class="side">
     <h2 id="selTitle">선택한 블러 없음</h2>
     <div id="multiBox" style="display:none">
-      <div class="muted">여러 개를 고른 상태예요. <b>Del</b> 삭제 · <b>휠</b>/아래 막대 흐림 세기 · <b>[ ]</b> 시작/끝 맞추기 · 안쪽 끌기 이동이 고른 블러 모두에 적용돼요.</div>
+      <div class="muted">여러 개를 고른 상태예요. <b>Del</b> 삭제 · <b>Ctrl+휠</b>/아래 막대 흐림 세기 · <b>[ ]</b> 시작/끝 맞추기 · 안쪽 끌기 이동이 고른 블러 모두에 적용돼요.</div>
       <div class="row"><button id="bMerge" class="main" title="고른 블러를 하나로 합쳐요. 각자의 움직임은 그대로 이어져요 (G)">블러 합치기 (G)</button><button id="bDelM" class="danger">모두 삭제 (Del)</button></div>
       <div class="row"><label>흐림 세기</label><input type="range" id="iBlurM" min="0.5" max="3" step="0.05"><span id="blurMV" class="muted"></span></div>
       <hr>
@@ -115,12 +115,12 @@
     <div class="keys">
       <b>스페이스</b> 재생/멈춤 · <b>← →</b> 1프레임 · <b>Shift+← →</b> 1초 · <b>S</b> 소리<br>
       블러 <b>클릭</b> 선택 · <b>Shift+클릭</b> 여러 개 선택 · <b>A</b> 지금 화면의 블러 모두 선택<br>
-      안쪽 <b>끌기</b> 위치 · <b>테두리 선 끌기</b> 크기 · <b>주황 점</b> 길이 · <b>보라 점</b> 폭 · <b>휠</b> 흐림 세기<br>
+      안쪽 <b>끌기</b> 위치 · <b>테두리 선 끌기</b> 크기 · <b>주황 점</b> 길이 · <b>보라 점</b> 폭 · <b>Ctrl+휠</b> 흐림 세기<br>
       <b>초록 ↻ 손잡이</b> 또는 <b>Ctrl+끌기</b> 회전 (Shift: 15도씩) · <b>Q / E</b> 5도씩<br>
       <b>[</b> <b>]</b> 시작/끝을 지금 위치로 (선택 없으면 가장 가까운 블러를 끌어옴)<br>
       <b>Home / End</b> 선택한 블러 처음/끝으로 · <b>G</b> 고른 블러 합치기<br>
       <b>Del</b> 삭제 · <b>Esc</b> 선택 해제 · <b>N</b> 새 블러 · <b>Ctrl+Z</b> 되돌리기 · <b>, .</b> 이전/다음 구간<br>
-      타임라인: 막대 <b>클릭</b> 선택 · <b>Ctrl/Shift+클릭</b> 여러 개 · <b>Shift+끌기</b> 상자 선택 · 막대 끝 끌기 = 기간 (재생선에 착 붙음) · <b>K</b> 지금 프레임 키 지우기
+      타임라인: 막대 <b>클릭</b> 선택 · <b>Ctrl/Shift+클릭</b> 여러 개 · <b>Shift+끌기</b> 상자 선택 · 막대 끝 끌기 = 기간 (재생선에 착 붙음) · <b>Ctrl+휠</b> 늘이기/줄이기 · <b>Shift+휠</b> 좌우 이동<br><b>그냥 휠</b>은 어디서든 화면 위아래로만 움직여요 · <b>K</b> 지금 프레임 키 지우기
     </div>
     <hr>
     <div id="out"></div>
@@ -630,11 +630,11 @@ OV.addEventListener("pointermove", ev => {
 });
 let wheelSnap = null;
 function setBlurAll(fn) { for (const id of selIds()) { const ed = edOf(id); ed.blur = Math.round(Math.min(3, Math.max(0.5, fn(ed.blur ?? 1))) * 100) / 100; } }
-OV.addEventListener("wheel", ev => {                // 휠 = 흐림 세기 (고른 블러 모두, 없으면 마우스 아래 블러)
-  if (!M) return;
+OV.addEventListener("wheel", ev => {                // Ctrl+휠 = 흐림 세기 (고른 블러 모두, 없으면 마우스 아래 블러)
+  if (!M || !(ev.ctrlKey || ev.metaKey)) return;       // 그냥 휠 = 화면 위아래로만 (아무것도 안 바뀜)
+  ev.preventDefault();                                 // Ctrl+휠 = 흐림 세기 (브라우저 확대는 막음)
   const [x, y] = toVid(ev);
   if (sel == null) { const h = [...ellsAt(cur)].reverse().find(e => inside(e, x, y)); if (!h) return; selectOnly(h.sid); }
-  ev.preventDefault();
   if (!wheelSnap) snapshot();
   clearTimeout(wheelSnap); wheelSnap = setTimeout(() => { wheelSnap = null; changed(); }, 500);
   setBlurAll(v => v + (ev.deltaY < 0 ? 0.1 : -0.1));
@@ -734,9 +734,10 @@ TL.addEventListener("pointerup", () => {
   if (d.type === "tlKey" && d.moved) { changed(); return; }
   if (d.type === "tlKey") hist.pop();
 });
-TL.addEventListener("wheel", ev => { ev.preventDefault();
-  if (ev.shiftKey || Math.abs(ev.deltaX) > Math.abs(ev.deltaY)) { tlStart += (ev.deltaX || ev.deltaY) / 400 * tlSpan; drawTL(); return; }   // Shift+휠 = 좌우 이동
-  zoom(ev.deltaY > 0 ? 1.5 : 1 / 1.5); }, { passive: false });
+TL.addEventListener("wheel", ev => {                 // 그냥 휠 = 화면 위아래로만 · Ctrl+휠 = 늘이기/줄이기 · Shift+휠 = 좌우 이동
+  if (ev.ctrlKey || ev.metaKey) { ev.preventDefault(); zoom(ev.deltaY > 0 ? 1.5 : 1 / 1.5); return; }
+  if (ev.shiftKey) { ev.preventDefault(); tlStart += (ev.deltaX || ev.deltaY) / 400 * tlSpan; drawTL(); }
+}, { passive: false });
 // 위쪽 전체 보기: 클릭 = 그 위치로, 주황 상자 끌기 = 보는 범위 이동, 상자 양 끝 끌기 = 범위 넓히기/좁히기
 function ovwF(ev) { const r = OVW.getBoundingClientRect(); return (ev.clientX - r.left) / r.width * M.n; }
 function ovwEdge(ev) { const r = OVW.getBoundingClientRect(), x = ev.clientX - r.left, x0 = tlStart / M.n * r.width, x1 = (tlStart + tlSpan) / M.n * r.width;
