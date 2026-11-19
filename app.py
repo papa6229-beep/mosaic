@@ -684,7 +684,7 @@ def run_fix(fid, d):
             edits = json.load(open(ep)) if os.path.exists(ep) else {}
             ells = cover2.apply_edits(ells, segtab, edits, n)
             polys = json.load(open(os.path.join(d, "polys.json")))
-            out = os.path.join(d, os.path.splitext(r["out"])[0] + "_수정.mp4")
+            out = os.path.join(d, os.path.splitext(r["out"])[0] + "_fix.mp4")
             t0 = time.time()
             res, KP = paint_save(r["src"], ells, polys, out, job, n, r["W"], r["H"], fps, r.get("params", {}), 0, 99)
             frames = sum(x[1] for x in res)

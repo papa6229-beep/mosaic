@@ -315,17 +315,24 @@ class NudeBatch:
         self.labels = getattr(mod, "__labels")
         path = os.path.join(os.path.dirname(mod.__file__), "320n.onnx")
         self.size, self.how, self.torch, self.sess = size, "CPU", None, None
+        import onnxruntime
+        self.sess = onnxruntime.InferenceSession(path)
+        self.inp = self.sess.get_inputs()[0].name
         try:
             import torch, onnx, onnx2torch
             if torch.cuda.is_available():
-                self.torch = onnx2torch.convert(onnx.load(path)).eval().cuda().half()
-                self.how = "그래픽카드"
+                m = onnx2torch.convert(onnx.load(path)).eval().cuda()
+                # 그래픽카드 결과가 원래(CPU) 결과와 같은지 한 번 확인 — 다르면 그래픽카드 안 씀 (조용히 놓치는 일 방지)
+                rng = np.random.default_rng(0)
+                x = rng.random((2, 3, size, size), dtype=np.float32)
+                ref = self.sess.run(None, {self.inp: x})[0]
+                with torch.no_grad():
+                    got = m(torch.from_numpy(x).cuda()).float().cpu().numpy()
+                if got.shape == ref.shape and float(np.abs(got[:, 4:] - ref[:, 4:]).max()) < 0.02:
+                    self.torch = m
+                    self.how = "그래픽카드"
         except Exception:
             self.torch = None
-        if self.torch is None:
-            import onnxruntime
-            self.sess = onnxruntime.InferenceSession(path)
-            self.inp = self.sess.get_inputs()[0].name
 
     def detect(self, frames):
         blobs, meta = [], []
@@ -339,7 +346,7 @@ class NudeBatch:
         if self.torch is not None:
             import torch
             with torch.no_grad():
-                out = self.torch(torch.from_numpy(x).cuda().half()).float().cpu().numpy()
+                out = self.torch(torch.from_numpy(x).cuda()).float().cpu().numpy()
         else:
             out = self.sess.run(None, {self.inp: x})[0]
         res = []
