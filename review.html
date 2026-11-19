@@ -89,6 +89,7 @@
       <div class="row"><label>시작</label><input type="number" id="iStart" min="0"><button id="bSetStart" title="지금 프레임을 시작으로 ([)">← 지금</button></div>
       <div class="row"><label>끝</label><input type="number" id="iEnd" min="0"><button id="bSetEnd" title="지금 프레임을 끝으로 (])">← 지금</button></div>
       <div class="row"><label>크기</label><input type="range" id="iScale" min="0.3" max="2.5" step="0.01"><span id="scaleV" class="muted"></span></div>
+      <div class="row"><label>각도</label><input type="range" id="iRot" min="-180" max="180" step="1"><span id="rotV" class="muted"></span></div>
       <div class="row"><span class="muted" id="keyInfo"></span></div>
       <div class="row"><button id="bKeyDel" title="지금 프레임의 키프레임 지우기 (K)">◆ 이 프레임 키 지우기</button><button id="bKeyAll">키프레임 모두 지우기</button></div>
       <div class="row"><label>흐림 세기</label><input type="range" id="iBlur" min="0.5" max="3" step="0.05"><span id="blurV" class="muted"></span></div>
@@ -100,6 +101,7 @@
     <div class="keys">
       <b>스페이스</b> 재생/멈춤 · <b>← →</b> 1프레임 · <b>Shift+← →</b> 1초<br>
       블러 <b>클릭</b> 선택 · 안쪽 <b>끌기</b> 위치 · <b>테두리 선 끌기</b>(또는 Alt+끌기) 크기 · <b>휠</b> 흐림 세기<br>
+      <b>초록 ↻ 손잡이 끌기</b> 회전 (Shift: 15도씩) · <b>Q / E</b> 5도씩 회전<br>
       <b>[</b> <b>]</b> 지금 프레임을 시작/끝으로 · <b>Del</b> 삭제 · <b>Esc</b> 선택 해제<br>
       <b>N</b> 새 블러 그리기 · <b>Ctrl+Z</b> 되돌리기 · <b>, .</b> 이전/다음 구간<br>
       옮기기·크기 바꾸기 = 그 프레임에 키프레임 <b>◆</b> · <b>K</b> 지금 프레임 키 지우기
@@ -137,18 +139,27 @@ function inside(e, x, y) {
 // ---------- 고친 내용 적용 (서버와 같은 규칙) ----------
 function segEd(sid) { return ED.segs[String(sid)]; }
 function offAt(ed, f) {             // 그 프레임의 이동·크기 (키프레임 사이는 직선으로 부드럽게)
+  const g = k => ({ dx: (k && k.dx) || 0, dy: (k && k.dy) || 0, scale: (k && k.scale) ?? 1, rot: (k && k.rot) || 0 });
   const ks = (ed && ed.keys) ? [...ed.keys].sort((p, q) => p.f - q.f) : [];
-  if (!ks.length) return { dx: (ed && ed.dx) || 0, dy: (ed && ed.dy) || 0, scale: (ed && ed.scale) ?? 1 };
-  if (f <= ks[0].f) return { dx: ks[0].dx, dy: ks[0].dy, scale: ks[0].scale };
-  const L = ks[ks.length - 1]; if (f >= L.f) return { dx: L.dx, dy: L.dy, scale: L.scale };
-  for (let i = 0; i < ks.length - 1; i++) { const a = ks[i], b = ks[i + 1];
-    if (a.f <= f && f <= b.f) { const t = (f - a.f) / Math.max(1, b.f - a.f);
-      return { dx: a.dx + (b.dx - a.dx) * t, dy: a.dy + (b.dy - a.dy) * t, scale: a.scale + (b.scale - a.scale) * t }; } }
-  return { dx: L.dx, dy: L.dy, scale: L.scale };
+  if (!ks.length) return g(ed);
+  if (f <= ks[0].f) return g(ks[0]);
+  const L = ks[ks.length - 1]; if (f >= L.f) return g(L);
+  for (let i = 0; i < ks.length - 1; i++) { const a = g(ks[i]), b = g(ks[i + 1]), fa = ks[i].f, fb = ks[i + 1].f;
+    if (fa <= f && f <= fb) { const t = (f - fa) / Math.max(1, fb - fa);
+      return { dx: a.dx + (b.dx - a.dx) * t, dy: a.dy + (b.dy - a.dy) * t, scale: a.scale + (b.scale - a.scale) * t, rot: a.rot + (b.rot - a.rot) * t }; } }
+  return g(L);
+}
+function rotA(A, th) {              // 타원을 가운데 기준으로 th만큼 돌림
+  if (!th) return A;
+  const c = Math.cos(th), s = Math.sin(th), R = [[c, -s], [s, c]];
+  const RA = [[R[0][0] * A[0][0] + R[0][1] * A[1][0], R[0][0] * A[0][1] + R[0][1] * A[1][1]],
+              [R[1][0] * A[0][0] + R[1][1] * A[1][0], R[1][0] * A[0][1] + R[1][1] * A[1][1]]];
+  return [[RA[0][0] * R[0][0] + RA[0][1] * R[0][1], RA[0][0] * R[1][0] + RA[0][1] * R[1][1]],
+          [RA[1][0] * R[0][0] + RA[1][1] * R[0][1], RA[1][0] * R[1][0] + RA[1][1] * R[1][1]]];
 }
 function tf(c, A, ed, f) {
   const o = offAt(ed, f), s = o.scale;
-  return { cx: c[0] + o.dx, cy: c[1] + o.dy, A: A.map(r => r.map(v => v / (s * s))) };
+  return { cx: c[0] + o.dx, cy: c[1] + o.dy, A: rotA(A.map(r => r.map(v => v / (s * s))), o.rot) };
 }
 function baseAt(sid, f) {           // 그 구간의 f 프레임 원래 타원 (불투명 100%)
   for (const e of (PLAN[f] || [])) if (e[3] === sid && e[2] >= 1) return e;
@@ -186,8 +197,8 @@ function ellsAt(f) {
     if (f >= ad.start && f <= ad.end) w = 1;
     else { const fi = [ad.start - 3, ad.start - 2, ad.start - 1].indexOf(f), fo = [ad.end + 1, ad.end + 2, ad.end + 3].indexOf(f);
            if (fi >= 0) w = FADE[fi]; else if (fo >= 0) w = FADE[2 - fo]; }
-    if (w > 0) { const o = ad.keys && ad.keys.length ? offAt(ad, f) : { dx: 0, dy: 0, scale: 1 };
-      out.push({ cx: ad.cx + o.dx, cy: ad.cy + o.dy, A: makeA(ad.rx * o.scale, ad.ry * o.scale, ad.ang || 0), w, sid: "a" + k, kind: "a", ai: k, k: ad.blur ?? 1 }); }
+    if (w > 0) { const o = ad.keys && ad.keys.length ? offAt(ad, f) : { dx: 0, dy: 0, scale: 1, rot: 0 };
+      out.push({ cx: ad.cx + o.dx, cy: ad.cy + o.dy, A: makeA(ad.rx * o.scale, ad.ry * o.scale, (ad.ang || 0) + o.rot), w, sid: "a" + k, kind: "a", ai: k, k: ad.blur ?? 1 }); }
   });
   return out;
 }
@@ -291,6 +302,16 @@ function draw() {
     octx.setLineDash(e.w < 1 ? [6 * devicePixelRatio, 5 * devicePixelRatio] : []);
     octx.strokeStyle = isSel ? "#38bdf8" : (e.kind === "a" ? "#a3e635" : "rgba(255,255,255,.75)");
     octx.stroke();
+    if (isSel) {                                    // 회전 손잡이
+      octx.restore(); octx.save();
+      const h = rotHandle(e);
+      octx.strokeStyle = "#4ade80"; octx.lineWidth = 2 * devicePixelRatio; octx.setLineDash([]);
+      octx.beginPath(); octx.moveTo(ox + h.bx * s, oy + h.by * s); octx.lineTo(ox + h.x * s, oy + h.y * s); octx.stroke();
+      octx.fillStyle = "#4ade80"; octx.beginPath(); octx.arc(ox + h.x * s, oy + h.y * s, 8 * devicePixelRatio, 0, Math.PI * 2); octx.fill();
+      octx.fillStyle = "#1c1917"; octx.font = `bold ${11 * devicePixelRatio}px sans-serif`; octx.textAlign = "center"; octx.textBaseline = "middle";
+      octx.fillText("↻", ox + h.x * s, oy + h.y * s);
+      octx.restore(); octx.save(); octx.translate(ox + e.cx * s, oy + e.cy * s); octx.rotate(a.ang);
+    }
     if (isSel && e.w >= 1) {
       octx.setLineDash([]);
       octx.fillStyle = "#f59e0b";
@@ -330,7 +351,7 @@ function buildRows() {              // 시간이 겹치지 않는 블러끼리 �
   rows = ends.length ? ends.map((_, i) => i) : [0];
 }
 function rowOf(id) { const r = lane[String(id)]; return r == null ? -1 : r; }
-const ROWH = 16;
+const ROWH = 26;
 function drawTL() {
   if (!M) return;
   const dpr = devicePixelRatio, w = TL.getBoundingClientRect().width;
@@ -371,8 +392,8 @@ function drawTL() {
     if (isSel) { tctx.fillStyle = "#f59e0b"; tctx.fillRect(x0 - 3, y - 1, 6, ROWH - 2); tctx.fillRect(x1 - 3, y - 1, 6, ROWH - 2);
       const ed = String(id).startsWith("a") ? ED.added[+String(id).slice(1)] : segEd(id);
       for (const k of ((ed && ed.keys) || [])) { const kx = tx(k.f + 0.5), ky = y + (ROWH - 4) / 2;
-        tctx.fillStyle = "#1c1917"; tctx.beginPath(); tctx.moveTo(kx, ky - 6); tctx.lineTo(kx + 6, ky); tctx.lineTo(kx, ky + 6); tctx.lineTo(kx - 6, ky); tctx.fill();
-        tctx.fillStyle = "#fde047"; tctx.beginPath(); tctx.moveTo(kx, ky - 4); tctx.lineTo(kx + 4, ky); tctx.lineTo(kx, ky + 4); tctx.lineTo(kx - 4, ky); tctx.fill(); } }
+        tctx.fillStyle = "#1c1917"; tctx.beginPath(); tctx.moveTo(kx, ky - 10); tctx.lineTo(kx + 10, ky); tctx.lineTo(kx, ky + 10); tctx.lineTo(kx - 10, ky); tctx.fill();
+        tctx.fillStyle = k.f === cur ? "#fb923c" : "#fde047"; tctx.beginPath(); tctx.moveTo(kx, ky - 7); tctx.lineTo(kx + 7, ky); tctx.lineTo(kx, ky + 7); tctx.lineTo(kx - 7, ky); tctx.fill(); } }
   };
   for (const [k, st] of Object.entries(SEG)) { if (!st) continue; const ed = segEd(+k) || {}; if (ed.del) continue;
     bar(+k, ed.start ?? st.start, ed.end ?? st.end, Object.keys(ed).length ? "#d97706" : "#a8a29e"); }
@@ -425,11 +446,11 @@ function edOf(id) {                // 선택한 블러의 고침 기록 (없으�
 function setKey(id, f, vals) {      // 이 프레임에 키프레임을 찍음 (없으면 지금 모습으로 새로 만들고 바꿈)
   const ed = edOf(id);
   if (!ed.keys || !ed.keys.length) {
-    const o = String(id).startsWith("a") ? { dx: 0, dy: 0, scale: 1 } : offAt(ed, f);
-    ed.keys = [{ f, dx: o.dx, dy: o.dy, scale: o.scale }]; delete ed.dx; delete ed.dy; delete ed.scale;
+    const o = String(id).startsWith("a") ? { dx: 0, dy: 0, scale: 1, rot: 0 } : offAt(ed, f);
+    ed.keys = [{ f, dx: o.dx, dy: o.dy, scale: o.scale, rot: o.rot }]; delete ed.dx; delete ed.dy; delete ed.scale;
   }
   let k = ed.keys.find(k => k.f === f);
-  if (!k) { const o = offAt(ed, f); k = { f, dx: o.dx, dy: o.dy, scale: o.scale }; ed.keys.push(k); ed.keys.sort((p, q) => p.f - q.f); }
+  if (!k) { const o = offAt(ed, f); k = { f, dx: o.dx, dy: o.dy, scale: o.scale, rot: o.rot }; ed.keys.push(k); ed.keys.sort((p, q) => p.f - q.f); }
   Object.assign(k, vals);
 }
 function msg(t, c) { const m = $("msg"); m.textContent = t; m.className = c || ""; }
@@ -453,6 +474,13 @@ OV.addEventListener("pointerdown", ev => {
         snapshot(); const o = offAt(edOf(sel), cur);
         drag = { type: "scale", e, d0: Math.hypot(hx - e.cx, hy - e.cy), s0: o.scale }; return; } }
   }
+  if (sel != null) {                                  // 회전 손잡이
+    const e = all.find(e => String(e.sid) === String(sel));
+    if (e) { const h = rotHandle(e), { s } = view();
+      if (Math.hypot(x - h.x, y - h.y) * s < 14 * devicePixelRatio) {
+        snapshot(); const o = offAt(edOf(sel), cur);
+        drag = { type: "rot", e, a0: Math.atan2(y - e.cy, x - e.cx), r0: o.rot }; return; } }
+  }
   const edge = edgeHit(all, x, y);                   // 테두리 선을 잡으면 크기 조절
   if (edge || (ev.altKey && sel != null)) {
     const e = edge || all.find(e => String(e.sid) === String(sel));
@@ -467,6 +495,10 @@ OV.addEventListener("pointerdown", ev => {
   } else { sel = null; }
   drawTL(); draw(); updSide();
 });
+function rotHandle(e) {            // 회전 손잡이: 짧은 축 방향으로 테두리 바깥 (화면에서 28픽셀 더)
+  const a = axesOf(e.A), { s } = view(), ext = a.ry + 28 * devicePixelRatio / s, th = a.ang - Math.PI / 2;
+  return { x: e.cx + ext * Math.cos(th), y: e.cy + ext * Math.sin(th), bx: e.cx + a.ry * Math.cos(th), by: e.cy + a.ry * Math.sin(th) };
+}
 function edgeHit(list, x, y) {      // 마우스가 블러 테두리 선 가까이(화면에서 10픽셀 안)에 있는지
   const { s } = view();
   const order = [...list].sort((p, q) => (String(q.sid) === String(sel)) - (String(p.sid) === String(sel)));
@@ -481,7 +513,8 @@ function edgeHit(list, x, y) {      // 마우스가 블러 테두리 선 가까�
 OV.addEventListener("pointermove", ev => {
   if (!drag && M) {                                  // 커서 모양: 테두리 = 크기, 안쪽 = 이동
     const [x, y] = toVid(ev), all = ellsAt(cur);
-    OV.style.cursor = tool === "draw" ? "crosshair" : edgeHit(all, x, y) || (ev.altKey && sel != null) ? "nwse-resize" : all.some(e => inside(e, x, y)) ? "move" : "default";
+    const se = sel != null ? all.find(e => String(e.sid) === String(sel)) : null, rh = se ? rotHandle(se) : null;
+    OV.style.cursor = tool === "draw" ? "crosshair" : (rh && Math.hypot(x - rh.x, y - rh.y) * view().s < 14 * devicePixelRatio) ? "grab" : edgeHit(all, x, y) || (ev.altKey && sel != null) ? "nwse-resize" : all.some(e => inside(e, x, y)) ? "move" : "default";
   }
   if (!drag) return;
   const [x, y] = toVid(ev);
@@ -492,6 +525,10 @@ OV.addEventListener("pointermove", ev => {
   } else if (drag.type === "scale") {
     const ref = drag.e, d = Math.hypot(x - ref.cx, y - ref.cy), r = Math.max(0.05, d / drag.d0);
     setKey(sel, cur, { scale: Math.min(4, Math.max(0.1, drag.s0 * r)) });
+  } else if (drag.type === "rot") {
+    let r = drag.r0 + Math.atan2(y - drag.e.cy, x - drag.e.cx) - drag.a0;
+    if (ev.shiftKey) r = Math.round(r / (Math.PI / 12)) * (Math.PI / 12);      // Shift: 15도씩
+    setKey(sel, cur, { rot: r });
   }
   draw(); updSide();
 });
@@ -530,6 +567,13 @@ function tlRow(ev) { const r = TL.getBoundingClientRect(); return Math.floor((ev
 TL.addEventListener("pointerdown", ev => {
   if (!M) return;
   const f = tlFrame(ev), ri = tlRow(ev), r = TL.getBoundingClientRect(), pxf = tlSpan / r.width;
+  if (sel != null) {                                   // ◆ 키프레임: 누르면 그 프레임으로, 좌우로 끌면 시점 이동
+    const ed = String(sel).startsWith("a") ? ED.added[+String(sel).slice(1)] : segEd(sel);
+    if (ed && ed.keys && rowOf(sel) === ri) {
+      const kk = ed.keys.find(k => Math.abs(f - (k.f + 0.5)) < 9 * pxf);
+      if (kk) { snapshot(); V.pause(); setFrame(kk.f); drag = { type: "tlKey", key: kk, moved: false }; TL.setPointerCapture(ev.pointerId); return; }
+    }
+  }
   if (sel != null) {                                   // 선택한 막대 끝 잡기
     const [a, b] = segRange(sel);
     if (rowOf(sel) === ri) {
@@ -547,12 +591,20 @@ TL.addEventListener("pointermove", ev => {
   if (!drag || !drag.type.startsWith("tl")) return;
   const f = Math.max(0, Math.min(M.n - 1, Math.round(tlFrame(ev))));
   if (drag.type === "tlSeek") { setFrame(f); return; }
+  if (drag.type === "tlKey") {
+    const ed = edOf(sel);
+    if (f !== drag.key.f && !ed.keys.some(k => k !== drag.key && k.f === f)) { drag.key.f = f; drag.moved = true; ed.keys.sort((p, q) => p.f - q.f); }
+    setFrame(drag.key.f); return;
+  }
   const ed = edOf(sel), [a, b] = segRange(sel);
   if (drag.type === "tlStart") ed.start = Math.min(f, b);
   else ed.end = Math.max(a, f - 1);
   setFrame(drag.type === "tlStart" ? ed.start : ed.end);
 });
-TL.addEventListener("pointerup", () => { if (drag && (drag.type === "tlStart" || drag.type === "tlEnd")) { drag = null; changed(); } else drag = null; });
+TL.addEventListener("pointerup", () => {
+  if (drag && (drag.type === "tlStart" || drag.type === "tlEnd" || (drag.type === "tlKey" && drag.moved))) { drag = null; changed(); }
+  else { if (drag && drag.type === "tlKey") hist.pop(); drag = null; }
+});
 TL.addEventListener("wheel", ev => { ev.preventDefault(); zoom(ev.deltaY > 0 ? 1.5 : 1 / 1.5); }, { passive: false });
 OVW.addEventListener("pointerdown", ev => { const r = OVW.getBoundingClientRect(); V.pause(); const f = (ev.clientX - r.left) / r.width * M.n; tlStart = Math.max(0, f - tlSpan / 2); setFrame(f); });
 function zoom(k) { tlSpan = Math.max(30, Math.min(M.n, tlSpan * k)); tlStart = Math.max(0, Math.min(cur - tlSpan / 2, M.n - tlSpan)); drawTL(); }
@@ -570,6 +622,7 @@ function updSide() {
   const ed = isA ? ED.added[+String(sel).slice(1)] : (segEd(sel) || {});
   const o = offAt(isA && !(ed.keys && ed.keys.length) ? {} : ed, cur);
   $("iScale").value = o.scale; $("scaleV").textContent = `${Math.round(o.scale * 100)}%`;
+  const deg = Math.round(o.rot * 180 / Math.PI); $("iRot").value = deg; $("rotV").textContent = `${deg}°`;
   const nk = (ed.keys || []).length, onKey = (ed.keys || []).some(k => k.f === cur);
   $("keyInfo").textContent = nk ? `키프레임 ${nk}개${onKey ? " · 지금 프레임에 키프레임 있음 ◆" : ""}` : "키프레임 없음 (옮기거나 크기를 바꾸면 이 프레임에 찍혀요)";
   $("bKeyDel").disabled = !onKey; $("bKeyAll").disabled = !nk;
@@ -588,6 +641,9 @@ $("iScale").onchange = () => { delete $("iScale").dataset.snap; changed(); };
 $("iBlur").oninput = () => { if (sel == null) return; if (!$("iBlur").dataset.snap) { snapshot(); $("iBlur").dataset.snap = 1; }
   edOf(sel).blur = +$("iBlur").value; draw(); updSide(); };
 $("iBlur").onchange = () => { delete $("iBlur").dataset.snap; changed(); };
+$("iRot").oninput = () => { if (sel == null) return; if (!$("iRot").dataset.snap) { snapshot(); $("iRot").dataset.snap = 1; }
+  setKey(sel, cur, { rot: +$("iRot").value * Math.PI / 180 }); draw(); updSide(); };
+$("iRot").onchange = () => { delete $("iRot").dataset.snap; changed(); };
 $("bKeyDel").onclick = () => { if (sel == null) return; const ed = edOf(sel); if (!ed.keys) return;
   snapshot(); ed.keys = ed.keys.filter(k => k.f !== cur); changed(); };
 $("bKeyAll").onclick = () => { if (sel == null) return; const ed = edOf(sel); if (!ed.keys) return; snapshot(); delete ed.keys; changed(); };
@@ -629,6 +685,8 @@ document.addEventListener("keydown", ev => {
   else if (k === "Escape") { sel = null; setTool(null); drawTL(); draw(); updSide(); }
   else if ((ev.ctrlKey || ev.metaKey) && (k === "z" || k === "Z")) { ev.preventDefault(); undo(); }
   else if (k === "k" || k === "K") $("bKeyDel").click();
+  else if ((k === "q" || k === "Q" || k === "e" || k === "E") && sel != null) {
+    snapshot(); const o = offAt(edOf(sel), cur); setKey(sel, cur, { rot: o.rot + ((k === "q" || k === "Q") ? -1 : 1) * Math.PI / 36 }); changed(); }
   else if (k === "[") setEdge("start");
   else if (k === "]") setEdge("end");
   else if (k === "n" || k === "N") setTool(tool === "draw" ? null : "draw");

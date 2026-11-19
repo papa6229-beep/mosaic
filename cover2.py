@@ -940,22 +940,30 @@ def _ell_from(cx, cy, rx, ry, ang):
 
 
 def edit_offset(ed, f):
-    """그 프레임에서의 이동·크기. 키프레임이 있으면 키프레임 사이를 직선으로 부드럽게 잇고, 처음·끝 바깥은 가까운 키프레임 그대로"""
-    keys = sorted((ed or {}).get("keys") or [], key=lambda k: k["f"])
+    """그 프레임에서의 이동·크기·회전(라디안). 키프레임이 있으면 키프레임 사이를 직선으로 부드럽게 잇고, 처음·끝 바깥은 가까운 키프레임 그대로"""
+    ed = ed or {}
+    keys = sorted(ed.get("keys") or [], key=lambda k: k["f"])
+    g = lambda k: (float(k.get("dx", 0.0)), float(k.get("dy", 0.0)), float(k.get("scale", 1.0)), float(k.get("rot", 0.0)))
     if not keys:
-        return float(ed.get("dx", 0.0)), float(ed.get("dy", 0.0)), float(ed.get("scale", 1.0))
+        return g(ed)
     if f <= keys[0]["f"]:
-        k = keys[0]
-        return float(k["dx"]), float(k["dy"]), float(k["scale"])
+        return g(keys[0])
     if f >= keys[-1]["f"]:
-        k = keys[-1]
-        return float(k["dx"]), float(k["dy"]), float(k["scale"])
+        return g(keys[-1])
     for k0, k1 in zip(keys[:-1], keys[1:]):
         if k0["f"] <= f <= k1["f"]:
             t = (f - k0["f"]) / max(1, k1["f"] - k0["f"])
-            return tuple(float(k0[q] + (k1[q] - k0[q]) * t) for q in ("dx", "dy", "scale"))
-    k = keys[-1]
-    return float(k["dx"]), float(k["dy"]), float(k["scale"])
+            a, b = g(k0), g(k1)
+            return tuple(a[q] + (b[q] - a[q]) * t for q in range(4))
+    return g(keys[-1])
+
+
+def _rotA(A, th):
+    if not th:
+        return A
+    c, s_ = np.cos(th), np.sin(th)
+    R = np.array([[c, -s_], [s_, c]])
+    return R @ A @ R.T
 
 
 def apply_edits(ells, segtab, edits, n):
@@ -981,9 +989,9 @@ def apply_edits(ells, segtab, edits, n):
                     first[sid][1] = e
 
     def tf(e, ed, f):
-        dx, dy, sc = edit_offset(ed, f)
+        dx, dy, sc, rot = edit_offset(ed, f)
         c = np.asarray(e[0], float) + (dx, dy)
-        A = np.asarray(e[1], float) / (sc ** 2)
+        A = _rotA(np.asarray(e[1], float) / (sc ** 2), rot)
         return [c.tolist(), A.tolist()]
 
     for i in range(n):
@@ -1038,8 +1046,8 @@ def apply_edits(ells, segtab, edits, n):
         kb = float(ad.get("blur", 1.0))
 
         def el_at(f):
-            dx, dy, sc = edit_offset(ad if ad.get("keys") else {}, f)
-            c, A = _ell_from(ad["cx"] + dx, ad["cy"] + dy, ad["rx"] * sc, ad["ry"] * sc, ad.get("ang", 0.0))
+            dx, dy, sc, rot = edit_offset(ad if ad.get("keys") else {}, f)
+            c, A = _ell_from(ad["cx"] + dx, ad["cy"] + dy, ad["rx"] * sc, ad["ry"] * sc, ad.get("ang", 0.0) + rot)
             return c.tolist(), A.tolist()
         for i in range(max(0, a), min(n, b + 1)):
             c, A = el_at(i)
