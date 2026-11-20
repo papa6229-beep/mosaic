@@ -94,7 +94,14 @@ def w_paint(src, start, n, W, H, q, to_disk=None):
     q.put((k, time.time() - t))
 
 
+def _one_cpu_env():
+    """실제 생성기(_run_parallel)와 똑같이: 일꾼들의 계산 도구가 CPU 하나만 쓰게"""
+    for k_ in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+        os.environ[k_] = "1"
+
+
 def parallel(target, K, src, n, W, H, total, *extra):
+    _one_cpu_env()
     ctx = mp.get_context("spawn")
     q = ctx.Queue()
     starts = [int(total * (k + 0.5) / (K + 1)) for k in range(K)]
@@ -214,6 +221,7 @@ def main():
     out(f"12. {K}개 동시에 블러 칠하고 압축 (저장 안 함): 합계 {fps:.1f} 프레임/초")
     tmpd = os.path.join(ROOT, "jobs")
     os.makedirs(tmpd, exist_ok=True)
+    _one_cpu_env()
     ctx = mp.get_context("spawn"); qq = ctx.Queue()
     ps = [ctx.Process(target=w_paint, args=(src, int(total * (k + 0.5) / (K + 1)), N, W, H, qq, os.path.join(tmpd, f"_bench{k}.nut")))
           for k in range(K)]
