@@ -30,6 +30,38 @@ def _log(job, msg, pct=None):
             job["sub_pct"] = pct
 
 
+def _dir_mb(d):
+    t = 0
+    for dp, _, fs in os.walk(d):
+        for f in fs:
+            try:
+                t += os.path.getsize(os.path.join(dp, f))
+            except OSError:
+                pass
+    return t / 1e6
+
+
+class _DlWatch:
+    """모델 받는 동안 폴더 크기를 2초마다 재서 '몇 MB / 몇 MB · 초당 몇 MB' 를 보여 줌"""
+    def __init__(self, job, d, label, total_mb):
+        self.stop = threading.Event()
+        base, t0 = _dir_mb(d), time.time()
+
+        def run():
+            last, lt = base, t0
+            while not self.stop.wait(2):
+                mb = _dir_mb(d) - base
+                now = time.time()
+                spd = max(0.0, (mb + base - last) / max(now - lt, 1e-3))
+                last, lt = mb + base, now
+                if mb > 1:
+                    _log(job, f"{label} 받는 중 (처음 한 번만) {mb / 1000:.2f}GB / 약 {total_mb / 1000:.1f}GB · 초당 {spd:.0f}MB")
+        threading.Thread(target=run, daemon=True).start()
+
+    def close(self):
+        self.stop.set()
+
+
 # ---------------- 소리 꺼내기 ----------------
 def extract_audio(src, wav):
     """원본에서 말소리를 16kHz 모노로 꺼냄 (방송용 MXF처럼 소리 트랙이 여러 개면 앞의 두 트랙을 합침)"""
@@ -118,10 +150,13 @@ def transcribe(wav, dur, job=None):
                              env={**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"},
                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         how, t0, tail = "", time.time(), []
+        watch = _DlWatch(job, WHISPER_DIR, "받아쓰기 모델", 1620)
         for line in p.stdout:
             line = line.rstrip()
             if line.startswith("H "):
+                watch.close()
                 how, t0 = line[2:], time.time()
+                _log(job, f"말 받아 적기 시작 ({how})")
             elif line.startswith("P "):
                 e = float(line[2:])
                 left = (time.time() - t0) / max(e, 1e-3) * max(dur - e, 0)
@@ -130,6 +165,7 @@ def transcribe(wav, dur, job=None):
             elif line:
                 tail = (tail + [line])[-15:]
         p.wait()
+        watch.close()
         if p.returncode == 0 and os.path.exists(out):
             words = [tuple(w) for w in json.load(open(out, encoding="utf-8"))]
             os.remove(out)
@@ -219,7 +255,11 @@ def ensure_translator(job=None):
         try:
             from huggingface_hub import hf_hub_download
             _log(job, "번역 모델 받는 중 (처음 한 번만 약 4.1GB)")
-            p = hf_hub_download(TR_REPO, TR_FILE, local_dir=TR_DIR)
+            watch = _DlWatch(job, TR_DIR, "번역 모델", 4130)
+            try:
+                p = hf_hub_download(TR_REPO, TR_FILE, local_dir=TR_DIR)
+            finally:
+                watch.close()
             if os.path.abspath(p) != os.path.abspath(gguf):
                 shutil.move(p, gguf)
         except Exception:
