@@ -9,14 +9,15 @@ import os, re, json, time, subprocess, threading, urllib.request, zipfile, shuti
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 MODELS = os.path.join(ROOT, "models")
-WHISPER_MODEL = "large-v3-turbo"                     # 영어 등 일본어 아닌 영상 + 언어 알아보기용
+# 받아쓰기: large-v2. 성인 영상 전용 자막 도구 WhisperJAV 가 실제 성인 영상으로 시험해서 기본값으로 쓰는 모델
+# (large-v3 계열(turbo 포함)은 신음이 이어지는 구간에서 통째로 빈 결과가 나오는 문제가 있어 v2 로 되돌렸다고 기록돼 있음)
+WHISPER_MODEL = "large-v2"
 WHISPER_DIR = os.path.join(MODELS, "whisper")
-JA_REPO = "quantumcookie/anime-whisper-ct2-int8"     # 일본어: 성인 게임 음성(속삭임·신음 포함)으로 훈련한 anime-whisper
-JA_DIR = os.path.join(WHISPER_DIR, "anime-whisper")
+OLD_ASR_DIRS = ["anime-whisper"]                     # 예전에 받은 것 (지움)
 TR_REPO = "HauhauCS/Qwen3.5-9B-Uncensored-HauhauCS-Aggressive"   # 번역: 검열 해제된 Qwen3.5 9B
 TR_FILE = "Qwen3.5-9B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf"
 TR_MB = 5300
-ASR_ID = "anime-whisper+turbo/2"     # 받아쓰기 방식이 바뀌면 이 값을 바꿈 → 예전 방식으로 만든 자막은 처음부터 다시
+ASR_ID = "large-v2/whisperjav-aggressive/3"     # 받아쓰기 방식이 바뀌면 이 값을 바꿈 → 예전 방식으로 만든 자막은 처음부터 다시
 OLD_TR_FILES = ["translategemma-4b-it-Q8_0.gguf"]   # 예전 번역 모델 (새 모델 받으면 지움)
 TR_DIR = os.path.join(MODELS, "translate")
 LLAMA_DIR = os.path.join(ROOT, "tools", "llama")
@@ -69,7 +70,7 @@ class _DlWatch:
 
 
 # ---------------- 소리 꺼내기 ----------------
-LEVEL = "dynaudnorm=f=250:g=15:m=30"    # 작은 속삭임은 키우고 큰 소리는 그대로 (구간마다 소리 크기를 고르게)
+LEVEL = "anull"     # 소리는 손대지 않음 (WhisperJAV: 소리를 가공하면 오히려 정확도가 떨어질 수 있음)
 def extract_audio(src, wav, job=None):
     """원본에서 말소리를 16kHz 모노로 꺼냄 (방송용 MXF처럼 소리 트랙이 여러 개면 앞의 두 트랙을 합침)"""
     import media
@@ -139,27 +140,6 @@ def _open(name, devs):
     raise RuntimeError(f"받아쓰기 모델을 못 띄웠어요: {last}")
 
 
-def _ja_model():
-    """anime-whisper 를 받아 두고, 단어 시간 계산이 되도록 설정 한 곳을 고침
-    (이 모델은 판단하는 층이 2개뿐인데 설정엔 큰 모델 기준 번호가 적혀 있어서 그대로 쓰면 멈춤 — Subtitle Edit 에서 찾아 고친 방법과 같음)"""
-    cfg = os.path.join(JA_DIR, "config.json")
-    if not os.path.exists(os.path.join(JA_DIR, "model.bin")):
-        from huggingface_hub import snapshot_download
-        snapshot_download(JA_REPO, local_dir=JA_DIR)
-    c = json.load(open(cfg, encoding="utf-8"))
-    heads = [[1, h] for h in range(20)]
-    if c.get("alignment_heads") != heads:
-        c["alignment_heads"] = heads
-        json.dump(c, open(cfg, "w", encoding="utf-8"))
-    tok = os.path.join(JA_DIR, "tokenizer.json")
-    if not os.path.exists(tok):        # 글자 사전이 없으면 같은 계열(large-v3 turbo)의 것을 씀
-        for dp, _, fs in os.walk(WHISPER_DIR):
-            if "tokenizer.json" in fs and not os.path.abspath(dp).startswith(os.path.abspath(JA_DIR)):
-                shutil.copy(os.path.join(dp, "tokenizer.json"), tok)
-                break
-    return JA_DIR
-
-
 def _detect_lang(model, wav):
     """영상 여러 군데의 말소리로 언어를 알아봄 → 'ja' / 'en' ..."""
     try:
@@ -172,7 +152,13 @@ def _detect_lang(model, wav):
         return "ja"
 
 
-VAD = {"threshold": 0.3, "min_silence_duration_ms": 400, "speech_pad_ms": 300}   # 기본(0.5)보다 낮춰서 작은 속삭임도 말로 잡음
+# WhisperJAV 의 'aggressive(작은 말소리까지 잡기)' 설정값 그대로 (whisperjav/config/components/*/faster_whisper*.py)
+VAD = {"threshold": 0.30, "min_speech_duration_ms": 80, "max_speech_duration_s": 6.0,
+       "min_silence_duration_ms": 300, "speech_pad_ms": 300}
+ASR = dict(task="transcribe", beam_size=2, best_of=2, patience=1.0, max_initial_timestamp=1.0, temperature=[0.0],
+           compression_ratio_threshold=2.2, log_prob_threshold=-1.0, no_speech_threshold=0.72,
+           condition_on_previous_text=False, word_timestamps=True, chunk_length=30,
+           repetition_penalty=1.5, no_repeat_ngram_size=3)
 
 
 def _asr_child(wav, out, devs):
@@ -180,20 +166,14 @@ def _asr_child(wav, out, devs):
     if "cuda" in devs and not _cuda_dlls():
         devs = ["cpu"]
     os.makedirs(WHISPER_DIR, exist_ok=True)
-    base, how = _open(WHISPER_MODEL, devs)
-    lang = _detect_lang(base, wav)
+    for d in os.listdir(WHISPER_DIR):              # 예전에 받았던 받아쓰기 모델(anime-whisper, large-v3-turbo) 지워서 자리 확보
+        if d in OLD_ASR_DIRS or "large-v3-turbo" in d:
+            shutil.rmtree(os.path.join(WHISPER_DIR, d), ignore_errors=True)
+    model, how = _open(WHISPER_MODEL, devs)
+    lang = _detect_lang(model, wav)
     print("L " + lang, flush=True)
-    if lang == "ja":
-        del base
-        model, how = _open(_ja_model(), devs)
-        how += " · 일본어 전용 모델"
-        kw = dict(language="ja", task="transcribe")
-    else:
-        model = base
-        kw = dict(language=lang)
     print("H " + how, flush=True)
-    segs, info = model.transcribe(wav, beam_size=5, vad_filter=True, vad_parameters=VAD, word_timestamps=True,
-                                  condition_on_previous_text=False, **kw)
+    segs, info = model.transcribe(wav, language=lang, vad_filter=True, vad_parameters=VAD, **ASR)
     words = []
     for s in segs:
         for w in (s.words or []):
