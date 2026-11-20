@@ -392,11 +392,16 @@ def translate_lines(lines, job=None, tr=None):
     tr = tr or Translator(job)
     try:
         t0 = time.time()
+        bad = 0
         for k, l in enumerate(lines):
             try:
                 l["ko"] = tr(l["src"], l.get("lang", "ja"))
-            except Exception:
+                bad = 0
+            except Exception as e:
                 l["ko"] = ""
+                bad += 1
+                if bad >= 3:                  # 연달아 안 되면 번역기 자체 문제 → 빈 자막으로 '완성'이라 하지 않고 멈춤
+                    raise RuntimeError(f"번역이 계속 실패해요: {e}")
             el = time.time() - t0
             left = el / (k + 1) * (len(lines) - k - 1)
             _log(job, f"한국어로 번역 중 {k + 1}/{len(lines)}줄 · 남은 시간 약 {int(left // 60)}분 {int(left % 60)}초",
