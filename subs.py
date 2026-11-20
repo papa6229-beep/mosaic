@@ -1,6 +1,6 @@
 """자막 만들기: 영상의 말(일본어·영어)을 받아 적고 → 한국어로 번역해서 → 자막 줄(시작·끝 시간 + 글자)로 만듦
 
-- 받아쓰기: faster-whisper, large-v3-turbo 모델 (처음 한 번만 받아서 models/whisper 에 저장)
+- 받아쓰기: faster-whisper. 후보 3개(ENGINES) 중 '구간 비교'로 고른 것 (처음 한 번만 받아서 models/whisper 에 저장)
 - 번역: TranslateGemma 4B (구글 번역 전용 모델, 8비트 GGUF) 를 llama.cpp(Vulkan 판)로 이 PC 안에서 돌림
   (모델은 models/translate, 실행 도구는 tools/llama 에 처음 한 번만 받아서 저장)
 - 결과: 작업 폴더의 subs.json  [{"start": 초, "end": 초, "src": 원문, "ko": 한국어, "lang": "ja"|"en"}]
@@ -11,13 +11,38 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 MODELS = os.path.join(ROOT, "models")
 # 받아쓰기: large-v2. 성인 영상 전용 자막 도구 WhisperJAV 가 실제 성인 영상으로 시험해서 기본값으로 쓰는 모델
 # (large-v3 계열(turbo 포함)은 신음이 이어지는 구간에서 통째로 빈 결과가 나오는 문제가 있어 v2 로 되돌렸다고 기록돼 있음)
-WHISPER_MODEL = "large-v2"
 WHISPER_DIR = os.path.join(MODELS, "whisper")
-OLD_ASR_DIRS = ["anime-whisper"]                     # 예전에 받은 것 (지움)
+# 받아쓰기 후보들. '구간 비교'로 같은 장면을 셋 다 돌려 보고 고른 걸 ENGINE_FILE 에 기억해서 계속 씀
+ENGINES = {
+    "v2": {"label": "Whisper large-v2 (WhisperJAV 기본)", "name": "large-v2"},
+    "kotoba": {"label": "Kotoba-Whisper v2 (일본어 전용 · 일본 방송 음성으로 훈련)",
+               "repo": "kotoba-tech/kotoba-whisper-v2.0-faster", "dir": "kotoba", "ja_only": True},
+    "anime": {"label": "anime-whisper (일본어 전용 · 성인 게임 음성으로 훈련)",
+              "repo": "quantumcookie/anime-whisper-ct2-int8", "dir": "anime-whisper", "ja_only": True},
+}
+ENGINE_FILE = os.path.join(MODELS, "asr_engine.txt")
+
+
+def get_engine():
+    try:
+        e = open(ENGINE_FILE, encoding="utf-8").read().strip()
+        return e if e in ENGINES else "v2"
+    except OSError:
+        return "v2"
+
+
+def set_engine(e):
+    if e in ENGINES:
+        os.makedirs(MODELS, exist_ok=True)
+        open(ENGINE_FILE, "w", encoding="utf-8").write(e)
 TR_REPO = "HauhauCS/Qwen3.5-9B-Uncensored-HauhauCS-Aggressive"   # 번역: 검열 해제된 Qwen3.5 9B
 TR_FILE = "Qwen3.5-9B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf"
 TR_MB = 5300
-ASR_ID = "large-v2/whisperjav-aggressive/3"     # 받아쓰기 방식이 바뀌면 이 값을 바꿈 → 예전 방식으로 만든 자막은 처음부터 다시
+ASR_VER = "4"            # 받아쓰기 설정이 바뀌면 올림 → 예전 방식으로 만든 자막은 '다시 만들기' 버튼이 뜸
+
+
+def asr_id(engine=None):
+    return f"{engine or get_engine()}/{ASR_VER}"
 OLD_TR_FILES = ["translategemma-4b-it-Q8_0.gguf"]   # 예전 번역 모델 (새 모델 받으면 지움)
 TR_DIR = os.path.join(MODELS, "translate")
 LLAMA_DIR = os.path.join(ROOT, "tools", "llama")
@@ -71,7 +96,7 @@ class _DlWatch:
 
 # ---------------- 소리 꺼내기 ----------------
 LEVEL = "anull"     # 소리는 손대지 않음 (WhisperJAV: 소리를 가공하면 오히려 정확도가 떨어질 수 있음)
-def extract_audio(src, wav, job=None):
+def extract_audio(src, wav, job=None, ss=None, t=None):
     """원본에서 말소리를 16kHz 모노로 꺼냄 (방송용 MXF처럼 소리 트랙이 여러 개면 앞의 두 트랙을 합침)"""
     import media
     info = media.probe(src)
@@ -89,7 +114,11 @@ def extract_audio(src, wav, job=None):
     m = re.search(r"Duration:\s*(\d+):(\d+):([\d.]+)", err)
     dur = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3)) if m else 0
     # 원본 파일을 처음부터 끝까지 읽어야 해서(방송용 MXF는 수십 GB) 시간이 걸림 → 어디까지 읽었는지 보여 줌
-    p = subprocess.Popen([ff, "-y", "-loglevel", "error", "-nostats", "-progress", "pipe:1", "-i", src, *a,
+    cut = []
+    if ss is not None:                       # 비교용: 이 구간만
+        cut = ["-ss", f"{ss:.3f}", "-t", f"{t:.3f}"]
+        dur = t
+    p = subprocess.Popen([ff, "-y", "-loglevel", "error", "-nostats", "-progress", "pipe:1", *cut, "-i", src, *a,
                           "-ar", "16000", "-c:a", "pcm_s16le", wav],
                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="ignore",
                          creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
@@ -152,25 +181,51 @@ def _detect_lang(model, wav):
         return "ja"
 
 
+def _engine_path(eid):
+    """엔진 모델 위치 (없으면 받음). 일본어 전용 두 모델은 판단하는 층이 2개뿐이라 단어 시간 계산 설정을 고쳐 줌
+    (설정엔 큰 모델 기준 7~31층 번호가 적혀 있어 그대로면 멈춤 — Subtitle Edit 이 찾은 문제와 같은 방법으로 고침)"""
+    e = ENGINES[eid]
+    if "repo" not in e:
+        return e["name"]
+    d = os.path.join(WHISPER_DIR, e["dir"])
+    if not os.path.exists(os.path.join(d, "model.bin")):
+        from huggingface_hub import snapshot_download
+        snapshot_download(e["repo"], local_dir=d)
+    cfg = os.path.join(d, "config.json")
+    c = json.load(open(cfg, encoding="utf-8"))
+    heads = [[1, h] for h in range(20)]
+    if c.get("alignment_heads") != heads:
+        c["alignment_heads"] = heads
+        json.dump(c, open(cfg, "w", encoding="utf-8"))
+    tok = os.path.join(d, "tokenizer.json")
+    if not os.path.exists(tok):        # 글자 사전이 빠져 있으면 같은 계열(large-v3 기반 Kotoba)의 것을 씀
+        for dp, _, fs in os.walk(WHISPER_DIR):
+            if "tokenizer.json" in fs and os.path.abspath(dp) != os.path.abspath(d) and "large-v2" not in dp:
+                shutil.copy(os.path.join(dp, "tokenizer.json"), tok)
+                break
+    return d
+
+
 # WhisperJAV 의 'aggressive(작은 말소리까지 잡기)' 설정값 그대로 (whisperjav/config/components/*/faster_whisper*.py)
 VAD = {"threshold": 0.30, "min_speech_duration_ms": 80, "max_speech_duration_s": 6.0,
        "min_silence_duration_ms": 300, "speech_pad_ms": 300}
 ASR = dict(task="transcribe", beam_size=2, best_of=2, patience=1.0, max_initial_timestamp=1.0, temperature=[0.0],
-           compression_ratio_threshold=2.2, log_prob_threshold=-1.0, no_speech_threshold=0.72,
+           compression_ratio_threshold=2.2, log_prob_threshold=-1.0,
+           no_speech_threshold=None,      # '말 없음'이라고 판단한 구간을 버리지 않음 (신음 섞인 대사가 여기서 버려졌음)
            condition_on_previous_text=False, word_timestamps=True, chunk_length=30,
            repetition_penalty=1.5, no_repeat_ngram_size=3)
 
 
-def _asr_child(wav, out, devs):
+def _asr_child(wav, out, devs, eid):
     """따로 띄운 프로그램 안에서 받아쓰기 (그래픽카드 쪽 문제로 갑자기 꺼져도 생성기 본체는 안 꺼지게)"""
     if "cuda" in devs and not _cuda_dlls():
         devs = ["cpu"]
     os.makedirs(WHISPER_DIR, exist_ok=True)
-    for d in os.listdir(WHISPER_DIR):              # 예전에 받았던 받아쓰기 모델(anime-whisper, large-v3-turbo) 지워서 자리 확보
-        if d in OLD_ASR_DIRS or "large-v3-turbo" in d:
+    for d in os.listdir(WHISPER_DIR):              # 안 쓰는 예전 모델(large-v3-turbo) 지워서 자리 확보
+        if "large-v3-turbo" in d:
             shutil.rmtree(os.path.join(WHISPER_DIR, d), ignore_errors=True)
-    model, how = _open(WHISPER_MODEL, devs)
-    lang = _detect_lang(model, wav)
+    model, how = _open(_engine_path(eid), devs)
+    lang = "ja" if ENGINES[eid].get("ja_only") else _detect_lang(model, wav)
     print("L " + lang, flush=True)
     print("H " + how, flush=True)
     segs, info = model.transcribe(wav, language=lang, vad_filter=True, vad_parameters=VAD, **ASR)
@@ -183,14 +238,14 @@ def _asr_child(wav, out, devs):
     json.dump(words, open(out, "w", encoding="utf-8"), ensure_ascii=False)
 
 
-def transcribe(wav, dur, job=None):
+def transcribe(wav, dur, job=None, eid=None):
     """→ 단어 목록 [(시작, 끝, 글자, 언어)]. 그래픽카드로 먼저 해 보고, 안 되면 CPU로 다시"""
     import sys
     out = wav + ".words.json"
     err = ""
     for devs in ("cuda,cpu", "cpu"):
         _log(job, "받아쓰기 모델 준비 중 (처음 한 번만 받아요)")
-        p = subprocess.Popen([sys.executable, os.path.abspath(__file__), "--asr", wav, out, devs],
+        p = subprocess.Popen([sys.executable, os.path.abspath(__file__), "--asr", wav, out, devs, eid or get_engine()],
                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="ignore",
                              env={**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"},
                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
@@ -512,7 +567,7 @@ def make_subtitles(src, out_json, job=None):
                 old = json.load(open(out_json, encoding="utf-8"))
             except Exception:
                 old = None
-        if old and old.get("lines") and not old.get("translated") and old.get("asr") == ASR_ID:
+        if old and old.get("lines") and not old.get("translated") and old.get("asr") == asr_id():
             lines = old["lines"]                      # 받아쓰기는 이미 끝남 → 번역만 다시
             _log(job, f"받아 적은 {len(lines)}줄로 번역만 다시 해요", 60)
         else:
@@ -523,13 +578,58 @@ def make_subtitles(src, out_json, job=None):
                 dur = w.getnframes() / float(w.getframerate())
             words = transcribe(wav, dur, job)
             lines = build_lines(words)
-            json.dump({"lines": lines, "translated": False, "asr": ASR_ID}, open(out_json, "w", encoding="utf-8"), ensure_ascii=False)
+            json.dump({"lines": lines, "translated": False, "asr": asr_id(), "engine": get_engine()}, open(out_json, "w", encoding="utf-8"), ensure_ascii=False)
         translate_lines(lines, job)
-        json.dump({"lines": lines, "translated": True, "asr": ASR_ID}, open(out_json, "w", encoding="utf-8"), ensure_ascii=False)
+        json.dump({"lines": lines, "translated": True, "asr": asr_id(), "engine": get_engine()}, open(out_json, "w", encoding="utf-8"), ensure_ascii=False)
         _log(job, f"자막 완성 ({len(lines)}줄)", 100)
         if job is not None:
             job["sub_done"] = True
         return lines
+    except Exception as e:
+        traceback.print_exc()
+        if job is not None:
+            job["sub_error"] = str(e)[:300]
+            job["sub_done"] = True
+        raise
+    finally:
+        try:
+            os.remove(wav)
+        except Exception:
+            pass
+
+
+# ---------------- 구간 비교 ----------------
+def compare_engines(src, out_json, ss, t, job=None):
+    """같은 구간을 받아쓰기 후보 셋으로 각각 받아 적고 번역 → compare.json (자막 화면에서 나란히 비교)"""
+    d = os.path.dirname(out_json)
+    wav = os.path.join(d, "compare16k.wav")
+    try:
+        _log(job, "비교할 구간 소리 꺼내는 중", 1)
+        extract_audio(src, wav, job, ss, t)
+        res = {}
+        for k, eid in enumerate(ENGINES):
+            sub = {}
+            words = transcribe(wav, t, sub, eid)
+            _log(job, f"{k + 1}/{len(ENGINES)} {ENGINES[eid]['label']} 받아쓰기 끝")
+            lines = build_lines(words)
+            for l in lines:
+                l["start"] = round(l["start"] + ss, 3)
+                l["end"] = round(l["end"] + ss, 3)
+            res[eid] = lines
+            _log(job, f"{k + 1}/{len(ENGINES)} {ENGINES[eid]['label']} 받아 적음 ({len(lines)}줄)", int((k + 1) * 60 / len(ENGINES)))
+        _log(job, "비교용 번역 중", 62)
+        tr = Translator(job)
+        try:
+            for eid, lines in res.items():
+                if lines:
+                    translate_lines(lines, None, tr)
+        finally:
+            tr.close()
+        json.dump({"start": ss, "len": t, "engines": {e: ENGINES[e]["label"] for e in ENGINES}, "results": res,
+                   "chosen": get_engine()}, open(out_json, "w", encoding="utf-8"), ensure_ascii=False)
+        _log(job, "비교 끝 — 아래에서 셋을 나란히 보고 고르세요", 100)
+        if job is not None:
+            job["sub_done"] = True
     except Exception as e:
         traceback.print_exc()
         if job is not None:
@@ -565,5 +665,5 @@ def to_srt(lines, field="ko"):
 
 if __name__ == "__main__":
     import sys
-    if len(sys.argv) >= 5 and sys.argv[1] == "--asr":
-        _asr_child(sys.argv[2], sys.argv[3], sys.argv[4].split(","))
+    if len(sys.argv) >= 6 and sys.argv[1] == "--asr":
+        _asr_child(sys.argv[2], sys.argv[3], sys.argv[4].split(","), sys.argv[5])

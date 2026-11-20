@@ -872,17 +872,21 @@ sub_state = {}
 sub_lock = threading.Lock()
 
 
-def start_subs(jid, src):
-    """자막 만들기를 뒤에서 시작 (한 번에 하나씩). 진행 상황은 sub_state[jid]"""
+def start_subs(jid, src, compare=None):
+    """자막 만들기(또는 구간 비교)를 뒤에서 시작 (한 번에 하나씩). 진행 상황은 sub_state[jid]"""
     st = sub_state.get(jid)
     if st and not st.get("sub_done"):
         return st
-    st = sub_state[jid] = {"sub_msg": "자막 만들기 대기 중", "sub_pct": 0, "sub_done": False}
+    st = sub_state[jid] = {"sub_msg": "대기 중 (다른 자막 작업이 끝나면 시작)", "sub_pct": 0, "sub_done": False,
+                           "kind": "compare" if compare else "make"}
 
     def run():
         with sub_lock:
             try:
                 import subs
+                if compare:
+                    subs.compare_engines(src, os.path.join(JOBS, jid, "compare.json"), compare[0], compare[1], st)
+                    return
                 subs.make_subtitles(src, os.path.join(JOBS, jid, "subs.json"), st)
             except Exception as e:
                 st.update(sub_done=True, sub_error=st.get("sub_error") or str(e)[:300])
@@ -899,8 +903,12 @@ def review_subs(jid):
     data = json.load(open(p, encoding="utf-8")) if os.path.exists(p) else None
     if data is not None:
         import subs
-        data["current"] = data.get("asr") == subs.ASR_ID       # 지금 받아쓰기 방식으로 만든 자막인지
-    return jsonify(subs=data, state=sub_state.get(jid))
+        data["current"] = data.get("asr") == subs.asr_id()     # 지금 받아쓰기 방식으로 만든 자막인지
+    cp = os.path.join(d, "compare.json")
+    import subs as _s
+    return jsonify(subs=data, state=sub_state.get(jid),
+                   compare=json.load(open(cp, encoding="utf-8")) if os.path.exists(cp) else None,
+                   engine=_s.get_engine(), engines={k: v["label"] for k, v in _s.ENGINES.items()})
 
 
 @app.post("/review/<jid>/subs")
@@ -927,6 +935,27 @@ def review_subs_make(jid):
         return jsonify(error="없는 작업"), 404
     r = json.load(open(os.path.join(d, "review.json"), encoding="utf-8"))
     return jsonify(state=start_subs(jid, r["src"]))
+
+
+@app.post("/review/<jid>/subs/compare")
+def review_subs_compare(jid):
+    d = _jdir(jid)
+    if not d:
+        return jsonify(error="없는 작업"), 404
+    body = request.get_json(silent=True) or {}
+    ss, t = max(0.0, float(body.get("start", 0))), min(600.0, max(30.0, float(body.get("len", 180))))
+    r = json.load(open(os.path.join(d, "review.json"), encoding="utf-8"))
+    return jsonify(state=start_subs(jid, r["src"], (ss, t)))
+
+
+@app.post("/review/<jid>/subs/engine")
+def review_subs_engine(jid):
+    import subs
+    e = (request.get_json(silent=True) or {}).get("engine")
+    if e not in subs.ENGINES:
+        return jsonify(error="없는 방식"), 400
+    subs.set_engine(e)
+    return jsonify(ok=True, engine=e)
 
 
 @app.get("/review/<jid>/subs.srt")

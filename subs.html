@@ -51,6 +51,15 @@
   .bar{height:8px;background:var(--line);border-radius:6px;overflow:hidden;margin:8px 0}
   .bar i{display:block;height:100%;width:0;background:var(--acc);transition:width .3s}
   kbd{font:600 11px/1 inherit;font-family:inherit;color:var(--ink);background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.14);border-bottom-width:2px;border-radius:4px;padding:2px 5px}
+  #cmpRes{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:8px}
+  #cmpRes .col{background:var(--bg);border-radius:8px;padding:6px;max-height:420px;overflow:auto}
+  #cmpRes .col.on{outline:2px solid var(--acc)}
+  #cmpRes .hd{font-size:12px;font-weight:700;margin-bottom:6px}
+  #cmpRes .it{padding:4px 6px;border-radius:6px;cursor:pointer;margin-bottom:3px}
+  #cmpRes .it:hover{background:var(--panel)}
+  #cmpRes .it .t{color:var(--sub);font-size:11px;font-variant-numeric:tabular-nums}
+  #cmpRes .it .s{color:var(--sub);font-size:12px}
+  #cmpRes .it .k{font-size:13px}
   .keys{display:grid;grid-template-columns:auto 1fr;gap:3px 10px;font-size:12px;color:var(--sub);align-items:center}
 </style>
 </head>
@@ -86,6 +95,21 @@
       <div class="bar"><i id="makeBar"></i></div>
       <button id="bMake" class="main">이 영상 자막 만들기</button>
       <div class="muted" style="margin-top:6px">처음 한 번은 받아쓰기·번역 모델(약 6GB)을 받아서 시간이 더 걸려요. 다음부터는 바로 시작해요.</div>
+    </div>
+
+    <div class="box" id="cmpBox">
+      <h2>받아쓰기 방식 비교 (같은 장면을 세 방식으로)</h2>
+      <div class="muted">지금 쓰는 방식: <b id="engNow"></b></div>
+      <div class="ctl" style="margin:6px 0 0">
+        <span class="muted">시작</span><b id="cmpAt" class="tc" style="margin:0">0:00:00</b>
+        <button class="sm" id="bCmpAt" title="재생 위치를 비교 시작점으로">← 지금 위치</button>
+        <span class="muted">길이</span><select id="cmpLen"><option value="120">2분</option><option value="180" selected>3분</option><option value="300">5분</option></select>
+        <button class="main" id="bCmp">이 구간 세 방식으로 비교하기</button>
+      </div>
+      <div class="muted" style="margin-top:4px">성인 대사·속삭임이 많은 장면에 재생 위치를 두고 누르세요. 처음엔 후보 모델을 받느라 더 걸려요(약 2.5GB).</div>
+      <div id="cmpMsg" class="muted" style="margin-top:6px"></div>
+      <div class="bar" id="cmpBarW" style="display:none"><i id="cmpBar"></i></div>
+      <div id="cmpRes"></div>
     </div>
 
     <div class="box">
@@ -367,11 +391,51 @@ $("bMake").onclick = () => {
   fetch(`/review/${JID}/subs/make`, { method: "POST" }).then(r => r.json()).then(r => { showMake(r.state); pollSubs(); });
 };
 function confirmRemake() { return $("bMake").dataset.ok === "1" || ($("bMake").dataset.ok = "1", msg("한 번 더 누르면 지금 자막을 지우고 처음부터 다시 만들어요", "bad"), false); }
+// ---------- 받아쓰기 방식 비교 ----------
+let cmpAt = 0, ENG = {}, engNow = "";
+function setCmpAt(t) { cmpAt = Math.max(0, t); $("cmpAt").textContent = fmt(cmpAt, 0); }
+$("bCmpAt").onclick = () => setCmpAt(V.currentTime);
+$("bCmp").onclick = () => {
+  if (!cmpAt) setCmpAt(V.currentTime);
+  fetch(`/review/${JID}/subs/compare`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ start: cmpAt, len: +$("cmpLen").value }) })
+    .then(r => r.json()).then(r => { showCmp(r.state); pollSubs(); });
+};
+function showCmp(st) {
+  const busy = st && !st.sub_done && st.kind === "compare";
+  $("bCmp").disabled = !!(st && !st.sub_done);
+  $("cmpBarW").style.display = busy ? "" : "none";
+  if (busy) { $("cmpMsg").textContent = st.sub_msg || ""; $("cmpBar").style.width = (st.sub_pct || 0) + "%"; }
+  else if (st && st.kind === "compare" && st.sub_error) $("cmpMsg").innerHTML = `<span style="color:var(--bad)">실패 — ${esc(st.sub_error)}</span>`;
+}
+function renderCmp(c) {
+  if (!c) { $("cmpRes").innerHTML = ""; return; }
+  $("cmpMsg").innerHTML = `${fmt(c.start, 0)}부터 ${Math.round(c.len / 60)}분 비교 결과 — 줄을 누르면 그 장면을 들려줘요. 제일 잘 받아 적은 쪽의 <b>이 방식으로 정하기</b>를 누르세요.`;
+  const order = ["v2", "kotoba", "anime"].filter(e => c.results[e]).concat(Object.keys(c.results).filter(e => !["v2", "kotoba", "anime"].includes(e)));
+  $("cmpRes").innerHTML = order.map(e => `<div class="col${e === engNow ? " on" : ""}">
+    <div class="hd">${esc(c.engines[e] || e)} · ${c.results[e].length}줄<br>
+      <button class="sm${e === engNow ? " on" : ""}" data-eng="${e}">${e === engNow ? "지금 쓰는 방식" : "이 방식으로 정하기"}</button></div>
+    ${c.results[e].map(l => `<div class="it" data-t="${l.start}"><div class="t">${fmt(l.start, 1)}</div><div class="s">${esc(l.src)}</div><div class="k">${esc(l.ko || "")}</div></div>`).join("") || '<div class="muted">받아 적은 게 없어요</div>'}
+  </div>`).join("");
+}
+$("cmpRes").addEventListener("click", e => {
+  const b = e.target.closest("[data-eng]");
+  if (b) {
+    fetch(`/review/${JID}/subs/engine`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ engine: b.dataset.eng }) })
+      .then(r => r.json()).then(() => { msg("받아쓰기 방식을 바꿨어요. 위의 '다시 만들기'를 누르면 이 방식으로 전체 자막을 만들어요", "ok"); pollSubs(); });
+    return;
+  }
+  const it = e.target.closest(".it"); if (it) { V.currentTime = +it.dataset.t; V.play(); }
+});
+
 let polling = false;
 function pollSubs() {
   if (polling) return; polling = true;
   const go = () => fetch(`/review/${JID}/subs`).then(r => r.json()).then(d => {
     const st = d.state;
+    ENG = d.engines || {}; engNow = d.engine || ""; $("engNow").textContent = ENG[engNow] || engNow;
+    showCmp(st);
+    if (st && !st.sub_done && st.kind === "compare") { $("bMake").disabled = true; return setTimeout(go, 1500); }
+    renderCmp(d.compare);
     if (st && !st.sub_done) {
       showMake(st);
       if (d.subs && d.subs.lines && !L.length) { L = d.subs.lines; render(); }   // 받아쓰기가 끝나면 원문부터 먼저 보여 줌
@@ -382,8 +446,9 @@ function pollSubs() {
     translated = !!(d.subs && d.subs.translated); current = !d.subs || !!d.subs.current; edited = !!(d.subs && d.subs.edited);
     $("bMake").textContent = !d.subs || !d.subs.lines ? "이 영상 자막 만들기"
       : !current ? "새 받아쓰기·번역 모델로 다시 만들기" : !translated ? "한국어 번역 다시 하기 (받아쓰기는 그대로)" : "자막 처음부터 다시 만들기";
-    if (d.subs && d.subs.lines) { L = d.subs.lines; hist = []; render(); $("makeBox").style.display = "none"; msg(`자막 ${L.length}줄 불러옴`, "ok"); if ((st && st.sub_error) || !translated || !current) showMake(st); }
-    else showMake(st);
+    const mst = st && st.kind === "compare" ? null : st;     // 비교 작업의 결과/오류는 자막 만들기 상자에 안 띄움
+    if (d.subs && d.subs.lines) { L = d.subs.lines; hist = []; render(); $("makeBox").style.display = "none"; msg(`자막 ${L.length}줄 불러옴`, "ok"); if ((mst && mst.sub_error) || !translated || !current) showMake(mst); }
+    else showMake(mst);
   }).catch(() => setTimeout(go, 3000));
   go();
 }
@@ -401,6 +466,7 @@ const waitAudio = () => fetch(`/review/${JID}/video-status`).then(r => r.json())
 });
 waitVideo();
 V.addEventListener("loadedmetadata", () => { drawTL(); showCap(); });
+V.addEventListener("pause", () => { if (!cmpAt) setCmpAt(V.currentTime); });
 window.addEventListener("resize", () => { drawTL(); showCap(); });
 pollSubs();
 </script>
