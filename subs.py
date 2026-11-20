@@ -70,7 +70,7 @@ class _DlWatch:
 
 # ---------------- 소리 꺼내기 ----------------
 LEVEL = "dynaudnorm=f=250:g=15:m=30"    # 작은 속삭임은 키우고 큰 소리는 그대로 (구간마다 소리 크기를 고르게)
-def extract_audio(src, wav):
+def extract_audio(src, wav, job=None):
     """원본에서 말소리를 16kHz 모노로 꺼냄 (방송용 MXF처럼 소리 트랙이 여러 개면 앞의 두 트랙을 합침)"""
     import media
     info = media.probe(src)
@@ -85,10 +85,30 @@ def extract_audio(src, wav):
              "-map", "[a]"]
     else:   # first_pts=0: 소리가 화면보다 늦게 시작하는 영상이면 앞을 무음으로 채워서 시간을 화면과 맞춤
         a = ["-map", "0:a:0", "-ac", "1", "-af", "aresample=async=1:first_pts=0," + LEVEL]
-    r = subprocess.run([ff, "-y", "-loglevel", "error", "-i", src, *a, "-ar", "16000", "-c:a", "pcm_s16le", wav],
-                       capture_output=True)
-    if r.returncode != 0:
-        raise RuntimeError("소리 꺼내기 실패: " + r.stderr.decode("utf-8", "ignore")[-300:])
+    m = re.search(r"Duration:\s*(\d+):(\d+):([\d.]+)", err)
+    dur = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3)) if m else 0
+    # 원본 파일을 처음부터 끝까지 읽어야 해서(방송용 MXF는 수십 GB) 시간이 걸림 → 어디까지 읽었는지 보여 줌
+    p = subprocess.Popen([ff, "-y", "-loglevel", "error", "-nostats", "-progress", "pipe:1", "-i", src, *a,
+                          "-ar", "16000", "-c:a", "pcm_s16le", wav],
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="ignore",
+                         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    errs = []
+    threading.Thread(target=lambda: errs.append(p.stderr.read()), daemon=True).start()
+    t0 = time.time()
+    for line in p.stdout:
+        if line.startswith("out_time_us=") and dur:
+            try:
+                t = int(line.split("=")[1]) / 1e6
+            except ValueError:
+                continue
+            if t > 1:
+                left = (time.time() - t0) / t * max(dur - t, 0)
+                _log(job, f"말소리 꺼내는 중 {int(t // 60)}분 / {int(dur // 60)}분 · 남은 시간 약 {int(left // 60)}분 {int(left % 60)}초",
+                     1 + int(min(t / dur, 1) * 9))
+    p.wait()
+    if p.returncode != 0:
+        time.sleep(0.2)
+        raise RuntimeError("소리 꺼내기 실패: " + ("".join(errs))[-300:])
     return info
 
 
@@ -517,7 +537,7 @@ def make_subtitles(src, out_json, job=None):
             _log(job, f"받아 적은 {len(lines)}줄로 번역만 다시 해요", 60)
         else:
             _log(job, "말소리 꺼내는 중", 1)
-            extract_audio(src, wav)
+            extract_audio(src, wav, job)
             import wave
             with wave.open(wav) as w:
                 dur = w.getnframes() / float(w.getframerate())
