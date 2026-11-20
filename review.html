@@ -487,11 +487,11 @@ function fmt(f) {                  // 분:초:프레임 (프리미어처럼 1초
 }
 
 // ---------- 재생·이동 ----------
-function setFrame(f, seek = true) {
+function setFrame(f, seek = true, follow = true) {
   f = Math.max(0, Math.min(M.n - 1, Math.round(f)));
   cur = f;
   if (seek) V.currentTime = (f + 0.5) / M.fps;
-  if (cur < tlStart || cur > tlStart + tlSpan) tlStart = Math.max(0, cur - tlSpan * 0.2);
+  if (follow && (cur < tlStart || cur > tlStart + tlSpan)) tlStart = Math.max(0, cur - tlSpan * 0.2);
   $("tc").textContent = fmt(cur); $("fn").textContent = cur;
   drawTL(); draw(); updSide();
 }
@@ -706,29 +706,42 @@ TL.addEventListener("pointerdown", ev => {
   V.pause(); setFrame(f);                              // 빈 곳 = 그 위치로 (선택은 그대로)
   drag = { type: "tlSeek" };
 });
-TL.addEventListener("pointermove", ev => {
-  if (!drag) { if (M) { const eg = tlEdgeAt(ev); TL.style.cursor = eg ? "ew-resize" : "pointer"; } return; }
-  if (!drag.type.startsWith("tl")) return;
-  const f = Math.max(0, Math.min(M.n - 1, Math.round(tlFrame(ev))));
-  if (drag.type === "tlSeek") { setFrame(f); return; }
-  if (drag.type === "tlBox") {
-    const r = TL.getBoundingClientRect(); drag.x1 = ev.clientX - r.left; drag.y1 = ev.clientY - r.top;
-    if (Math.hypot(drag.x1 - drag.x0, drag.y1 - drag.y0) > 4) drag.moved = true;
-    drawTL(); return;
-  }
+let tlAuto = null;                  // 끌다가 타임라인 끝에 닿으면 천천히 밀려 감
+function stopAuto() { clearInterval(tlAuto); tlAuto = null; }
+function applyTL(f) {               // 끄는 중: 재생선·키프레임·블러 끝을 f로 (보는 범위는 함부로 안 옮김)
+  f = Math.max(0, Math.min(M.n - 1, Math.round(f)));
+  if (drag.type === "tlSeek") { setFrame(f, true, false); return; }
   if (drag.type === "tlKey") {
     const ed = edOf(sel);
     if (f !== drag.key.f && !ed.keys.some(k => k !== drag.key && k.f === f)) { drag.key.f = f; drag.moved = true; ed.keys.sort((p, q) => p.f - q.f); }
-    setFrame(drag.key.f); return;
+    setFrame(drag.key.f, true, false); return;
   }
   const ed = edOf(sel), [a, b] = segRange(sel), r = TL.getBoundingClientRect(), snap = 8 * tlSpan / r.width;
   drag.moved = true;
   const c0 = drag.cur0;                                // 처음 재생선 자리 가까이 오면 착 붙음
   if (drag.type === "tlStart") { let v = Math.abs(f - c0) < snap ? c0 : f; ed.start = Math.min(v, b); }
   else { let v = Math.abs(f - 1 - c0) < snap ? c0 : f - 1; ed.end = Math.max(a, v); }
-  setFrame(drag.type === "tlStart" ? ed.start : ed.end);   // 끄는 동안 영상도 그 프레임을 보여 줌
+  setFrame(drag.type === "tlStart" ? ed.start : ed.end, true, false);   // 끄는 동안 영상도 그 프레임을 보여 줌
+}
+TL.addEventListener("pointermove", ev => {
+  if (!drag) { if (M) { const eg = tlEdgeAt(ev); TL.style.cursor = eg ? "ew-resize" : "pointer"; } return; }
+  if (!drag.type.startsWith("tl")) return;
+  if (drag.type === "tlBox") {
+    const r = TL.getBoundingClientRect(); drag.x1 = ev.clientX - r.left; drag.y1 = ev.clientY - r.top;
+    if (Math.hypot(drag.x1 - drag.x0, drag.y1 - drag.y0) > 4) drag.moved = true;
+    drawTL(); return;
+  }
+  const r = TL.getBoundingClientRect(), edge = 12;
+  const dir = ev.clientX > r.right - edge ? 1 : ev.clientX < r.left + edge ? -1 : 0;
+  if (!dir) { stopAuto(); applyTL(Math.min(tlStart + tlSpan - 1, Math.max(tlStart, tlFrame(ev)))); return; }
+  if (!tlAuto) tlAuto = setInterval(() => {            // 끝에 닿아 있는 동안만, 보는 범위의 2%씩 천천히
+    if (!drag) return stopAuto();
+    tlStart += dir * Math.max(1, tlSpan * 0.02); clampView();
+    applyTL(dir > 0 ? tlStart + tlSpan - 1 : tlStart);
+  }, 50);
 });
 TL.addEventListener("pointerup", () => {
+  stopAuto();
   const d = drag; if (!d) return; drag = null;
   if (d.type === "tlBox") {
     if (!d.moved) { if (d.hit != null) toggleSel(d.hit); }
