@@ -268,10 +268,18 @@ def ensure_translator(job=None):
     if not os.path.exists(exe):
         os.makedirs(LLAMA_DIR, exist_ok=True)
         _log(job, "번역 실행 도구 받는 중 (처음 한 번만)")
-        rel = json.load(urllib.request.urlopen(urllib.request.Request(
-            "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest", headers={"User-Agent": "mosaic-generator"}), timeout=60))
-        want = "bin-win-vulkan-x64.zip" if os.name == "nt" else "bin-ubuntu-vulkan-x64.zip"
-        asset = next((a for a in rel.get("assets", []) if a["name"].endswith(want)), None)
+        want = "bin-win-vulkan-x64.zip" if os.name == "nt" else "bin-ubuntu-vulkan-x64.tar.gz"
+        # 가장 최근 판은 아직 파일을 올리는 중일 수 있어서, 최근 몇 개 판 중에 윈도우용 파일이 있는 첫 판을 고름
+        try:
+            rels = json.load(urllib.request.urlopen(urllib.request.Request(
+                "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=15",
+                headers={"User-Agent": "mosaic-generator", "Accept": "application/vnd.github+json"}), timeout=60))
+        except Exception as e:
+            raise RuntimeError(f"번역 실행 도구 목록을 못 불러왔어요 (인터넷 확인): {e}")
+        if not isinstance(rels, list):          # 너무 자주 물어봐서 막힌 경우 등
+            raise RuntimeError("번역 실행 도구 목록을 못 불러왔어요: " + str(rels.get("message", rels))[:150])
+        asset = next((a for r in rels if not r.get("draft") and not r.get("prerelease")
+                      for a in r.get("assets", []) if a["name"].endswith(want)), None)
         if asset is None:
             raise RuntimeError("번역 실행 도구(llama.cpp)를 찾지 못했어요")
         z = os.path.join(LLAMA_DIR, "llama.zip")
@@ -373,14 +381,24 @@ def make_subtitles(src, out_json, job=None):
     d = os.path.dirname(out_json)
     wav = os.path.join(d, "audio16k.wav")
     try:
-        _log(job, "말소리 꺼내는 중", 1)
-        info = extract_audio(src, wav)
-        import wave
-        with wave.open(wav) as w:
-            dur = w.getnframes() / float(w.getframerate())
-        words = transcribe(wav, dur, job)
-        lines = build_lines(words)
-        json.dump({"lines": lines, "translated": False}, open(out_json, "w", encoding="utf-8"), ensure_ascii=False)
+        old = None
+        if os.path.exists(out_json):
+            try:
+                old = json.load(open(out_json, encoding="utf-8"))
+            except Exception:
+                old = None
+        if old and old.get("lines") and not old.get("translated"):
+            lines = old["lines"]                      # 받아쓰기는 이미 끝남 → 번역만 다시
+            _log(job, f"받아 적은 {len(lines)}줄로 번역만 다시 해요", 60)
+        else:
+            _log(job, "말소리 꺼내는 중", 1)
+            extract_audio(src, wav)
+            import wave
+            with wave.open(wav) as w:
+                dur = w.getnframes() / float(w.getframerate())
+            words = transcribe(wav, dur, job)
+            lines = build_lines(words)
+            json.dump({"lines": lines, "translated": False}, open(out_json, "w", encoding="utf-8"), ensure_ascii=False)
         translate_lines(lines, job)
         json.dump({"lines": lines, "translated": True}, open(out_json, "w", encoding="utf-8"), ensure_ascii=False)
         _log(job, f"자막 완성 ({len(lines)}줄)", 100)

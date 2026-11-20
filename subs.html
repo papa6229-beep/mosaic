@@ -361,8 +361,9 @@ function showMake(st) {
     $("makeBar").style.width = "0";
   }
 }
+let translated = true;
 $("bMake").onclick = () => {
-  if (L.length && !confirmRemake()) return;
+  if (L.length && translated && !confirmRemake()) return;
   fetch(`/review/${JID}/subs/make`, { method: "POST" }).then(r => r.json()).then(r => { showMake(r.state); pollSubs(); });
 };
 function confirmRemake() { return $("bMake").dataset.ok === "1" || ($("bMake").dataset.ok = "1", msg("한 번 더 누르면 지금 자막을 지우고 처음부터 다시 만들어요", "bad"), false); }
@@ -378,6 +379,8 @@ function pollSubs() {
       return setTimeout(go, 1500);
     }
     polling = false;
+    translated = !!(d.subs && d.subs.translated);
+    $("bMake").textContent = d.subs && d.subs.lines && !translated ? "한국어 번역 다시 하기 (받아쓰기는 그대로)" : "이 영상 자막 만들기";
     if (d.subs && d.subs.lines) { L = d.subs.lines; hist = []; render(); $("makeBox").style.display = "none"; msg(`자막 ${L.length}줄 불러옴`, "ok"); if (st && st.sub_error) showMake(st); }
     else showMake(st);
   }).catch(() => setTimeout(go, 3000));
