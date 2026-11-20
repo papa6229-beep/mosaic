@@ -295,53 +295,65 @@ class YuvFrame:
         X1 = min(self.W, X1 + (-X1) % self.sx); Y1 = min(self.H, Y1 + (-Y1) % self.sy)
         return X0, Y0, X1, Y1
 
+    def _mats(self):
+        """YUV(원본 값) ↔ BGR(0~255) 변환 행렬 (3x4: 곱하고 더하기)"""
+        if getattr(self, "_M", None) is None:
+            kr, kb = self.kr, self.kb
+            kg = 1 - kr - kb
+            if self.full:
+                ys, yo, cs = 255.0, 0.0, 255.0
+            else:
+                ys, yo, cs = 219.0, 16.0, 224.0
+            sc = self.sc
+            # BGR(0~1) → YUV(0~1 정규화) 행렬
+            T = np.array([[kr, kg, kb],
+                          [-kr / (2 * (1 - kb)), -kg / (2 * (1 - kb)), 0.5],
+                          [0.5, -kg / (2 * (1 - kr)), -kb / (2 * (1 - kr))]])  # 열 순서 R,G,B
+            T = T[:, [2, 1, 0]]                                                     # → B,G,R
+            S = np.diag([ys, cs, cs]) * sc / 255.0
+            fwd = np.hstack([S @ T, (np.array([yo, 128.0, 128.0]) * sc)[:, None]])  # BGR(0~255) → Y,U,V
+            inv = np.linalg.inv(S @ T)
+            back = np.hstack([inv, -(inv @ (np.array([yo, 128.0, 128.0]) * sc))[:, None]])  # Y,U,V → BGR(0~255)
+            self._M = (fwd.astype(np.float32), back.astype(np.float32))
+        return self._M
+
+    def _up(self, P, h, w):
+        if self.sx == 1 and self.sy == 1:
+            return P
+        import cv2
+        return cv2.resize(P, (w, h), interpolation=cv2.INTER_NEAREST)
+
     def bgr(self, X0, Y0, X1, Y1):
         """정렬된 영역을 8비트 BGR로"""
-        Yf = self.Y[Y0:Y1, X0:X1].astype(np.float32) / self.sc
-        U = self.U[Y0 // self.sy:Y1 // self.sy, X0 // self.sx:X1 // self.sx].astype(np.float32) / self.sc
-        V = self.V[Y0 // self.sy:Y1 // self.sy, X0 // self.sx:X1 // self.sx].astype(np.float32) / self.sc
-        if self.sx > 1 or self.sy > 1:
-            U = np.repeat(np.repeat(U, self.sy, 0), self.sx, 1)
-            V = np.repeat(np.repeat(V, self.sy, 0), self.sx, 1)
-        if self.full:
-            yn, cb, cr = Yf / 255, (U - 128) / 255, (V - 128) / 255
-        else:
-            yn, cb, cr = (Yf - 16) / 219, (U - 128) / 224, (V - 128) / 224
-        kr, kb = self.kr, self.kb
-        kg = 1 - kr - kb
-        r = yn + 2 * (1 - kr) * cr
-        b = yn + 2 * (1 - kb) * cb
-        g = (yn - kr * r - kb * b) / kg
-        out = np.stack([b, g, r], -1) * 255
+        import cv2
+        h, w = Y1 - Y0, X1 - X0
+        Yf = self.Y[Y0:Y1, X0:X1].astype(np.float32)
+        U = self._up(self.U[Y0 // self.sy:Y1 // self.sy, X0 // self.sx:X1 // self.sx].astype(np.float32), h, w)
+        V = self._up(self.V[Y0 // self.sy:Y1 // self.sy, X0 // self.sx:X1 // self.sx].astype(np.float32), h, w)
+        out = cv2.transform(cv2.merge([Yf, U, V]), self._mats()[1])
         return np.clip(out + 0.5, 0, 255).astype(np.uint8)
 
     def blend(self, X0, Y0, soft, alpha):
-        """블러 결과(soft: BGR 실수)를 투명도(alpha)만큼 YUV에 섞음. alpha가 0인 곳은 원본 그대로"""
+        """블러 결과(soft: BGR 실수)를 투명도(alpha)만큼 YUV에 섞음. alpha가 0인 곳은 원본 값 그대로 (정수 그대로 되돌아감)"""
+        import cv2
         h, w = alpha.shape
-        b, g, r = soft[..., 0] / 255, soft[..., 1] / 255, soft[..., 2] / 255
-        kr, kb = self.kr, self.kb
-        kg = 1 - kr - kb
-        yn = kr * r + kg * g + kb * b
-        cb = (b - yn) / (2 * (1 - kb))
-        cr = (r - yn) / (2 * (1 - kr))
-        if self.full:
-            ys, us, vs = yn * 255, 128 + cb * 255, 128 + cr * 255
-        else:
-            ys, us, vs = 16 + yn * 219, 128 + cb * 224, 128 + cr * 224
-        ys, us, vs = ys * self.sc, us * self.sc, vs * self.sc
-        m = alpha > 0
-        if not m.any():
-            return
+        yuv = cv2.transform(np.ascontiguousarray(soft, np.float32), self._mats()[0])
+        ys, us, vs = cv2.split(yuv)
+        def mix(P, src, a):
+            o = P.astype(np.float32)
+            r = o + (src - o) * a
+            if P.dtype == np.uint8:
+                return np.clip(r + 0.5, 0, 255).astype(np.uint8)
+            return np.clip(np.rint(r), 0, self.maxv).astype(P.dtype)
         Yr = self.Y[Y0:Y0 + h, X0:X0 + w]
-        yo = Yr.astype(np.float32)
-        Yr[m] = np.clip(np.rint(yo + (ys - yo) * alpha), 0, self.maxv)[m].astype(Yr.dtype)
+        Yr[...] = mix(Yr, ys, alpha)
         sx, sy = self.sx, self.sy
         hc, wc = h // sy, w // sx
-        def down(x):
-            return x[:hc * sy, :wc * sx].reshape(hc, sy, wc, sx).mean((1, 3))
-        ac = down(alpha)
-        mc = ac > 0
-        for P, src in ((self.U, us), (self.V, vs)):
+        if sx == 1 and sy == 1:
+            ac, uc, vc = alpha, us, vs
+        else:
+            dn = lambda x: cv2.resize(x[:hc * sy, :wc * sx], (wc, hc), interpolation=cv2.INTER_AREA)   # 칸마다 평균
+            ac, uc, vc = dn(alpha), dn(us), dn(vs)
+        for P, src in ((self.U, uc), (self.V, vc)):
             Pr = P[Y0 // sy:Y0 // sy + hc, X0 // sx:X0 // sx + wc]
-            po = Pr.astype(np.float32)
-            Pr[mc] = np.clip(np.rint(po + (down(src) - po) * ac), 0, self.maxv)[mc].astype(Pr.dtype)
+            Pr[...] = mix(Pr, src, ac)

@@ -39,7 +39,7 @@ def frames(src, depth=16, table=None):
     q = queue.Queue(maxsize=depth)
 
     def reader():
-        d = Dec(src, 0, 10 ** 9, W, H, info["fps"], seek=False)
+        d = Dec(src, 0, 10 ** 9, W, H, info["fps"], seek=False, threads=max(2, min(8, (os.cpu_count() or 4) // 2)))   # 혼자 읽으니까 CPU를 넉넉히
         while True:
             got = d.read()
             if got is None:
@@ -317,10 +317,10 @@ class Dec:
     시간으로 건너뛰면 영상 형식에 따라 1~2프레임 어긋날 수 있어서, 1초 앞에서부터 풀고 각 프레임의 시간을 보고 번호를 맞춤.
     table(위치 찾기 단계에서 기록한 프레임별 시간)이 있으면 그걸로 번호를 찾음 (시간이 고르지 않은 영상도 정확)"""
 
-    def __init__(self, src, start, count, W, H, fps, pix_fmt="bgr24", fsz=None, t0=0.0, table=None, seek=True):
+    def __init__(self, src, start, count, W, H, fps, pix_fmt="bgr24", fsz=None, t0=0.0, table=None, seek=True, threads=2):
         self.src, self.start, self.end, self.fps, self.t0 = src, start, start + count, fps, t0
         self.pix_fmt, self.fsz = pix_fmt, fsz or W * H * 3
-        self.table = table
+        self.table, self.threads = table, threads
         self.lut = {round(t * 1000, 1): k for k, t in enumerate(table)} if table else None
         self.order = 0
         self.last = None
@@ -334,7 +334,8 @@ class Dec:
 
     def _open(self, ss):
         self.ss = ss
-        self.p = subprocess.Popen([ffmpeg_exe(), "-hide_banner", "-nostats", "-loglevel", "info", "-threads", "2", "-copyts",
+        self.p = subprocess.Popen([ffmpeg_exe(), "-hide_banner", "-nostats", "-loglevel", "info", "-threads", str(self.threads),
+                                   "-filter_threads", str(max(1, self.threads)), "-copyts",
                                    *(["-ss", f"{ss:.6f}"] if ss > 0 else []), "-i", self.src, "-map", "0:v:0",
                                    "-vf", "showinfo=checksum=0", "-fps_mode", "passthrough",   # 프레임을 복제·생략하지 않고 풀린 그대로
                                    "-f", "rawvideo", "-pix_fmt", self.pix_fmt, "-"],
