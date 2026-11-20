@@ -39,8 +39,13 @@
   .side input[type=number]{width:84px;background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:4px 6px;font:inherit}
   .side input[type=range]{flex:1;accent-color:var(--acc)}
   .muted{color:var(--sub);font-size:12px}
-  .keys{font-size:12px;color:var(--sub);margin-top:10px;line-height:1.7}
-  .keys b{color:var(--ink);font-weight:600}
+  .keys{font-size:12px;color:var(--sub);margin-top:10px}
+  .kg{margin-bottom:12px}
+  .kt{font-size:11px;font-weight:700;color:var(--acc);letter-spacing:.02em;margin-bottom:5px;padding-bottom:3px;border-bottom:1px solid rgba(255,255,255,.08)}
+  .kr{display:grid;grid-template-columns:118px 1fr;gap:8px;align-items:center;padding:2px 0}
+  .kk{display:flex;flex-wrap:wrap;gap:3px;align-items:center}
+  .kk i{font-style:normal;color:var(--sub);font-size:11px}
+  kbd{font:600 11px/1 inherit;font-family:inherit;color:var(--ink);background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.14);border-bottom-width:2px;border-radius:4px;padding:3px 5px;white-space:nowrap}
   #msg{font-size:13px;color:var(--sub)}
   #msg.ok{color:var(--ok)} #msg.bad{color:var(--bad)}
   a.dl{display:inline-block;background:var(--ok);color:#1c1917;font-weight:700;padding:7px 12px;border-radius:8px;text-decoration:none}
@@ -100,10 +105,6 @@
       <div class="row"><label>시작</label><input type="number" id="iStart" min="0"><button id="bSetStart" title="지금 프레임을 시작으로 ([)">← 지금</button></div>
       <div class="row"><label>끝</label><input type="number" id="iEnd" min="0"><button id="bSetEnd" title="지금 프레임을 끝으로 (])">← 지금</button></div>
       <div class="row"><button id="bGoStart" title="이 블러 처음으로 (Home)">⇤ 처음으로</button><button id="bGoEnd" title="이 블러 끝으로 (End)">끝으로 ⇥</button></div>
-      <div class="row"><label>크기</label><input type="range" id="iScale" min="0.3" max="2.5" step="0.01"><span id="scaleV" class="muted"></span></div>
-      <div class="row"><label>길이</label><input type="range" id="iSx" min="0.2" max="4" step="0.01"><span id="sxV" class="muted"></span></div>
-      <div class="row"><label>폭</label><input type="range" id="iSy" min="0.2" max="4" step="0.01"><span id="syV" class="muted"></span></div>
-      <div class="row"><label>각도</label><input type="range" id="iRot" min="-180" max="180" step="1"><span id="rotV" class="muted"></span></div>
       <div class="row"><span class="muted" id="keyInfo"></span></div>
       <div class="row"><button id="bKeyDel" title="지금 프레임의 키프레임 지우기 (K)">◆ 이 프레임 키 지우기</button><button id="bKeyAll">키프레임 모두 지우기</button></div>
       <div class="row"><label>흐림 세기</label><input type="range" id="iBlur" min="0.5" max="3" step="0.05"><span id="blurV" class="muted"></span></div>
@@ -113,14 +114,46 @@
     <hr>
     <div class="muted" id="sumEd"></div>
     <div class="keys">
-      <b>스페이스</b> 재생/멈춤 · <b>← →</b> 1프레임 · <b>Shift+← →</b> 1초 · <b>S</b> 소리<br>
-      블러 <b>클릭</b> 선택 · <b>Shift+클릭</b> 여러 개 선택 · <b>A</b> 지금 화면의 블러 모두 선택<br>
-      안쪽 <b>끌기</b> 위치 · <b>테두리·점 끌기</b> 그 방향으로만 크기 · <b>Shift+끌기</b> 같은 비율로 · <b>Ctrl+휠</b> 흐림 세기<br>
-      <b>초록 ↻ 손잡이</b> 또는 <b>Ctrl+끌기</b> 회전 (Shift: 15도씩) · <b>Q / E</b> 5도씩<br>
-      <b>[</b> <b>]</b> 시작/끝을 지금 위치로 (선택 없으면 가장 가까운 블러를 끌어옴)<br>
-      <b>Home / End</b> 선택한 블러 처음/끝으로 · <b>G</b> 고른 블러 합치기<br>
-      <b>Del</b> 삭제 · <b>Esc</b> 선택 해제 · <b>N</b> 새 블러 · <b>Ctrl+Z</b> 되돌리기 · <b>, .</b> 이전/다음 구간<br>
-      타임라인: 막대 <b>클릭</b> 선택 · <b>Ctrl/Shift+클릭</b> 여러 개 · <b>Shift+끌기</b> 상자 선택 · 막대 끝 끌기 = 기간 (재생선에 착 붙음) · <b>Ctrl+휠</b> 늘이기/줄이기 · <b>Shift+휠</b> 좌우 이동<br><b>그냥 휠</b>은 어디서든 화면 위아래로만 움직여요 · <b>K</b> 지금 프레임 키 지우기
+      <div class="kg"><div class="kt">재생</div>
+        <div class="kr"><span class="kk"><kbd>Space</kbd></span><span>재생 / 멈춤</span></div>
+        <div class="kr"><span class="kk"><kbd>← →</kbd></span><span>1프레임 이동</span></div>
+        <div class="kr"><span class="kk"><kbd>Shift</kbd> <i>+</i> <kbd>← →</kbd></span><span>1초 이동</span></div>
+        <div class="kr"><span class="kk"><kbd>S</kbd></span><span>소리 켜기 / 끄기</span></div>
+      </div>
+      <div class="kg"><div class="kt">블러 고르기</div>
+        <div class="kr"><span class="kk"><kbd>클릭</kbd></span><span>블러 선택</span></div>
+        <div class="kr"><span class="kk"><kbd>Shift</kbd> <i>+</i> <kbd>클릭</kbd></span><span>여러 개 선택</span></div>
+        <div class="kr"><span class="kk"><kbd>A</kbd></span><span>지금 화면의 블러 모두 선택</span></div>
+        <div class="kr"><span class="kk"><kbd>빈 곳 클릭</kbd> <i>·</i> <kbd>Esc</kbd></span><span>선택 풀기</span></div>
+      </div>
+      <div class="kg"><div class="kt">모양 바꾸기 (화면에서)</div>
+        <div class="kr"><span class="kk"><kbd>안쪽 끌기</kbd></span><span>위치 옮기기</span></div>
+        <div class="kr"><span class="kk"><kbd>테두리</kbd> <i>·</i> <kbd>점 끌기</kbd></span><span>그 방향으로만 늘이기 / 줄이기</span></div>
+        <div class="kr"><span class="kk"><kbd>Shift</kbd> <i>+</i> <kbd>끌기</kbd></span><span>같은 비율로 크기 바꾸기</span></div>
+        <div class="kr"><span class="kk"><kbd>Ctrl</kbd> <i>+</i> <kbd>끌기</kbd> <i>·</i> <kbd>초록 ↻</kbd></span><span>회전 (Shift: 15도씩)</span></div>
+        <div class="kr"><span class="kk"><kbd>Q</kbd> <i>/</i> <kbd>E</kbd></span><span>5도씩 회전</span></div>
+        <div class="kr"><span class="kk"><kbd>Ctrl</kbd> <i>+</i> <kbd>휠</kbd></span><span>흐림 세기</span></div>
+      </div>
+      <div class="kg"><div class="kt">기간 맞추기</div>
+        <div class="kr"><span class="kk"><kbd>[</kbd> <i>/</i> <kbd>]</kbd></span><span>시작 / 끝을 재생선으로</span></div>
+        <div class="kr"><span class="kk"><kbd>Home</kbd> <i>/</i> <kbd>End</kbd></span><span>블러 처음 / 끝으로 이동</span></div>
+        <div class="kr"><span class="kk"><kbd>,</kbd> <i>/</i> <kbd>.</kbd></span><span>이전 / 다음 블러로 이동</span></div>
+        <div class="kr"><span class="kk"><kbd>막대 끝 끌기</kbd></span><span>기간 늘이기 / 줄이기</span></div>
+      </div>
+      <div class="kg"><div class="kt">타임라인</div>
+        <div class="kr"><span class="kk"><kbd>Ctrl</kbd> <i>+</i> <kbd>휠</kbd></span><span>넓히기 / 좁히기</span></div>
+        <div class="kr"><span class="kk"><kbd>Shift</kbd> <i>+</i> <kbd>휠</kbd></span><span>좌우로 옮기기</span></div>
+        <div class="kr"><span class="kk"><kbd>Ctrl</kbd> <i>+</i> <kbd>클릭</kbd></span><span>여러 개 선택</span></div>
+        <div class="kr"><span class="kk"><kbd>Shift</kbd> <i>+</i> <kbd>끌기</kbd></span><span>상자로 여러 개 선택</span></div>
+        <div class="kr"><span class="kk"><kbd>그냥 휠</kbd></span><span>화면 위아래로만 움직임</span></div>
+      </div>
+      <div class="kg"><div class="kt">편집</div>
+        <div class="kr"><span class="kk"><kbd>Del</kbd></span><span>삭제</span></div>
+        <div class="kr"><span class="kk"><kbd>G</kbd></span><span>고른 블러 합치기</span></div>
+        <div class="kr"><span class="kk"><kbd>N</kbd></span><span>새 블러 그리기</span></div>
+        <div class="kr"><span class="kk"><kbd>K</kbd></span><span>지금 프레임 키프레임 지우기</span></div>
+        <div class="kr"><span class="kk"><kbd>Ctrl</kbd> <i>+</i> <kbd>Z</kbd></span><span>되돌리기</span></div>
+      </div>
     </div>
     <hr>
     <div id="out"></div>
@@ -885,10 +918,6 @@ function updSide() {
   if (document.activeElement !== $("iEnd")) $("iEnd").value = b;
   const ed = isA ? ED.added[+String(sel).slice(1)] : (segEd(sel) || {});
   const o = offAt(isA && !(ed.keys && ed.keys.length) ? {} : ed, cur);
-  $("iScale").value = o.scale; $("scaleV").textContent = `${Math.round(o.scale * 100)}%`;
-  $("iSx").value = o.sx; $("sxV").textContent = `${Math.round(o.sx * 100)}%`;
-  $("iSy").value = o.sy; $("syV").textContent = `${Math.round(o.sy * 100)}%`;
-  const deg = Math.round(o.rot * 180 / Math.PI); $("iRot").value = deg; $("rotV").textContent = `${deg}°`;
   const nk = (ed.keys || []).length, onKey = (ed.keys || []).some(k => k.f === cur);
   $("keyInfo").textContent = nk ? `키프레임 ${nk}개${onKey ? " · 지금 프레임에 키프레임 있음 ◆" : ""}` : "키프레임 없음 (옮기거나 크기를 바꾸면 이 프레임에 찍혀요)";
   $("bKeyDel").disabled = !onKey; $("bKeyAll").disabled = !nk;
@@ -927,7 +956,6 @@ function sliderKey(id, key, conv) {
     setKey(sel, cur, { [key]: conv(+$(id).value) }); draw(); updSide(); };
   $(id).onchange = () => { delete $(id).dataset.snap; changed(); };
 }
-sliderKey("iScale", "scale", v => v); sliderKey("iSx", "sx", v => v); sliderKey("iSy", "sy", v => v); sliderKey("iRot", "rot", v => v * Math.PI / 180);
 $("iBlur").oninput = () => { if (sel == null) return; if (!$("iBlur").dataset.snap) { snapshot(); $("iBlur").dataset.snap = 1; }
   edOf(sel).blur = +$("iBlur").value; draw(); updSide(); };
 $("iBlur").onchange = () => { delete $("iBlur").dataset.snap; changed(); };
