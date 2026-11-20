@@ -941,7 +941,8 @@ class Painter:
             c, A = np.asarray(e[0], float), np.asarray(e[1], float)
             ws.append(float(e[2]) if len(e) > 2 else 1.0)
             r, _ = _axes(A)
-            F = float(np.clip(min(r) * FEATHER_W, 20, FEATHER_MAX))
+            fe = float(e[5]) if len(e) > 5 and e[5] else 1.0       # 검수 화면에서 고친 가장자리 번짐 (배수)
+            F = float(np.clip(min(r) * FEATHER_W * fe, 20, FEATHER_MAX * fe))
             boxes.append((c, A, r, F, max(r) + F))
         X0 = int(max(0, min(c[0] - R for c, _, _, _, R in boxes)))
         Y0 = int(max(0, min(c[1] - R for c, _, _, _, R in boxes)))
@@ -952,7 +953,7 @@ class Painter:
         if align is not None:
             X0, Y0, X1, Y1 = align(X0, Y0, X1, Y1)
         key = (X0, Y0, X1, Y1, tuple(np.round(np.concatenate([np.ravel(c) for c, A, _, _, _ in boxes] +
-                                                             [np.ravel(A) * 1e6 for c, A, _, _, _ in boxes] + [np.array(ws)]), 3)))
+                                                             [np.ravel(A) * 1e6 for c, A, _, _, _ in boxes] + [np.array(ws), np.array([F for _, _, _, F, _ in boxes])]), 3)))
         if self.akey == key:                         # 블러가 가만히 있으면 투명도 계산을 다시 하지 않음 (빠르게)
             alpha = self.alpha
         else:
@@ -1066,8 +1067,9 @@ def _rotA(A, th):
 
 def apply_edits(ells, segtab, edits, n):
     """검수 화면에서 고친 내용(구간별 이동·크기·삭제·기간·흐림 세기·키프레임, 새로 추가한 블러)을 블러 계획에 적용.
-    edits = {"segs": {구간번호: {"dx","dy","scale" 또는 "keys":[{"f","dx","dy","scale","rot","sx","sy"}], "del","start","end","blur"}},
-             "added": [{"start","end","cx","cy","rx","ry","ang","blur", "keys"}]}"""
+    edits = {"segs": {구간번호: {"dx","dy","scale" 또는 "keys":[{"f","dx","dy","scale","rot","sx","sy"}], "del","start","end","blur","fea"}},
+             "added": [{"start","end","cx","cy","rx","ry","ang","blur","fea", "keys"}]}
+    blur = 흐림 세기 배수, fea = 가장자리 번짐 폭 배수"""
     se = {int(k): v for k, v in (edits or {}).get("segs", {}).items()}
     out = [[] for _ in range(n)]
     base = {}
@@ -1110,7 +1112,7 @@ def apply_edits(ells, segtab, edits, n):
             if inside and not (a <= i <= b):
                 continue
             c, A = tf(e, ed, i)
-            out[i].append((c, A, e[2], sid, float(ed.get("blur", 1.0))))
+            out[i].append((c, A, e[2], sid, float(ed.get("blur", 1.0)), float(ed.get("fea", 1.0))))
     for sid, ed in se.items():
         if ed.get("del") or sid not in segtab or segtab[sid] is None or sid not in first:
             continue
@@ -1122,26 +1124,28 @@ def apply_edits(ells, segtab, edits, n):
         es_ = bs.get(a, first[sid][0]) if a >= st["start"] else first[sid][0]
         ee_ = bs.get(b, first[sid][1]) if b <= st["end"] else first[sid][1]
         kb = float(ed.get("blur", 1.0))
+        kf = float(ed.get("fea", 1.0))
         for i in range(max(0, a), min(n, b + 1)):
             if i < st["start"]:
                 c, A = tf(first[sid][0], ed, i)
-                out[i].append((c, A, 1.0, sid, kb))
+                out[i].append((c, A, 1.0, sid, kb, kf))
             elif i > st["end"]:
                 c, A = tf(first[sid][1], ed, i)
-                out[i].append((c, A, 1.0, sid, kb))
+                out[i].append((c, A, 1.0, sid, kb, kf))
         for m, w in zip((a - 3, a - 2, a - 1), FADE):
             if 0 <= m < n:
                 c, A = tf(es_, ed, m)
-                out[m].append((c, A, w, sid, kb))
+                out[m].append((c, A, w, sid, kb, kf))
         for m, w in zip((b + 1, b + 2, b + 3), FADE[::-1]):
             if 0 <= m < n:
                 c, A = tf(ee_, ed, m)
-                out[m].append((c, A, w, sid, kb))
+                out[m].append((c, A, w, sid, kb, kf))
     for k, ad in enumerate((edits or {}).get("added", [])):
         if ad.get("del"):
             continue
         a, b = int(ad["start"]), int(ad["end"])
         kb = float(ad.get("blur", 1.0))
+        kf = float(ad.get("fea", 1.0))
 
         def el_at(f):
             dx, dy, sc, rot, sx, sy = edit_offset(ad if ad.get("keys") else {}, f)
@@ -1149,9 +1153,9 @@ def apply_edits(ells, segtab, edits, n):
             return c.tolist(), A.tolist()
         for i in range(max(0, a), min(n, b + 1)):
             c, A = el_at(i)
-            out[i].append((c, A, 1.0, f"a{k}", kb))
+            out[i].append((c, A, 1.0, f"a{k}", kb, kf))
         for m, w in list(zip((a - 3, a - 2, a - 1), FADE)) + list(zip((b + 1, b + 2, b + 3), FADE[::-1])):
             if 0 <= m < n:
                 c, A = el_at(m)
-                out[m].append((c, A, w, f"a{k}", kb))
+                out[m].append((c, A, w, f"a{k}", kb, kf))
     return out

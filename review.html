@@ -98,6 +98,7 @@
       <div class="muted">여러 개를 고른 상태예요. <b>Del</b> 삭제 · <b>Ctrl+휠</b>/아래 막대 흐림 세기 · <b>[ ]</b> 시작/끝 맞추기 · 안쪽 끌기 이동이 고른 블러 모두에 적용돼요.</div>
       <div class="row"><button id="bMerge" class="main" title="고른 블러를 하나로 합쳐요. 각자의 움직임은 그대로 이어져요 (G)">블러 합치기 (G)</button><button id="bDelM" class="danger">모두 삭제 (Del)</button></div>
       <div class="row"><label>흐림 세기</label><input type="range" id="iBlurM" min="0.5" max="3" step="0.05"><span id="blurMV" class="muted"></span></div>
+      <div class="row"><label>가장자리 번짐</label><input type="range" id="iFeaM" min="0.3" max="3" step="0.05"><span id="feaMV" class="muted"></span></div>
       <hr>
     </div>
     <div id="selBox" style="display:none">
@@ -108,6 +109,7 @@
       <div class="row"><span class="muted" id="keyInfo"></span></div>
       <div class="row"><button id="bKeyDel" title="지금 프레임의 키프레임 지우기 (K)">◆ 이 프레임 키 지우기</button><button id="bKeyAll">키프레임 모두 지우기</button></div>
       <div class="row"><label>흐림 세기</label><input type="range" id="iBlur" min="0.5" max="3" step="0.05"><span id="blurV" class="muted"></span></div>
+      <div class="row" title="블러 끝으로 갈수록 투명해지는 폭. 키우면 더 넓게 천천히, 줄이면 경계가 또렷해져요"><label>가장자리 번짐</label><input type="range" id="iFea" min="0.3" max="3" step="0.05"><span id="feaV" class="muted"></span></div>
       <div class="row"><button id="bReset">이 블러 원래대로</button><button id="bDel" class="danger">이 블러 삭제 (Del)</button></div>
       <div class="muted">옮기거나 크기를 바꾸면 <b>지금 프레임에 키프레임 ◆</b>이 찍혀요. 다른 프레임에서 또 바꾸면 두 키프레임 사이는 부드럽게 이동해요. 키프레임이 하나면 구간 전체가 같은 위치·크기예요.</div>
     </div>
@@ -233,19 +235,19 @@ function ellsAt(f) {
     const ins = f >= st.start && f <= st.end;
     if (!ins && changed) continue;
     if (ins && !(f >= a && f <= b)) continue;
-    out.push({ ...tf(e[0], e[1], ed, f), w: e[2], sid, kind: "s", k: ed.blur ?? 1 });
+    out.push({ ...tf(e[0], e[1], ed, f), w: e[2], sid, kind: "s", k: ed.blur ?? 1, fe: ed.fea ?? 1 });
   }
   for (const [k, ed] of Object.entries(ED.segs)) {      // 기간을 늘린 구간, 새 페이드
     const sid = +k, st = SEG[sid]; if (!st || ed.del) continue;
     const a = ed.start ?? st.start, b = ed.end ?? st.end;
     if (a === st.start && b === st.end) continue;
     const ext = (fr, fb) => { const e = baseAt(sid, fr) || baseAt(sid, fb); return e ? tf(e[0], e[1], ed, f) : null; };
-    const kk = ed.blur ?? 1;
-    if (f >= a && f < st.start) { const e = ext(st.start, st.start); if (e) out.push({ ...e, w: 1, sid, kind: "s", k: kk }); }
-    if (f <= b && f > st.end) { const e = ext(st.end, st.end); if (e) out.push({ ...e, w: 1, sid, kind: "s", k: kk }); }
+    const kk = ed.blur ?? 1, kf = ed.fea ?? 1;
+    if (f >= a && f < st.start) { const e = ext(st.start, st.start); if (e) out.push({ ...e, w: 1, sid, kind: "s", k: kk, fe: kf }); }
+    if (f <= b && f > st.end) { const e = ext(st.end, st.end); if (e) out.push({ ...e, w: 1, sid, kind: "s", k: kk, fe: kf }); }
     const fi = [a - 3, a - 2, a - 1].indexOf(f), fo = [b + 1, b + 2, b + 3].indexOf(f);
-    if (fi >= 0) { const e = ext(Math.max(a, st.start), st.start); if (e) out.push({ ...e, w: FADE[fi], sid, kind: "s", k: kk }); }
-    if (fo >= 0) { const e = ext(Math.min(b, st.end), st.end); if (e) out.push({ ...e, w: FADE[2 - fo], sid, kind: "s", k: kk }); }
+    if (fi >= 0) { const e = ext(Math.max(a, st.start), st.start); if (e) out.push({ ...e, w: FADE[fi], sid, kind: "s", k: kk, fe: kf }); }
+    if (fo >= 0) { const e = ext(Math.min(b, st.end), st.end); if (e) out.push({ ...e, w: FADE[2 - fo], sid, kind: "s", k: kk, fe: kf }); }
   }
   ED.added.forEach((ad, k) => {
     if (ad.del) return;
@@ -255,7 +257,7 @@ function ellsAt(f) {
            if (fi >= 0) w = FADE[fi]; else if (fo >= 0) w = FADE[2 - fo]; }
     if (w > 0) { const o = ad.keys && ad.keys.length ? offAt(ad, f) : offAt({}, f);
       const rx = Math.max(ad.rx * o.scale * o.sx, 5), ry = Math.max(ad.ry * o.scale * o.sy, 5), ang = (ad.ang || 0) + o.rot;
-      out.push({ cx: ad.cx + o.dx, cy: ad.cy + o.dy, A: makeA(rx, ry, ang), ax: { ang, rx, ry }, w, sid: "a" + k, kind: "a", ai: k, k: ad.blur ?? 1 }); }
+      out.push({ cx: ad.cx + o.dx, cy: ad.cy + o.dy, A: makeA(rx, ry, ang), ax: { ang, rx, ry }, w, sid: "a" + k, kind: "a", ai: k, k: ad.blur ?? 1, fe: ad.fea ?? 1 }); }
   });
   return out;
 }
@@ -290,14 +292,14 @@ const maskC = document.createElement("canvas"), mctx = maskC.getContext("2d");
 const padC = document.createElement("canvas"), pctx = padC.getContext("2d");
 const pbC = document.createElement("canvas"), pbctx = pbC.getContext("2d");
 let exact = { f: -1, key: "", img: null }, exactT = null, exactBusy = false;
-function ellKey(f) { return f + "|" + JSON.stringify(ellsAt(f).map(e => [e.cx, e.cy, e.A, e.w, e.k ?? 1])); }
+function ellKey(f) { return f + "|" + JSON.stringify(ellsAt(f).map(e => [e.cx, e.cy, e.A, e.w, e.k ?? 1, e.fe ?? 1])); }
 function wantExact() {              // 멈춰 있으면 실제 수정본과 똑같이 그린 화면을 받아 옴
   clearTimeout(exactT);
   if (!showPreview || !V.paused || drag) return;
   exactT = setTimeout(() => {
     const f = cur, key = ellKey(f);
     if (exact.key === key || exactBusy) return;
-    const ells = ellsAt(f).map(e => [[e.cx, e.cy], e.A, e.w, String(e.sid), e.k ?? 1]);
+    const ells = ellsAt(f).map(e => [[e.cx, e.cy], e.A, e.w, String(e.sid), e.k ?? 1, e.fe ?? 1]);
     if (!ells.length) { exact = { f, key, img: null }; return; }
     exactBusy = true;
     fetch(`/review/${JID}/frame/${f}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ells }) })
@@ -362,7 +364,7 @@ function draw() {
     mctx.clearRect(0, 0, sw, sh);
     for (const e of es) {
       const a = axesOf(e.A);
-      const F = Math.min(Math.max(a.ry * (M.params.FEATHER_W ?? 0.5), 20), M.params.FEATHER_MAX ?? 150);
+      const fe = e.fe ?? 1, F = Math.min(Math.max(a.ry * (M.params.FEATHER_W ?? 0.5) * fe, 20), (M.params.FEATHER_MAX ?? 150) * fe);
       const outer = 1 + F / Math.sqrt(a.rx * a.ry);
       mctx.save(); mctx.translate(e.cx * k, e.cy * k); mctx.rotate(a.ang); mctx.scale(a.rx * k, a.ry * k);
       const g = mctx.createRadialGradient(0, 0, 0, 0, 0, outer);
@@ -908,7 +910,9 @@ function updSide() {
   const multi = selSet.size > 1;
   $("multiBox").style.display = multi ? "" : "none";
   if (multi) { const bs = selIds().filter(alive).map(id => edOf(id).blur ?? 1), avg = bs.reduce((p, q) => p + q, 0) / Math.max(1, bs.length);
-    if (document.activeElement !== $("iBlurM")) $("iBlurM").value = avg; $("blurMV").textContent = `${Math.round(avg * 100)}%`; }
+    if (document.activeElement !== $("iBlurM")) $("iBlurM").value = avg; $("blurMV").textContent = `${Math.round(avg * 100)}%`;
+    const fs = selIds().filter(alive).map(id => edOf(id).fea ?? 1), fa = fs.reduce((p, q) => p + q, 0) / Math.max(1, fs.length);
+    if (document.activeElement !== $("iFeaM")) $("iFeaM").value = fa; $("feaMV").textContent = `${Math.round(fa * 100)}%`; }
   if (sel == null) { $("selTitle").textContent = "선택한 블러 없음"; $("selBox").style.display = "none"; return; }
   const isA = String(sel).startsWith("a");
   const [a, b] = segRange(sel);
@@ -924,6 +928,8 @@ function updSide() {
   $("bKeyDel").disabled = !onKey; $("bKeyAll").disabled = !nk;
   const bk = ed.blur ?? 1;
   $("iBlur").value = bk; $("blurV").textContent = `${Math.round(bk * 100)}%`;
+  const fk = ed.fea ?? 1;
+  if (document.activeElement !== $("iFea")) $("iFea").value = fk; $("feaV").textContent = `${Math.round(fk * 100)}%`;
 }
 $("iStart").onchange = () => { if (sel == null) return; snapshot(); const [, b] = segRange(sel); edOf(sel).start = Math.max(0, Math.min(+$("iStart").value, b)); changed(); };
 $("iEnd").onchange = () => { if (sel == null) return; snapshot(); const [a] = segRange(sel); edOf(sel).end = Math.min(M.n - 1, Math.max(+$("iEnd").value, a)); changed(); };
@@ -963,6 +969,13 @@ $("iBlur").onchange = () => { delete $("iBlur").dataset.snap; changed(); };
 $("iBlurM").oninput = () => { if (!selSet.size) return; if (!$("iBlurM").dataset.snap) { snapshot(); $("iBlurM").dataset.snap = 1; }
   setBlurAll(() => +$("iBlurM").value); draw(); updSide(); };
 $("iBlurM").onchange = () => { delete $("iBlurM").dataset.snap; changed(); };
+for (const [id, multi] of [["iFea", false], ["iFeaM", true]]) {     // 가장자리 번짐 (고른 블러 모두)
+  $(id).oninput = () => { if (!selSet.size) return; if (!$(id).dataset.snap) { snapshot(); $(id).dataset.snap = 1; }
+    const v = Math.round(+$(id).value * 100) / 100;
+    for (const sid of (multi ? selIds() : [sel])) if (alive(sid)) edOf(sid).fea = v;
+    draw(); updSide(); };
+  $(id).onchange = () => { delete $(id).dataset.snap; changed(); };
+}
 $("bKeyDel").onclick = () => { if (sel == null) return; const ed = edOf(sel); if (!ed.keys) return;
   snapshot(); ed.keys = ed.keys.filter(k => k.f !== cur); changed(); };
 $("bKeyAll").onclick = () => { if (sel == null) return; const ed = edOf(sel); if (!ed.keys) return; snapshot(); delete ed.keys; changed(); };
