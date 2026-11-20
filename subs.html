@@ -1,0 +1,404 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>자막 편집</title>
+<style>
+  :root{--bg:#1c1917;--panel:#292524;--line:#44403c;--ink:#fafaf9;--sub:#a8a29e;--acc:#f59e0b;--sel:#38bdf8;--bad:#f87171;--ok:#4ade80}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 "Pretendard","Malgun Gothic",system-ui,sans-serif}
+  header{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+  header h1{font-size:16px;margin:0}
+  header .name{color:var(--sub);font-size:13px;flex:1;min-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  button,a.btn{background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:6px 11px;font:inherit;cursor:pointer;text-decoration:none;display:inline-block}
+  button:hover,a.btn:hover{border-color:var(--sub)}
+  button.main,a.main{background:var(--acc);color:#1c1917;border-color:var(--acc);font-weight:700}
+  button.on{background:var(--acc);color:#1c1917;border-color:var(--acc)}
+  button.danger{border-color:var(--bad);color:var(--bad)}
+  button:disabled{opacity:.4;cursor:default}
+  button.sm{padding:3px 7px;font-size:12px;border-radius:6px}
+  main{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(360px,1fr);gap:12px;padding:12px 16px;height:calc(100vh - 54px)}
+  @media (max-width:1000px){main{grid-template-columns:1fr;height:auto}}
+  #left{min-width:0}
+  #stage{position:relative;background:#000;border-radius:8px;overflow:hidden;line-height:0}
+  #stage video{width:100%;max-height:60vh;display:block;object-fit:contain}
+  #cap{position:absolute;left:0;right:0;bottom:6%;text-align:center;line-height:1.35;pointer-events:none;padding:0 6%}
+  #cap span{display:inline-block;background:rgba(0,0,0,.55);color:#fff;font-weight:700;padding:4px 12px;border-radius:6px;white-space:pre-wrap;text-shadow:0 0 3px #000,0 0 3px #000}
+  .ctl{display:flex;align-items:center;gap:6px;margin-top:8px;flex-wrap:wrap}
+  .tc{font-variant-numeric:tabular-nums;color:var(--sub);margin-left:6px}
+  .tc b{color:var(--ink)}
+  #tlc{display:block;width:100%;height:46px;margin-top:8px;background:var(--panel);border-radius:8px;cursor:pointer}
+  .box{background:var(--panel);border-radius:8px;padding:10px 12px;margin-top:8px}
+  .box h2{font-size:13px;margin:0 0 6px;color:var(--acc)}
+  .muted{color:var(--sub);font-size:12px}
+  input[type=number]{width:72px;background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:4px 6px;font:inherit}
+  #right{display:flex;flex-direction:column;min-height:0}
+  #list{flex:1;overflow:auto;background:var(--panel);border-radius:8px;padding:6px;min-height:300px}
+  .ln{border:1px solid transparent;border-radius:8px;padding:6px 8px;margin-bottom:4px;background:var(--bg)}
+  .ln.now{border-color:var(--acc)}
+  .ln.sel{border-color:var(--sel);box-shadow:0 0 0 1px var(--sel) inset}
+  .ln .top{display:flex;align-items:center;gap:4px;flex-wrap:wrap;font-size:12px;color:var(--sub)}
+  .ln .top .no{min-width:30px;color:var(--sub)}
+  .ln input.t{width:92px;background:transparent;color:var(--ink);border:1px solid var(--line);border-radius:5px;padding:2px 4px;font:12px/1.3 inherit;font-variant-numeric:tabular-nums}
+  .ln .src{color:var(--sub);font-size:12px;margin:4px 0 2px;white-space:pre-wrap;word-break:break-all;outline:none;border-radius:4px;padding:1px 3px}
+  .ln .src:focus{background:#0c0a09;color:var(--ink)}
+  .ln textarea{width:100%;resize:vertical;min-height:30px;background:transparent;color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:4px 6px;font:14px/1.4 inherit}
+  .ln textarea:focus,.ln input.t:focus{border-color:var(--acc);outline:none}
+  .ln .warn{color:var(--bad)}
+  #msg{font-size:13px;color:var(--sub)}
+  #msg.ok{color:var(--ok)} #msg.bad{color:var(--bad)}
+  .bar{height:8px;background:var(--line);border-radius:6px;overflow:hidden;margin:8px 0}
+  .bar i{display:block;height:100%;width:0;background:var(--acc);transition:width .3s}
+  kbd{font:600 11px/1 inherit;font-family:inherit;color:var(--ink);background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.14);border-bottom-width:2px;border-radius:4px;padding:2px 5px}
+  .keys{display:grid;grid-template-columns:auto 1fr;gap:3px 10px;font-size:12px;color:var(--sub);align-items:center}
+</style>
+</head>
+<body>
+<header>
+  <h1>자막 편집</h1>
+  <span class="name" id="name"></span>
+  <a class="btn" id="toBlur" href="#">← 블러 검수로</a>
+  <button id="bLang" title="화면에 보이는 자막 바꾸기">화면: 한국어</button>
+  <button id="bUndo" title="되돌리기 (Ctrl+Z)">↶ 되돌리기</button>
+  <a class="btn main" id="dlKo" href="#">한국어 자막 파일 받기 (.srt)</a>
+  <a class="btn" id="dlSrc" href="#">원문 자막 파일</a>
+  <span id="msg"></span>
+</header>
+<main>
+  <div id="left">
+    <div id="stage">
+      <video id="v" preload="auto" playsinline></video>
+      <div id="cap"></div>
+    </div>
+    <div class="ctl">
+      <button id="bBack" title="1초 뒤로 (Shift+←)">⏪ 1초</button>
+      <button id="bPlay" title="재생/멈춤 (Ctrl+Space, 글 쓰는 중이 아닐 땐 Space)" style="min-width:70px">▶ 재생</button>
+      <button id="bFwd" title="1초 앞으로 (Shift+→)">1초 ⏩</button>
+      <select id="speed"><option value="0.5">0.5배</option><option value="0.75">0.75배</option><option value="1" selected>1배</option><option value="1.5">1.5배</option><option value="2">2배</option></select>
+      <span class="tc"><b id="tc">0:00:00.0</b></span>
+    </div>
+    <canvas id="tlc" title="자막이 있는 곳 (누르면 그 위치로)"></canvas>
+
+    <div class="box" id="makeBox" style="display:none">
+      <h2>자막 만들기</h2>
+      <div id="makeMsg" class="muted"></div>
+      <div class="bar"><i id="makeBar"></i></div>
+      <button id="bMake" class="main">이 영상 자막 만들기</button>
+      <div class="muted" style="margin-top:6px">처음 한 번은 받아쓰기·번역 모델(약 6GB)을 받아서 시간이 더 걸려요. 다음부터는 바로 시작해요.</div>
+    </div>
+
+    <div class="box">
+      <h2>싱크 맞추기 (자막 시간 한꺼번에 옮기기)</h2>
+      <div class="ctl" style="margin:0">
+        <button class="sm" data-sh="-1">-1초</button><button class="sm" data-sh="-0.1">-0.1초</button>
+        <button class="sm" data-sh="0.1">+0.1초</button><button class="sm" data-sh="1">+1초</button>
+        <input type="number" id="shV" step="0.05" value="0.5"><span class="muted">초</span>
+        <button class="sm" id="bShMinus">당기기</button><button class="sm" id="bShPlus">미루기</button>
+        <label class="muted" style="margin-left:6px"><input type="checkbox" id="shFrom"> 고른 줄부터 뒤쪽만</label>
+      </div>
+      <div class="muted" style="margin-top:4px">자막이 말보다 늦게 나오면 <b>당기기(-)</b>, 빨리 나오면 <b>미루기(+)</b>.</div>
+    </div>
+
+    <div class="box">
+      <h2>단축키 (글자 입력 칸 밖에서)</h2>
+      <div class="keys">
+        <span><kbd>Space</kbd></span><span>재생 / 멈춤 (글 쓰는 중엔 <kbd>Ctrl</kbd>+<kbd>Space</kbd>)</span>
+        <span><kbd>← →</kbd></span><span>0.1초 이동 · <kbd>Shift</kbd>와 같이 1초</span>
+        <span><kbd>↑ ↓</kbd></span><span>이전 / 다음 줄 고르고 그 위치로</span>
+        <span><kbd>[</kbd> <kbd>]</kbd></span><span>고른 줄의 시작 / 끝을 지금 위치로</span>
+        <span><kbd>Enter</kbd></span><span>고른 줄 한국어 고치기</span>
+        <span><kbd>R</kbd></span><span>고른 줄 처음부터 다시 듣기</span>
+        <span><kbd>Ins</kbd></span><span>지금 위치에 새 줄</span>
+        <span><kbd>Del</kbd></span><span>고른 줄 삭제</span>
+        <span><kbd>Ctrl</kbd>+<kbd>Z</kbd></span><span>되돌리기</span>
+      </div>
+    </div>
+  </div>
+
+  <div id="right">
+    <div class="ctl" style="margin:0 0 6px">
+      <button id="bAdd" title="지금 위치에 새 자막 줄 (Ins)">＋ 지금 위치에 줄 추가</button>
+      <button id="bSplit" title="고른 줄을 지금 위치에서 둘로 나눠요">✂ 지금 위치에서 나누기</button>
+      <button id="bMerge" title="고른 줄과 다음 줄을 하나로 합쳐요">⇣ 다음 줄과 합치기</button>
+      <label class="muted"><input type="checkbox" id="follow" checked> 재생 따라 목록 이동</label>
+      <span class="muted" id="cnt" style="margin-left:auto"></span>
+    </div>
+    <div id="list"></div>
+  </div>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const JID = location.pathname.split("/").filter(Boolean)[1];
+const V = $("v");
+let L = [];            // 자막 줄 [{start,end,src,lang,ko}]
+let sel = -1, nowIdx = -1, showKo = true, saveT = null, hist = [];
+
+$("toBlur").href = `/review/${JID}`;
+$("dlKo").href = `/review/${JID}/subs.srt?field=ko`;
+$("dlSrc").href = `/review/${JID}/subs.srt?field=src`;
+
+function msg(t, c) { $("msg").textContent = t || ""; $("msg").className = c || ""; }
+function fmt(t, d = 1) {
+  t = Math.max(0, t); const h = Math.floor(t / 3600), m = Math.floor(t % 3600 / 60), s = t % 60;
+  return `${h}:${String(m).padStart(2, "0")}:${s.toFixed(d).padStart(d ? 3 + d : 2, "0")}`;
+}
+function parseT(s) {          // "0:01:02.5" / "1:02.5" / "62.5" → 초
+  const p = String(s).trim().replace(",", ".").split(":").map(Number);
+  if (p.some(isNaN)) return null;
+  return p.reduce((a, x) => a * 60 + x, 0);
+}
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+
+// ---------- 저장 / 되돌리기 ----------
+function snap() { hist.push(JSON.stringify(L)); if (hist.length > 100) hist.shift(); }
+function undo() {
+  if (!hist.length) return msg("더 되돌릴 게 없어요");
+  L = JSON.parse(hist.pop()); sel = Math.min(sel, L.length - 1); render(); save(); msg("되돌렸어요");
+}
+function save() {
+  clearTimeout(saveT);
+  msg("저장 중…");
+  saveT = setTimeout(() => fetch(`/review/${JID}/subs`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ lines: L }) })
+    .then(r => r.json()).then(r => r.error ? msg("저장 실패: " + r.error, "bad") : msg("저장됨", "ok"))
+    .catch(() => msg("저장 실패 (프로그램이 꺼졌는지 확인)", "bad")), 600);
+}
+function sortL() { const s = L[sel]; L.sort((a, b) => a.start - b.start); sel = s ? L.indexOf(s) : -1; }
+
+// ---------- 목록 ----------
+function rowHTML(l, i) {
+  const bad = l.end - l.start < 0.3 ? " warn" : "";
+  const over = i + 1 < L.length && L[i + 1].start < l.end - 0.01 ? `<span class="warn">다음 줄과 겹침</span>` : "";
+  return `<div class="ln${i === sel ? " sel" : ""}${i === nowIdx ? " now" : ""}" data-i="${i}">
+    <div class="top"><span class="no">${i + 1}</span>
+      <input class="t${bad}" data-k="start" value="${fmt(l.start, 2)}" title="시작 (직접 고쳐도 돼요)">
+      <button class="sm" data-a="s" title="시작을 지금 위치로 ([)">←지금</button>
+      ~ <input class="t${bad}" data-k="end" value="${fmt(l.end, 2)}" title="끝">
+      <button class="sm" data-a="e" title="끝을 지금 위치로 (])">←지금</button>
+      <span>${(l.end - l.start).toFixed(1)}초</span> ${over}
+      <span style="margin-left:auto"></span>
+      <button class="sm" data-a="p" title="이 줄 처음부터 재생 (R)">▶</button>
+      <button class="sm danger" data-a="d" title="이 줄 삭제 (Del)">✕</button>
+    </div>
+    <div class="src" contenteditable="plaintext-only" spellcheck="false" title="원문 (${l.lang === "en" ? "영어" : "일본어"})">${esc(l.src)}</div>
+    <textarea rows="${Math.max(1, (l.ko || "").split("\n").length)}" placeholder="한국어 자막">${esc(l.ko)}</textarea>
+  </div>`;
+}
+function render() {
+  $("list").innerHTML = L.map(rowHTML).join("") || `<div class="muted" style="padding:12px">자막 줄이 없어요.</div>`;
+  $("cnt").textContent = `${L.length}줄`;
+  drawTL(); showCap();
+}
+function rowEl(i) { return $("list").querySelector(`.ln[data-i="${i}"]`); }
+function setSel(i, seek) {
+  if (i < 0 || i >= L.length) return;
+  const o = rowEl(sel); if (o) o.classList.remove("sel");
+  sel = i; const r = rowEl(i); if (r) { r.classList.add("sel"); r.scrollIntoView({ block: "nearest" }); }
+  if (seek) { V.currentTime = L[i].start + 0.001; tick(); }
+  drawTL();
+}
+$("list").addEventListener("click", e => {
+  const r = e.target.closest(".ln"); if (!r) return;
+  const i = +r.dataset.i, a = e.target.dataset.a;
+  if (a === "d") { snap(); L.splice(i, 1); if (sel >= L.length) sel = L.length - 1; render(); save(); return; }
+  if (a === "s" || a === "e") { snap(); setTime(i, a === "s" ? "start" : "end", V.currentTime); return; }
+  if (a === "p") { setSel(i, true); V.play(); return; }
+  if (i !== sel) setSel(i, !/TEXTAREA|INPUT/.test(e.target.tagName) && !e.target.isContentEditable);
+});
+$("list").addEventListener("focusin", e => { const r = e.target.closest(".ln"); if (r && +r.dataset.i !== sel) setSel(+r.dataset.i, false); });
+let typingSnap = false;
+$("list").addEventListener("input", e => {
+  const r = e.target.closest(".ln"); if (!r) return; const i = +r.dataset.i;
+  if (!typingSnap) { snap(); typingSnap = true; }
+  if (e.target.tagName === "TEXTAREA") L[i].ko = e.target.value;
+  else if (e.target.classList.contains("src")) L[i].src = e.target.innerText;
+  else return;
+  showCap(); save();
+});
+$("list").addEventListener("focusout", () => { typingSnap = false; });
+$("list").addEventListener("change", e => {
+  if (!e.target.classList.contains("t")) return;
+  const i = +e.target.closest(".ln").dataset.i, t = parseT(e.target.value);
+  if (t == null) { e.target.value = fmt(L[i][e.target.dataset.k], 2); return msg("시간은 0:01:02.50 처럼 적어 주세요", "bad"); }
+  snap(); setTime(i, e.target.dataset.k, t);
+});
+function setTime(i, k, t) {
+  const l = L[i];
+  l[k] = Math.round(Math.max(0, t) * 100) / 100;
+  if (l.end <= l.start) { if (k === "start") l.end = l.start + 1; else l.start = Math.max(0, l.end - 1); }
+  sortL(); render(); save();
+}
+
+// ---------- 줄 추가 / 나누기 / 합치기 ----------
+$("bAdd").onclick = () => {
+  snap(); const t = V.currentTime;
+  const nx = L.find(l => l.start > t);
+  const end = Math.min(t + 2, nx ? nx.start : t + 2);
+  L.push({ start: +t.toFixed(2), end: +Math.max(end, t + 0.5).toFixed(2), src: "", lang: L[0]?.lang || "ja", ko: "" });
+  sortL(); sel = L.findIndex(l => Math.abs(l.start - +t.toFixed(2)) < 0.005 && !l.ko && !l.src);
+  render(); save(); const r = rowEl(sel); if (r) { r.scrollIntoView({ block: "center" }); r.querySelector("textarea").focus(); }
+};
+$("bSplit").onclick = () => {
+  const l = L[sel], t = V.currentTime;
+  if (!l) return msg("나눌 줄을 먼저 골라 주세요");
+  if (t <= l.start + 0.2 || t >= l.end - 0.2) return msg("재생 위치를 그 줄의 중간쯤에 두고 눌러 주세요");
+  snap();
+  L.splice(sel + 1, 0, { start: +t.toFixed(2), end: l.end, src: "", lang: l.lang, ko: "" });
+  l.end = +t.toFixed(2); render(); save(); setSel(sel + 1); msg("나눴어요. 뒤쪽 줄에 한국어를 나눠 적어 주세요");
+};
+$("bMerge").onclick = () => {
+  const a = L[sel], b = L[sel + 1];
+  if (!a || !b) return msg("합칠 줄을 고르세요 (고른 줄 + 바로 다음 줄)");
+  snap();
+  a.end = Math.max(a.end, b.end);
+  a.src = [a.src, b.src].filter(Boolean).join(a.lang === "en" ? " " : "");
+  a.ko = [a.ko, b.ko].filter(Boolean).join(" ");
+  L.splice(sel + 1, 1); render(); save();
+};
+
+// ---------- 싱크 옮기기 ----------
+function shift(d) {
+  if (!L.length) return;
+  snap();
+  const from = $("shFrom").checked && sel >= 0 ? sel : 0;
+  for (let i = from; i < L.length; i++) { L[i].start = Math.max(0, Math.round((L[i].start + d) * 100) / 100); L[i].end = Math.max(L[i].start + 0.3, Math.round((L[i].end + d) * 100) / 100); }
+  render(); save(); msg(`${from ? (from + 1) + "번 줄부터 " : "전체 "}${d > 0 ? "+" : ""}${d.toFixed(2)}초 옮겼어요`, "ok");
+}
+document.querySelectorAll("[data-sh]").forEach(b => b.onclick = () => shift(+b.dataset.sh));
+$("bShMinus").onclick = () => shift(-Math.abs(+$("shV").value || 0));
+$("bShPlus").onclick = () => shift(Math.abs(+$("shV").value || 0));
+
+// ---------- 화면 자막 / 진행 ----------
+function idxAt(t) {
+  let lo = 0, hi = L.length - 1, k = -1;
+  while (lo <= hi) { const m = (lo + hi) >> 1; if (L[m].start <= t) { k = m; lo = m + 1; } else hi = m - 1; }
+  for (let i = k; i >= 0 && i > k - 4; i--) if (L[i].start <= t && t < L[i].end) return i;
+  return -1;
+}
+function showCap() {
+  const i = idxAt(V.currentTime);
+  const txt = i < 0 ? "" : (showKo ? L[i].ko : L[i].src) || "";
+  $("cap").innerHTML = txt.trim() ? `<span>${esc(txt)}</span>` : "";
+  const fs = Math.max(14, $("stage").clientHeight * 0.05);
+  $("cap").style.fontSize = fs + "px";
+  if (i !== nowIdx) {
+    const o = rowEl(nowIdx); if (o) o.classList.remove("now");
+    nowIdx = i; const r = rowEl(i);
+    if (r) { r.classList.add("now"); if (!V.paused && $("follow").checked && !$("list").contains(document.activeElement)) r.scrollIntoView({ block: "center" }); }
+  }
+}
+function tick() { $("tc").textContent = fmt(V.currentTime); showCap(); drawTL(); }
+function loop() { tick(); if (!V.paused) requestAnimationFrame(loop); }
+V.addEventListener("play", () => { $("bPlay").textContent = "⏸ 멈춤"; loop(); });
+V.addEventListener("pause", () => { $("bPlay").textContent = "▶ 재생"; tick(); });
+V.addEventListener("seeked", tick);
+$("bPlay").onclick = () => V.paused ? V.play() : V.pause();
+$("bBack").onclick = () => { V.currentTime = Math.max(0, V.currentTime - 1); };
+$("bFwd").onclick = () => { V.currentTime = V.currentTime + 1; };
+$("speed").onchange = () => V.playbackRate = +$("speed").value;
+$("bLang").onclick = () => { showKo = !showKo; $("bLang").textContent = "화면: " + (showKo ? "한국어" : "원문"); showCap(); };
+$("bUndo").onclick = undo;
+
+// ---------- 아래 막대 (자막 위치 한눈에) ----------
+function drawTL() {
+  const c = $("tlc"), w = c.clientWidth, h = c.clientHeight, dpr = devicePixelRatio || 1;
+  if (c.width !== w * dpr) { c.width = w * dpr; c.height = h * dpr; }
+  const x = c.getContext("2d"); x.setTransform(dpr, 0, 0, dpr, 0, 0); x.clearRect(0, 0, w, h);
+  const D = V.duration || (L.length ? L[L.length - 1].end : 1);
+  // 지금 위치 앞뒤 30초를 크게, 위쪽 얇은 줄은 전체
+  const t = V.currentTime, span = 30, a = Math.max(0, Math.min(t - span / 2, D - span)), sx = s => (s - a) / span * w;
+  x.fillStyle = "#57534e"; x.fillRect(0, 6, w, 2);
+  L.forEach((l, i) => { x.fillStyle = i === sel ? "#38bdf8" : "#a8a29e"; x.fillRect(l.start / D * w, 4, Math.max(1, (l.end - l.start) / D * w), 6); });
+  x.fillStyle = "#f59e0b"; x.fillRect(t / D * w - 1, 0, 2, 12);
+  L.forEach((l, i) => {
+    if (l.end < a || l.start > a + span) return;
+    x.fillStyle = i === sel ? "#0369a1" : "#44403c"; x.fillRect(sx(l.start), 16, Math.max(2, sx(l.end) - sx(l.start)), h - 18);
+    x.fillStyle = "#fafaf9"; x.font = "11px sans-serif"; x.save(); x.beginPath(); x.rect(sx(l.start), 16, sx(l.end) - sx(l.start), h - 18); x.clip();
+    x.fillText(l.ko || l.src || "", sx(l.start) + 3, 33); x.restore();
+  });
+  x.fillStyle = "#f59e0b"; x.fillRect(sx(t) - 1, 14, 2, h - 14);
+  c._map = { a, span, D, w };
+}
+$("tlc").addEventListener("mousedown", e => {
+  const m = $("tlc")._map; if (!m) return;
+  const r = $("tlc").getBoundingClientRect(), px = e.clientX - r.left;
+  const t = e.clientY - r.top < 14 ? px / m.w * m.D : m.a + px / m.w * m.span;
+  const i = idxAt(t); if (i >= 0) setSel(i, false);
+  V.currentTime = Math.max(0, t); tick();
+});
+
+// ---------- 단축키 ----------
+document.addEventListener("keydown", e => {
+  const typing = /TEXTAREA|INPUT|SELECT/.test(document.activeElement.tagName) || document.activeElement.isContentEditable;
+  if (e.ctrlKey && e.code === "Space") { e.preventDefault(); $("bPlay").click(); return; }
+  if (e.key === "Escape" && typing) { document.activeElement.blur(); return; }
+  if (typing) return;
+  const k = e.key;
+  if (e.ctrlKey && (k === "z" || k === "Z")) { e.preventDefault(); undo(); }
+  else if (k === " ") { e.preventDefault(); $("bPlay").click(); }
+  else if (k === "ArrowLeft" || k === "ArrowRight") { e.preventDefault(); V.currentTime = Math.max(0, V.currentTime + (k === "ArrowLeft" ? -1 : 1) * (e.shiftKey ? 1 : 0.1)); }
+  else if (k === "ArrowUp" || k === "ArrowDown") {
+    e.preventDefault();
+    let i = sel >= 0 ? sel : Math.max(0, idxAt(V.currentTime));
+    if (sel >= 0) i += k === "ArrowUp" ? -1 : 1;
+    setSel(Math.max(0, Math.min(L.length - 1, i)), true);
+  }
+  else if ((k === "[" || k === "]") && sel >= 0) { snap(); setTime(sel, k === "[" ? "start" : "end", V.currentTime); }
+  else if (k === "Enter" && sel >= 0) { e.preventDefault(); const r = rowEl(sel); if (r) r.querySelector("textarea").focus(); }
+  else if ((k === "r" || k === "R") && sel >= 0) { setSel(sel, true); V.play(); }
+  else if (k === "Insert") $("bAdd").click();
+  else if (k === "Delete" && sel >= 0) { snap(); L.splice(sel, 1); if (sel >= L.length) sel = L.length - 1; render(); save(); }
+});
+
+// ---------- 자막 만들기 (아직 없을 때) ----------
+function showMake(st) {
+  $("makeBox").style.display = "";
+  if (st && !st.sub_done) {
+    $("bMake").disabled = true; $("makeMsg").textContent = st.sub_msg || "자막 만드는 중"; $("makeBar").style.width = (st.sub_pct || 0) + "%";
+  } else {
+    $("bMake").disabled = false;
+    $("makeMsg").innerHTML = st && st.sub_error ? `<span style="color:var(--bad)">실패 — ${esc(st.sub_error)}</span>` : "이 영상은 아직 자막이 없어요.";
+    $("makeBar").style.width = "0";
+  }
+}
+$("bMake").onclick = () => {
+  if (L.length && !confirmRemake()) return;
+  fetch(`/review/${JID}/subs/make`, { method: "POST" }).then(r => r.json()).then(r => { showMake(r.state); pollSubs(); });
+};
+function confirmRemake() { return $("bMake").dataset.ok === "1" || ($("bMake").dataset.ok = "1", msg("한 번 더 누르면 지금 자막을 지우고 처음부터 다시 만들어요", "bad"), false); }
+let polling = false;
+function pollSubs() {
+  if (polling) return; polling = true;
+  const go = () => fetch(`/review/${JID}/subs`).then(r => r.json()).then(d => {
+    const st = d.state;
+    if (st && !st.sub_done) {
+      showMake(st);
+      if (d.subs && d.subs.lines && !L.length) { L = d.subs.lines; render(); }   // 받아쓰기가 끝나면 원문부터 먼저 보여 줌
+      if (L.length) $("makeMsg").textContent = (st.sub_msg || "") + " — 번역이 끝나면 목록이 새로 채워져요. 고치는 건 그 다음에 해 주세요";
+      return setTimeout(go, 1500);
+    }
+    polling = false;
+    if (d.subs && d.subs.lines) { L = d.subs.lines; hist = []; render(); $("makeBox").style.display = "none"; msg(`자막 ${L.length}줄 불러옴`, "ok"); if (st && st.sub_error) showMake(st); }
+    else showMake(st);
+  }).catch(() => setTimeout(go, 3000));
+  go();
+}
+
+// ---------- 시작 ----------
+fetch(`/review/${JID}/data`).then(r => r.json()).then(d => { $("name").textContent = d.meta.name; document.title = "자막 편집 — " + d.meta.name; });
+const waitVideo = () => fetch(`/review/${JID}/video-status`).then(r => r.json()).then(s => {
+  if (s.ready) { V.src = `/review/${JID}/video` + (s.audio === "ok" ? "?av=1" : ""); if (s.audio === "pending") setTimeout(waitAudio, 3000); return; }
+  if (s.pct < 0) return msg("미리보기 영상을 만들지 못했어요", "bad");
+  msg(`검수용 미리보기 만드는 중 ${s.pct}% (처음 한 번만)`); setTimeout(waitVideo, 1500);
+});
+const waitAudio = () => fetch(`/review/${JID}/video-status`).then(r => r.json()).then(s => {
+  if (s.audio === "ok") { const t = V.currentTime; V.src = `/review/${JID}/video?av=` + Date.now(); V.addEventListener("loadeddata", () => { V.currentTime = t; }, { once: true }); }
+  else if (s.audio === "pending") setTimeout(waitAudio, 3000);
+});
+waitVideo();
+V.addEventListener("loadedmetadata", () => { drawTL(); showCap(); });
+window.addEventListener("resize", () => { drawTL(); showCap(); });
+pollSubs();
+</script>
+</body>
+</html>

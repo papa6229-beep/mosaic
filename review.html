@@ -60,6 +60,7 @@
   <button id="bOutline" class="on" title="모든 블러의 테두리를 보여요 (O)">테두리 보기</button>
   <button id="bPreview" class="on" title="고친 결과를 화면에 흐림으로 미리 보여요 (P)">흐림 미리보기</button>
   <button id="bUndo" title="되돌리기 (Ctrl+Z)">↶ 되돌리기</button>
+  <a id="toSubs" href="#" target="_blank" style="color:var(--acc);text-decoration:none;border:1px solid var(--acc);border-radius:8px;padding:6px 11px">자막 편집 →</a>
   <button id="bRender" class="main">수정본 만들기</button>
   <span id="msg"></span>
 </header>
@@ -165,6 +166,7 @@
 <script>
 const $ = id => document.getElementById(id);
 const JID = location.pathname.split("/").filter(Boolean)[1];
+document.getElementById("toSubs").href = `/review/${JID}/subtitles`;
 const V = $("v"), OV = $("ov"), octx = OV.getContext("2d");
 let M, SEG, PLAN, ED;               // 정보, 구간표, 블러 계획, 고친 내용
 let cur = 0, sel = null, selSet = new Set(), tool = null, drag = null, hist = [], showOutline = true, showPreview = true;

@@ -47,6 +47,9 @@
     <label style="display:flex;gap:8px;align-items:center;margin-top:16px;color:var(--ink);font-size:14px">
       <input id="hair" type="checkbox" checked> 원본 모자이크 밖으로 나온 털까지 찾아서 같이 덮기
     </label>
+    <label style="display:flex;gap:8px;align-items:center;margin-top:8px;color:var(--ink);font-size:14px">
+      <input id="subs" type="checkbox"> 말(일본어·영어)을 받아 적어서 한국어 자막도 만들기 (블러 작업과 같이 진행)
+    </label>
     <label>털 찾는 범위 — 클수록 모자이크에서 멀리 떨어진 음모까지 잡아요 (최대 250픽셀)</label>
     <div class="row"><input id="reach" type="range" min="0.2" max="1" step="0.05" value="0.8"><span class="val" id="reach_v"></span></div>
 
@@ -65,6 +68,7 @@
 
   <div class="card hide" id="prog" style="margin-top:16px">
     <div id="msg">준비 중</div>
+    <div id="submsg" class="sub" style="margin-top:4px"></div>
     <div class="bar"><i id="bar"></i></div>
     <div id="result"></div>
   </div>
@@ -78,7 +82,7 @@ function loadJobs(){
   fetch("/jobs").then(r=>r.json()).then(js=>{
     if(!js.length)return;
     document.getElementById("jobsCard").style.display="";
-    document.getElementById("jobs").innerHTML=js.map(j=>`<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--line)"><span>${j.name} <span style="color:var(--sub)">(${j.sec}초 · ${new Date(j.t*1000).toLocaleString()})</span></span><a href="/review/${j.jid}" target="_blank">검수·수정</a></div>`).join("");
+    document.getElementById("jobs").innerHTML=js.map(j=>`<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--line)"><span>${j.name} <span style="color:var(--sub)">(${j.sec}초 · ${new Date(j.t*1000).toLocaleString()})</span></span><span><a href="/review/${j.jid}" target="_blank">블러 검수</a> · <a href="/review/${j.jid}/subtitles" target="_blank">자막</a></span></div>`).join("");
   }).catch(()=>{});
 }
 loadJobs();
@@ -99,7 +103,8 @@ $("go").onclick=()=>{
   if(path)fd.append("path",path);else fd.append("file",file);
   ["scale","blur","feather","reach"].forEach(k=>fd.append(k,$(k).value));
   fd.append("hair",$("hair").checked?"1":"0");
-  $("go").disabled=true;$("prog").classList.remove("hide");$("result").innerHTML="";
+  fd.append("subs",$("subs").checked?"1":"0");
+  $("go").disabled=true;$("prog").classList.remove("hide");$("result").innerHTML="";delete $("result").dataset.id;
   const x=new XMLHttpRequest();x.open("POST","/start");
   x.upload.onprogress=e=>{if(e.lengthComputable){$("msg").textContent="올리는 중 "+Math.round(e.loaded*100/e.total)+"%";}};
   x.onload=()=>{const r=JSON.parse(x.responseText);if(r.error){fail(r.error);return}poll(r.job)};
@@ -112,8 +117,13 @@ function poll(id){
   fetch("/status/"+id).then(r=>r.json()).then(s=>{
     if(!started)started=Date.now();
     $("msg").textContent=s.msg+(s.done?"":` · 지금까지 ${fmt((Date.now()-started)/1000)}`);$("bar").style.width=(s.pct||0)+"%";
+    const sb=s.subs;                                       // 자막 진행 상황 (따로 한 줄)
+    $("submsg").textContent=sb?("자막: "+(sb.sub_error?"실패 — "+sb.sub_error:sb.sub_msg)):"";
     if(s.error){fail(s.error);return}
-    if(!s.done){setTimeout(()=>poll(id),700);return}
+    if(!s.done||(sb&&!sb.sub_done)){if(!s.done){setTimeout(()=>poll(id),700);return}setTimeout(()=>poll(id),1500)}
+    if(!s.done)return;
+    if($("result").dataset.id===id)return;
+    $("result").dataset.id=id;
     const r=s.report;
     $("result").innerHTML=`<div class="rep">
       <div><span>전체 프레임</span><span>${r.frames}</span></div>
@@ -131,7 +141,8 @@ function poll(id){
       <div><span><b>전체 작업 시간</b></span><span><b>${fmt(r.sec)}</b> (영상 길이의 ${(r.sec/r.video_sec).toFixed(1)}배)</span></div>
       <div><span>1시간 영상이면 (예상)</span><span>${fmt(r.sec/r.video_sec*3600)}</span></div></div>
       <a class="dl" href="/download/${id}">결과 영상 받기 (${(r.out_name||"").replace(/</g,"&lt;")})</a>
-      <a class="dl" style="background:#d97706" href="/review/${id}" target="_blank">검수·수정하기 (블러 직접 고치기)</a>`;
+      <a class="dl" style="background:#d97706" href="/review/${id}" target="_blank">검수·수정하기 (블러 직접 고치기)</a>
+      ${sb?`<a class="dl" style="background:#0369a1" href="/review/${id}/subtitles" target="_blank">자막 보기·고치기 · 자막 파일(.srt) 받기</a>`:""}`;
     loadJobs();
     $("go").disabled=false;
   });

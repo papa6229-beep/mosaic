@@ -771,6 +771,8 @@ def run_job(jid, src, params):
                     px = None
             table = []
             boxes, all_boxes, exps, n2 = detect_all(src, job, n, px, table)
+            if params.get("subs") == "1":                   # 자막은 그래픽카드가 비는 지금부터 뒤에서 같이 만듦
+                start_subs(jid, src)
             try:
                 json.dump(table, open(os.path.join(JOBS, jid, "pts.json"), "w"))
             except Exception:
@@ -862,7 +864,84 @@ def status(jid):
     j = state.get(jid)
     if not j:
         return jsonify(error="없는 작업"), 404
-    return jsonify({k: v for k, v in j.items() if k != "out"})
+    return jsonify({k: v for k, v in j.items() if k != "out"} | {"subs": sub_state.get(jid)})
+
+
+# ---------------- 자막 ----------------
+sub_state = {}
+sub_lock = threading.Lock()
+
+
+def start_subs(jid, src):
+    """자막 만들기를 뒤에서 시작 (한 번에 하나씩). 진행 상황은 sub_state[jid]"""
+    st = sub_state.get(jid)
+    if st and not st.get("sub_done"):
+        return st
+    st = sub_state[jid] = {"sub_msg": "자막 만들기 대기 중", "sub_pct": 0, "sub_done": False}
+
+    def run():
+        with sub_lock:
+            try:
+                import subs
+                subs.make_subtitles(src, os.path.join(JOBS, jid, "subs.json"), st)
+            except Exception as e:
+                st.update(sub_done=True, sub_error=st.get("sub_error") or str(e)[:300])
+    threading.Thread(target=run, daemon=True).start()
+    return st
+
+
+@app.get("/review/<jid>/subs")
+def review_subs(jid):
+    d = _jdir(jid)
+    if not d:
+        return jsonify(error="없는 작업"), 404
+    p = os.path.join(d, "subs.json")
+    data = json.load(open(p, encoding="utf-8")) if os.path.exists(p) else None
+    return jsonify(subs=data, state=sub_state.get(jid))
+
+
+@app.post("/review/<jid>/subs")
+def review_subs_save(jid):
+    d = _jdir(jid)
+    if not d:
+        return jsonify(error="없는 작업"), 404
+    body = request.get_json(silent=True) or {}
+    lines = body.get("lines")
+    if not isinstance(lines, list):
+        return jsonify(error="자막 내용이 없어요"), 400
+    p = os.path.join(d, "subs.json")
+    old = json.load(open(p, encoding="utf-8")) if os.path.exists(p) else {}
+    tmp = p + ".tmp"
+    json.dump({**old, "lines": lines, "edited": True}, open(tmp, "w", encoding="utf-8"), ensure_ascii=False)
+    os.replace(tmp, p)
+    return jsonify(ok=True)
+
+
+@app.post("/review/<jid>/subs/make")
+def review_subs_make(jid):
+    d = _jdir(jid)
+    if not d:
+        return jsonify(error="없는 작업"), 404
+    r = json.load(open(os.path.join(d, "review.json"), encoding="utf-8"))
+    return jsonify(state=start_subs(jid, r["src"]))
+
+
+@app.get("/review/<jid>/subs.srt")
+def review_subs_srt(jid):
+    d = _jdir(jid)
+    if not d:
+        return "없음", 404
+    import subs
+    p = os.path.join(d, "subs.json")
+    if not os.path.exists(p):
+        return "자막이 아직 없어요", 404
+    lines = json.load(open(p, encoding="utf-8")).get("lines", [])
+    field = "src" if request.args.get("field") == "src" else "ko"
+    r = json.load(open(os.path.join(d, "review.json"), encoding="utf-8"))
+    name = os.path.splitext(os.path.basename(r["src"]))[0] + ("_원문" if field == "src" else "_한국어") + ".srt"
+    out = os.path.join(d, name)
+    open(out, "w", encoding="utf-8-sig").write(subs.to_srt(lines, field))     # 윈도우 프로그램이 한글을 잘 읽게 BOM 붙임
+    return send_file(out, as_attachment=True, download_name=name, mimetype="application/x-subrip")
 
 
 @app.get("/download/<jid>")
@@ -904,6 +983,13 @@ def review_page(jid):
     if not _jdir(jid):
         return "검수할 수 있는 작업이 아니에요 (이번 버전 이후에 만든 작업만 돼요)", 404
     return Response(open(os.path.join(BASE, "review.html"), encoding="utf-8").read(), mimetype="text/html")
+
+
+@app.get("/review/<jid>/subtitles")
+def subs_page(jid):
+    if not _jdir(jid):
+        return "없는 작업이에요", 404
+    return Response(open(os.path.join(BASE, "subs.html"), encoding="utf-8").read(), mimetype="text/html")
 
 
 @app.get("/review/<jid>/data")

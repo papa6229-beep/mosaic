@@ -8,3 +8,4 @@ psutil
 nudenet
 onnx
 onnx2torch
+faster-whisper>=1.1.0
