@@ -7,6 +7,10 @@
 """
 import os, re, json, time, subprocess, threading, urllib.request, zipfile, shutil, traceback
 
+# 모델 받는 새 방식(hf-xet)이 일부 인터넷 환경에서 멈춘 채 안 끝나는 문제 → 일반 방식으로 받음
+os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+
 ROOT = os.path.dirname(os.path.abspath(__file__))
 MODELS = os.path.join(ROOT, "models")
 # 받아쓰기: large-v2. 성인 영상 전용 자막 도구 WhisperJAV 가 실제 성인 영상으로 시험해서 기본값으로 쓰는 모델
