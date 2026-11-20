@@ -510,23 +510,41 @@ def _paint_worker(src, start, count, W, H, fps, ells, polys, params, mi, seg, co
 def _run_parallel(job, K, n, make_args, target, label, p0=50, p1=99):
     import multiprocessing as mp
     ctx = mp.get_context("spawn")
-    counter = ctx.Value("i", 0)
+    counters = [ctx.Value("i", 0) for _ in range(K)]      # 일꾼마다 따로 셈 (남은 시간을 일꾼별 속도로 계산하려고)
     q = ctx.Queue()
-    procs = []
+    procs, sizes = [], []
     for k in range(K):
-        p = ctx.Process(target=target, args=make_args(k) + (counter, q), daemon=True)
+        args = make_args(k)
+        sizes.append(args[2])                               # 이 일꾼이 맡은 프레임 수 (src, start, count, ...)
+        p = ctx.Process(target=target, args=args + (counters[k], q), daemon=True)
         p.start()
         procs.append(p)
     t0, results = time.time(), []
+    first = [None] * K                                     # 일꾼마다 실제로 프레임을 내기 시작한 때 (준비 시간은 빼고 속도를 잼)
     while len(results) < K:
         try:
             results.append(q.get(timeout=1))
         except Exception:
             pass
-        i = counter.value
-        el = time.time() - t0
-        left = el / i * (n - i) if i else 0
-        job["msg"] = f"{label} {i}/{n} 프레임 · CPU {K}개 동시 처리 · 이 단계 남은 시간 약 {fmt_sec(left)}"
+        dn = [c.value for c in counters]
+        i = sum(dn)
+        now = time.time()
+        el = now - t0
+        for k, d in enumerate(dn):
+            if d and first[k] is None:
+                first[k] = (now, d)
+        # 가장 늦게 끝날 일꾼 기준 (블러가 많은 구간을 맡은 일꾼은 느려서, 전체 평균으로 재면 실제보다 짧게 나옴)
+        lefts = []
+        for k, (sz, d) in enumerate(zip(sizes, dn)):
+            if d >= sz:
+                continue
+            if first[k] is None or d - first[k][1] < 10 or now - first[k][0] < 5:
+                lefts = None                                # 아직 속도를 잴 만큼 안 됨
+                break
+            lefts.append((sz - d) * (now - first[k][0]) / (d - first[k][1]))
+        left = max(lefts) if lefts else (0 if i >= n or lefts == [] else None)
+        job["msg"] = f"{label} {i}/{n} 프레임 · CPU {K}개 동시 처리 · " + \
+            ("이 단계 남은 시간 계산 중" if left is None else f"이 단계 남은 시간 약 {fmt_sec(left)}")
         job["pct"] = p0 + int(i * (p1 - p0) / max(n, 1))
         if not any(p.is_alive() for p in procs) and q.empty() and len(results) < K:
             raise RuntimeError(label + " 작업 일부가 비정상 종료됐어요")
