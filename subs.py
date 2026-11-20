@@ -278,7 +278,8 @@ def ensure_translator(job=None):
             raise RuntimeError(f"번역 실행 도구 목록을 못 불러왔어요 (인터넷 확인): {e}")
         if not isinstance(rels, list):          # 너무 자주 물어봐서 막힌 경우 등
             raise RuntimeError("번역 실행 도구 목록을 못 불러왔어요: " + str(rels.get("message", rels))[:150])
-        asset = next((a for r in rels if not r.get("draft") and not r.get("prerelease")
+        # llama.cpp 는 매일 나오는 판을 전부 '미리 보기(prerelease)'로 올려서 그것까지 포함해야 함
+        asset = next((a for r in rels if not r.get("draft")
                       for a in r.get("assets", []) if a["name"].endswith(want)), None)
         if asset is None:
             raise RuntimeError("번역 실행 도구(llama.cpp)를 찾지 못했어요")
