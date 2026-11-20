@@ -247,6 +247,33 @@ def _download(url, dst, job, label):
     os.replace(tmp, dst)
 
 
+def _llama_urls(want):
+    """llama.cpp 윈도우용(Vulkan) 압축 파일 주소 후보들. 판은 매일 '미리 보기(Pre-release)'로 올라옴
+    1) 깃허브 목록(API)에서 파일 이름으로 찾고  2) 그게 막히면(횟수 제한 등) 새 판 소식(releases.atom)의 판 번호로 주소를 만듦"""
+    ua = {"User-Agent": "mosaic-generator"}
+    urls = []
+    try:
+        rels = json.load(urllib.request.urlopen(urllib.request.Request(
+            "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=10",
+            headers={**ua, "Accept": "application/vnd.github+json"}), timeout=60))
+        if isinstance(rels, list):
+            urls += [a["browser_download_url"] for r in rels if not r.get("draft")
+                     for a in r.get("assets", []) if a["name"].endswith(want)]
+    except Exception as e:
+        print("llama 목록(API) 실패:", e)
+    if not urls:
+        try:
+            atom = urllib.request.urlopen(urllib.request.Request(
+                "https://github.com/ggml-org/llama.cpp/releases.atom", headers=ua), timeout=60).read().decode("utf-8", "ignore")
+            for tag in re.findall(r"/releases/tag/(b\d+)", atom):
+                u = f"https://github.com/ggml-org/llama.cpp/releases/download/{tag}/llama-{tag}-{want}"
+                if u not in urls:
+                    urls.append(u)
+        except Exception as e:
+            print("llama 목록(atom) 실패:", e)
+    return urls
+
+
 def ensure_translator(job=None):
     """번역 모델과 실행 도구가 없으면 받아 둠 (한 번만). → (llama-server 경로, 모델 경로)"""
     os.makedirs(TR_DIR, exist_ok=True)
@@ -269,22 +296,20 @@ def ensure_translator(job=None):
         os.makedirs(LLAMA_DIR, exist_ok=True)
         _log(job, "번역 실행 도구 받는 중 (처음 한 번만)")
         want = "bin-win-vulkan-x64.zip" if os.name == "nt" else "bin-ubuntu-vulkan-x64.tar.gz"
-        # 가장 최근 판은 아직 파일을 올리는 중일 수 있어서, 최근 몇 개 판 중에 윈도우용 파일이 있는 첫 판을 고름
-        try:
-            rels = json.load(urllib.request.urlopen(urllib.request.Request(
-                "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=15",
-                headers={"User-Agent": "mosaic-generator", "Accept": "application/vnd.github+json"}), timeout=60))
-        except Exception as e:
-            raise RuntimeError(f"번역 실행 도구 목록을 못 불러왔어요 (인터넷 확인): {e}")
-        if not isinstance(rels, list):          # 너무 자주 물어봐서 막힌 경우 등
-            raise RuntimeError("번역 실행 도구 목록을 못 불러왔어요: " + str(rels.get("message", rels))[:150])
-        # llama.cpp 는 매일 나오는 판을 전부 '미리 보기(prerelease)'로 올려서 그것까지 포함해야 함
-        asset = next((a for r in rels if not r.get("draft")
-                      for a in r.get("assets", []) if a["name"].endswith(want)), None)
-        if asset is None:
-            raise RuntimeError("번역 실행 도구(llama.cpp)를 찾지 못했어요")
+        urls = _llama_urls(want)
+        if not urls:
+            raise RuntimeError("번역 실행 도구(llama.cpp) 받을 곳을 찾지 못했어요 (인터넷 확인)")
         z = os.path.join(LLAMA_DIR, "llama.zip")
-        _download(asset["browser_download_url"], z, job, "번역 실행 도구")
+        err = None
+        for u in urls[:3]:                    # 갓 올라온 판은 파일이 아직 없을 수 있어서 몇 개 시도
+            try:
+                _download(u, z, job, "번역 실행 도구")
+                err = None
+                break
+            except Exception as e:
+                err = e
+        if err:
+            raise RuntimeError(f"번역 실행 도구를 받지 못했어요: {err}")
         with zipfile.ZipFile(z) as zf:
             zf.extractall(LLAMA_DIR)
         os.remove(z)
@@ -328,7 +353,13 @@ class Translator:
         t0 = time.time()
         while time.time() - t0 < 300:
             if self.p.poll() is not None:
-                raise RuntimeError("번역 모델을 못 띄웠어요 (models/translate/server.log 참고)")
+                tail = ""
+                try:
+                    self.log.close()
+                    tail = open(os.path.join(TR_DIR, "server.log"), encoding="utf-8", errors="ignore").read()[-300:]
+                except Exception:
+                    pass
+                raise RuntimeError("번역 모델을 못 띄웠어요: " + tail.replace("\n", " / "))
             try:
                 with urllib.request.urlopen(self.url + "/health", timeout=2) as r:
                     if r.status == 200:
