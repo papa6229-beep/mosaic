@@ -689,6 +689,54 @@ HAIR_BAND = 0.3     # 모자이크 가장자리에서 (모자이크 짧은 변 �
 HAIR_BAND_MAX = 90  # 그 거리 최대 (픽셀)
 
 
+BRIDGE = 60         # 같은 자리 모자이크가 이 프레임 수(2초) 안에 다시 잡히면 블러를 끊지 않고 이어 감
+
+
+def _parts(per, info, n, cutf):
+    """원본 모자이크 추적 조각들을 '부위'로 묶음 → {추적번호: 부위번호}
+    같은 자리에 겹쳐 잡히거나, 잠깐(BRIDGE 안) 끊겼다 같은 자리에서 다시 잡히면 같은 부위 (화면 전환을 넘어서는 안 묶음)"""
+    def box_of(i, e):
+        pts = info[i]["req"].get(str(e[0])) if info[i] else None
+        if pts is not None and len(pts):
+            P = np.asarray(pts, float)
+            return np.array([P[:, 0].min(), P[:, 1].min(), P[:, 0].max(), P[:, 1].max()])
+        return np.asarray(e[1], float)
+    def near(a, b):
+        if _iou(a, b) > 0:
+            return True
+        s_ = max(a[2] - a[0], a[3] - a[1], b[2] - b[0], b[3] - b[1])
+        return np.hypot((a[0] + a[2] - b[0] - b[2]) / 2, (a[1] + a[3] - b[1] - b[3]) / 2) < 0.6 * s_
+    part, parts = {}, []                                  # parts[k] = [마지막 프레임, 마지막 상자]
+    for i in range(n):
+        if cutf[i]:
+            for p in parts:
+                p[0] = -10 ** 9                            # 화면이 바뀌면 이전 부위와는 안 이음
+        now = {}
+        for e in per[i]:
+            b = box_of(i, e)
+            tid = e[0]
+            if tid not in part:
+                best, bd = None, None
+                for k, p in enumerate(parts):
+                    if i - p[0] > BRIDGE or not near(p[1], b):
+                        continue
+                    dd = np.hypot((p[1][0] + p[1][2] - b[0] - b[2]) / 2, (p[1][1] + p[1][3] - b[1] - b[3]) / 2)
+                    if bd is None or dd < bd:
+                        best, bd = k, dd
+                if best is None:
+                    parts.append([i, b]); best = len(parts) - 1
+                part[tid] = best
+            k = part[tid]
+            if k in now:
+                o = now[k]
+                now[k] = np.array([min(o[0], b[0]), min(o[1], b[1]), max(o[2], b[2]), max(o[3], b[3])])
+            else:
+                now[k] = b
+        for k, b in now.items():
+            parts[k][0], parts[k][1] = i, b
+    return part
+
+
 def _ell(c, r1, r2, th):
     v = np.array([[np.cos(th), -np.sin(th)], [np.sin(th), np.cos(th)]])
     return np.asarray(c, float), v @ np.diag([1 / r1 ** 2, 1 / r2 ** 2]) @ v.T
@@ -701,40 +749,42 @@ def plan(per, info, n, fw=1920, fh=1080):
     - 위치는 가려야 할 곳의 중심을 부드럽게 다듬고, 조금 움직이는 건 무시(가만히), 크게 움직일 때만 천천히 따라감
     반환: (프레임마다 [타원, ...], 블러 밖으로 나간 가려야 할 곳이 있었던 프레임 목록)"""
     from scipy.ndimage import gaussian_filter1d
-    # 모자이크와 떨어진 노출 탐지는 앞뒤 5프레임 안에서 2번 이상 더 잡혀야 인정 (한두 프레임 오탐 무시)
-    lraw = [info[i]["loose"] if info[i] else [] for i in range(n)]
-    loose = {}
-    for i in range(n):
-        keep = []
-        for b in lraw[i]:
-            cnt = sum(1 for j in range(max(0, i - 5), min(n, i + 6)) if j != i and any(_iou(b, q) > 0.2 for q in lraw[j]))
-            if cnt >= 2:
-                keep.append(b + [1.0, None])
-        loose[str(i)] = keep
-    mper = build_tracks(loose, n, fw, fh)
-    seq = {}
+    # 원본 모자이크(+털·바로 옆 노출)만 덮음. 모자이크와 떨어진 노출만 보고 만드는 블러는 만들지 않음
+    cutf = [bool(info[i]["cut"]) if info[i] else False for i in range(n)]
+    part = _parts(per, info, n, cutf)
+    acc = {}                                              # 부위 → 프레임 → (모양 점들, 무조건 덮을 점들)
     for i in range(n):
         if not info[i]:
             continue
-        cut = info[i]["cut"]
         for e in per[i]:
             pts = info[i]["req"].get(str(e[0]))
-            if pts is not None:
-                bb = e[1]
-                mp = np.asarray(e[2], float) if e[2] and len(e[2]) >= 3 else \
-                    np.array([[bb[0], bb[1]], [bb[2], bb[1]], [bb[2], bb[3]], [bb[0], bb[3]]], float)
-                band = float(np.clip(min(bb[2] - bb[0], bb[3] - bb[1]) * HAIR_BAND, 30, HAIR_BAND_MAX))
-                rq = np.asarray(pts, float).copy()                 # 모자이크 가까이 붙은 털·노출까지만 '무조건 덮을 곳'
-                rq[:, 0] = np.clip(rq[:, 0], bb[0] - band, bb[2] + band)
-                rq[:, 1] = np.clip(rq[:, 1], bb[1] - band, bb[3] + band)
-                seq.setdefault(("t", e[0]), []).append((i, np.asarray(pts, float), cut, np.vstack([mp, rq])))
-        for e in mper[i]:
-            b = e[1]
-            bp = np.array([[b[0], b[1]], [b[2], b[1]], [b[2], b[3]], [b[0], b[3]]], float)
-            seq.setdefault(("m", e[0]), []).append((i, bp, cut, bp))
+            if pts is None:
+                continue
+            bb = e[1]
+            mp = np.asarray(e[2], float) if e[2] and len(e[2]) >= 3 else \
+                np.array([[bb[0], bb[1]], [bb[2], bb[1]], [bb[2], bb[3]], [bb[0], bb[3]]], float)
+            band = float(np.clip(min(bb[2] - bb[0], bb[3] - bb[1]) * HAIR_BAND, 30, HAIR_BAND_MAX))
+            rq = np.asarray(pts, float).copy()                 # 모자이크 가까이 붙은 털·노출까지만 '무조건 덮을 곳'
+            rq[:, 0] = np.clip(rq[:, 0], bb[0] - band, bb[2] + band)
+            rq[:, 1] = np.clip(rq[:, 1], bb[1] - band, bb[3] + band)
+            d = acc.setdefault(part[e[0]], {})
+            if i in d:                                     # 같은 부위의 모자이크가 겹쳐 잡히면 하나로 합침
+                d[i] = (np.vstack([d[i][0], np.asarray(pts, float)]), np.vstack([d[i][1], mp, rq]))
+            else:
+                d[i] = (np.asarray(pts, float), np.vstack([mp, rq]))
+    seq = {}
+    for pid, d in acc.items():
+        fs = sorted(d)
+        items = []
+        for k, i in enumerate(fs):
+            if k and 1 < i - fs[k - 1] <= BRIDGE and not any(cutf[fs[k - 1] + 1:i + 1]):
+                pv = d[fs[k - 1]]                          # 잠깐 못 잡힌 동안은 마지막 자리 그대로 이어 감
+                for g in range(fs[k - 1] + 1, i):
+                    items.append((g, pv[0], False, pv[1]))
+            items.append((i, d[i][0], cutf[i], d[i][1]))
+        seq[("t", pid)] = items
     out = [[] for _ in range(n)]
     leak = set()
-    cutf = [bool(info[i]["cut"]) if info[i] else False for i in range(n)]
     segtab = {}
     for key, items in seq.items():
         frames = [it[0] for it in items]
