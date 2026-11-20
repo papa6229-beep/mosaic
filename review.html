@@ -84,7 +84,7 @@
       </div>
       <div id="hsb" title="끌어서 타임라인을 좌우로 이동 (타임라인 위에서 Shift+휠도 돼요)"><div id="hsbT"></div></div>
       <canvas id="ovw" title="전체 영상: 누르면 그 위치로 · 주황 상자 끌기 = 보는 범위 이동 · 상자 양 끝 끌기 = 보는 범위 넓히기/좁히기"></canvas>
-      <canvas id="tl" title="막대 클릭 = 선택하고 그 위치로 · 빈 곳 클릭 = 그 위치로 · 막대 양 끝 끌기 = 기간 · Ctrl/Shift+클릭 = 여러 개 선택 · Shift+끌기 = 상자로 여러 개 선택"></canvas>
+      <canvas id="tl" title="막대 클릭 = 선택하고 그 위치로 · 빈 곳 클릭 = 선택 풀고 그 위치로 · 막대 양 끝 끌기 = 기간 · Ctrl/Shift+클릭 = 여러 개 선택 · Shift+끌기 = 상자로 여러 개 선택"></canvas>
     </div>
   </div>
   <div class="side">
@@ -703,7 +703,8 @@ TL.addEventListener("pointerdown", ev => {
   if (eg) { if (!isSel(eg.id)) selectOnly(eg.id); else sel = idOf(eg.id);
     snapshot(); V.pause(); drag = { type: eg.type, moved: false, cur0: cur }; drawTL(); draw(); updSide(); return; }
   if (hit != null) { if (!isSel(hit)) selectOnly(hit); else sel = idOf(hit); }   // 막대 클릭 = 선택 + 그 위치로
-  V.pause(); setFrame(f);                              // 빈 곳 = 그 위치로 (선택은 그대로)
+  else selectOnly(null);                               // 빈 곳 클릭 = 선택 풀기 + 그 위치로
+  V.pause(); setFrame(f);
   drag = { type: "tlSeek" };
 });
 let tlAuto = null;                  // 끌다가 타임라인 끝에 닿으면 천천히 밀려 감
