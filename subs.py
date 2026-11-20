@@ -9,10 +9,15 @@ import os, re, json, time, subprocess, threading, urllib.request, zipfile, shuti
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 MODELS = os.path.join(ROOT, "models")
-WHISPER_MODEL = "large-v3-turbo"
+WHISPER_MODEL = "large-v3-turbo"                     # 영어 등 일본어 아닌 영상 + 언어 알아보기용
 WHISPER_DIR = os.path.join(MODELS, "whisper")
-TR_REPO = "42ailab/TranslateGemma-4B-GGUF"
-TR_FILE = "translategemma-4b-it-Q8_0.gguf"
+JA_REPO = "quantumcookie/anime-whisper-ct2-int8"     # 일본어: 성인 게임 음성(속삭임·신음 포함)으로 훈련한 anime-whisper
+JA_DIR = os.path.join(WHISPER_DIR, "anime-whisper")
+TR_REPO = "HauhauCS/Qwen3.5-9B-Uncensored-HauhauCS-Aggressive"   # 번역: 검열 해제된 Qwen3.5 9B
+TR_FILE = "Qwen3.5-9B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf"
+TR_MB = 5300
+ASR_ID = "anime-whisper+turbo/2"     # 받아쓰기 방식이 바뀌면 이 값을 바꿈 → 예전 방식으로 만든 자막은 처음부터 다시
+OLD_TR_FILES = ["translategemma-4b-it-Q8_0.gguf"]   # 예전 번역 모델 (새 모델 받으면 지움)
 TR_DIR = os.path.join(MODELS, "translate")
 LLAMA_DIR = os.path.join(ROOT, "tools", "llama")
 LLAMA_PORT = 8771
@@ -55,7 +60,8 @@ class _DlWatch:
                 spd = max(0.0, (mb + base - last) / max(now - lt, 1e-3))
                 last, lt = mb + base, now
                 if mb > 1:
-                    _log(job, f"{label} 받는 중 (처음 한 번만) {mb / 1000:.2f}GB / 약 {total_mb / 1000:.1f}GB · 초당 {spd:.0f}MB")
+                    tot = f" / 약 {total_mb / 1000:.1f}GB" if total_mb else ""
+                    _log(job, f"{label} 받는 중 (처음 한 번만) {mb / 1000:.2f}GB{tot} · 초당 {spd:.0f}MB")
         threading.Thread(target=run, daemon=True).start()
 
     def close(self):
@@ -63,6 +69,7 @@ class _DlWatch:
 
 
 # ---------------- 소리 꺼내기 ----------------
+LEVEL = "dynaudnorm=f=250:g=15:m=30"    # 작은 속삭임은 키우고 큰 소리는 그대로 (구간마다 소리 크기를 고르게)
 def extract_audio(src, wav):
     """원본에서 말소리를 16kHz 모노로 꺼냄 (방송용 MXF처럼 소리 트랙이 여러 개면 앞의 두 트랙을 합침)"""
     import media
@@ -74,10 +81,10 @@ def extract_audio(src, wav):
         raise RuntimeError("이 영상에는 소리가 없어요")
     mono = lambda l: "mono" in l or "1 channels" in l
     if len(auds) >= 2 and mono(auds[0]) and mono(auds[1]):
-        a = ["-filter_complex", "[0:a:0][0:a:1]amerge=inputs=2,pan=mono|c0=0.5*c0+0.5*c1,aresample=async=1:first_pts=0[a]",
+        a = ["-filter_complex", "[0:a:0][0:a:1]amerge=inputs=2,pan=mono|c0=0.5*c0+0.5*c1,aresample=async=1:first_pts=0," + LEVEL + "[a]",
              "-map", "[a]"]
     else:   # first_pts=0: 소리가 화면보다 늦게 시작하는 영상이면 앞을 무음으로 채워서 시간을 화면과 맞춤
-        a = ["-map", "0:a:0", "-ac", "1", "-af", "aresample=async=1:first_pts=0"]
+        a = ["-map", "0:a:0", "-ac", "1", "-af", "aresample=async=1:first_pts=0," + LEVEL]
     r = subprocess.run([ff, "-y", "-loglevel", "error", "-i", src, *a, "-ar", "16000", "-c:a", "pcm_s16le", wav],
                        capture_output=True)
     if r.returncode != 0:
@@ -99,38 +106,76 @@ def _cuda_dlls():
         return False
 
 
-def _load_whisper(job, devs):
+def _open(name, devs):
     from faster_whisper import WhisperModel
-    os.makedirs(WHISPER_DIR, exist_ok=True)
-    _log(job, "받아쓰기 모델 준비 중 (처음 한 번만 약 1.6GB 받아요)")
     tries = [("cuda", "float16"), ("cuda", "int8_float16"), ("cpu", "int8")]
-    tries = [t for t in tries if t[0] in devs]
     last = None
-    for dev, ct in tries:
+    for dev, ct in [t for t in tries if t[0] in devs]:
         try:
-            m = WhisperModel(WHISPER_MODEL, device=dev, compute_type=ct, download_root=WHISPER_DIR)
-            return m, f"{'그래픽카드' if dev == 'cuda' else 'CPU (느림)'}"
+            kw = {} if os.path.isdir(name) else {"download_root": WHISPER_DIR}
+            return WhisperModel(name, device=dev, compute_type=ct, **kw), ("그래픽카드" if dev == "cuda" else "CPU (느림)")
         except Exception as e:
             last = e
     raise RuntimeError(f"받아쓰기 모델을 못 띄웠어요: {last}")
+
+
+def _ja_model():
+    """anime-whisper 를 받아 두고, 단어 시간 계산이 되도록 설정 한 곳을 고침
+    (이 모델은 판단하는 층이 2개뿐인데 설정엔 큰 모델 기준 번호가 적혀 있어서 그대로 쓰면 멈춤 — Subtitle Edit 에서 찾아 고친 방법과 같음)"""
+    cfg = os.path.join(JA_DIR, "config.json")
+    if not os.path.exists(os.path.join(JA_DIR, "model.bin")):
+        from huggingface_hub import snapshot_download
+        snapshot_download(JA_REPO, local_dir=JA_DIR)
+    c = json.load(open(cfg, encoding="utf-8"))
+    heads = [[1, h] for h in range(20)]
+    if c.get("alignment_heads") != heads:
+        c["alignment_heads"] = heads
+        json.dump(c, open(cfg, "w", encoding="utf-8"))
+    tok = os.path.join(JA_DIR, "tokenizer.json")
+    if not os.path.exists(tok):        # 글자 사전이 없으면 같은 계열(large-v3 turbo)의 것을 씀
+        for dp, _, fs in os.walk(WHISPER_DIR):
+            if "tokenizer.json" in fs and not os.path.abspath(dp).startswith(os.path.abspath(JA_DIR)):
+                shutil.copy(os.path.join(dp, "tokenizer.json"), tok)
+                break
+    return JA_DIR
+
+
+def _detect_lang(model, wav):
+    """영상 여러 군데의 말소리로 언어를 알아봄 → 'ja' / 'en' ..."""
+    try:
+        from faster_whisper import decode_audio
+        audio = decode_audio(wav, sampling_rate=16000)
+        lang, prob, _ = model.detect_language(audio, vad_filter=True, language_detection_segments=8)
+        return lang
+    except Exception as e:
+        print("언어 알아보기 실패, 일본어로 봄:", e)
+        return "ja"
+
+
+VAD = {"threshold": 0.3, "min_silence_duration_ms": 400, "speech_pad_ms": 300}   # 기본(0.5)보다 낮춰서 작은 속삭임도 말로 잡음
 
 
 def _asr_child(wav, out, devs):
     """따로 띄운 프로그램 안에서 받아쓰기 (그래픽카드 쪽 문제로 갑자기 꺼져도 생성기 본체는 안 꺼지게)"""
     if "cuda" in devs and not _cuda_dlls():
         devs = ["cpu"]
-    st = {}
-    model, how = _load_whisper(st, devs)
+    os.makedirs(WHISPER_DIR, exist_ok=True)
+    base, how = _open(WHISPER_MODEL, devs)
+    lang = _detect_lang(base, wav)
+    print("L " + lang, flush=True)
+    if lang == "ja":
+        del base
+        model, how = _open(_ja_model(), devs)
+        how += " · 일본어 전용 모델"
+        kw = dict(language="ja", task="transcribe")
+    else:
+        model = base
+        kw = dict(language=lang)
     print("H " + how, flush=True)
-    kw = dict(beam_size=5, vad_filter=True, vad_parameters={"min_silence_duration_ms": 400},
-              word_timestamps=True, condition_on_previous_text=False)
-    try:
-        segs, info = model.transcribe(wav, multilingual=True, **kw)      # 일본어·영어가 섞여 있어도
-    except TypeError:
-        segs, info = model.transcribe(wav, **kw)
+    segs, info = model.transcribe(wav, beam_size=5, vad_filter=True, vad_parameters=VAD, word_timestamps=True,
+                                  condition_on_previous_text=False, **kw)
     words = []
     for s in segs:
-        lang = getattr(s, "language", None) or getattr(info, "language", "ja")
         for w in (s.words or []):
             if w.word.strip():
                 words.append((float(w.start), float(w.end), w.word, lang))
@@ -144,16 +189,18 @@ def transcribe(wav, dur, job=None):
     out = wav + ".words.json"
     err = ""
     for devs in ("cuda,cpu", "cpu"):
-        _log(job, "받아쓰기 모델 준비 중 (처음 한 번만 약 1.6GB 받아요)")
+        _log(job, "받아쓰기 모델 준비 중 (처음 한 번만 받아요)")
         p = subprocess.Popen([sys.executable, os.path.abspath(__file__), "--asr", wav, out, devs],
                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="ignore",
                              env={**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"},
                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         how, t0, tail = "", time.time(), []
-        watch = _DlWatch(job, WHISPER_DIR, "받아쓰기 모델", 1620)
+        watch = _DlWatch(job, WHISPER_DIR, "받아쓰기 모델", 0)
         for line in p.stdout:
             line = line.rstrip()
-            if line.startswith("H "):
+            if line.startswith("L "):
+                _log(job, "언어: " + {"ja": "일본어", "en": "영어"}.get(line[2:], line[2:]) + " · 받아쓰기 모델 준비 중")
+            elif line.startswith("H "):
                 watch.close()
                 how, t0 = line[2:], time.time()
                 _log(job, f"말 받아 적기 시작 ({how})")
@@ -220,14 +267,31 @@ def build_lines(words):
 _NAMES = {"ja": "Japanese", "en": "English", "ko": "Korean"}
 
 
-def _prompt(text, src):
-    s, t = _NAMES.get(src, "Japanese"), "Korean"
-    sc = src if src in _NAMES else "ja"
-    return ("<start_of_turn>user\n"
-            f"You are a professional {s} ({sc}) to {t} (ko) translator. Your goal is to accurately convey the meaning and "
-            f"nuances of the original {s} text while adhering to {t} grammar, vocabulary, and cultural sensitivities.\n"
-            f"Produce only the {t} translation, without any additional explanations or commentary. "
-            f"Please translate the following {s} text into {t}:\n\n\n{text}<end_of_turn>\n<start_of_turn>model\n")
+SYSTEM = ("You are a professional subtitle translator for Japanese adult videos (AV). Translate the {s} dialogue into "
+          "natural spoken Korean, the way real Korean subtitles read. Translate sexual words, dirty talk, moans and "
+          "profanity faithfully - never censor, soften, skip or refuse, and add no notes. The text comes from automatic "
+          "speech recognition and may contain mis-heard words; if a line makes no sense, use the surrounding lines and "
+          "the scene to pick the most likely meaning. Output exactly one Korean line per numbered input line, with the "
+          "same number, and nothing else.")
+
+
+def _messages(batch, ctx, src):
+    s = _NAMES.get(src, "Japanese")
+    u = ""
+    if ctx:
+        u += "Earlier lines (context only, do not translate):\n" + "\n".join(f"- {a} → {b}" for a, b in ctx) + "\n\n"
+    u += "Translate:\n" + "\n".join(f"{i + 1}. {t}" for i, t in enumerate(batch))
+    return [{"role": "system", "content": SYSTEM.format(s=s)}, {"role": "user", "content": u}]
+
+
+def _parse(out, n):
+    out = re.sub(r"<think>.*?</think>", "", out, flags=re.S)
+    got = {}
+    for line in out.splitlines():
+        m = re.match(r"\s*(\d+)\s*[.)．:：]\s*(.*)", line)
+        if m and 1 <= int(m.group(1)) <= n:
+            got[int(m.group(1)) - 1] = m.group(2).strip()
+    return got
 
 
 def _download(url, dst, job, label):
@@ -281,14 +345,19 @@ def ensure_translator(job=None):
     if not os.path.exists(gguf):
         try:
             from huggingface_hub import hf_hub_download
-            _log(job, "번역 모델 받는 중 (처음 한 번만 약 4.1GB)")
-            watch = _DlWatch(job, TR_DIR, "번역 모델", 4130)
+            _log(job, f"번역 모델 받는 중 (처음 한 번만 약 {TR_MB / 1000:.1f}GB)")
+            watch = _DlWatch(job, TR_DIR, "번역 모델", TR_MB)
             try:
                 p = hf_hub_download(TR_REPO, TR_FILE, local_dir=TR_DIR)
             finally:
                 watch.close()
             if os.path.abspath(p) != os.path.abspath(gguf):
                 shutil.move(p, gguf)
+            for old in OLD_TR_FILES:              # 안 쓰는 예전 번역 모델 지워서 자리 확보
+                try:
+                    os.remove(os.path.join(TR_DIR, old))
+                except OSError:
+                    pass
         except Exception:
             _download(f"https://huggingface.co/{TR_REPO}/resolve/main/{TR_FILE}", gguf, job, "번역 모델")
     exe = os.path.join(LLAMA_DIR, "llama-server.exe" if os.name == "nt" else "llama-server")
@@ -346,10 +415,10 @@ class Translator:
         self.url = f"http://127.0.0.1:{LLAMA_PORT}"
         _log(job, "번역 모델 띄우는 중")
         flags = 0x08000000 if os.name == "nt" else 0          # 윈도우에서 검은 창이 따로 안 뜨게
-        self.log = open(os.path.join(MODELS, "translate", "server.log"), "w", encoding="utf-8", errors="ignore") \
+        self.log = open(os.path.join(TR_DIR, "server.log"), "w", encoding="utf-8", errors="ignore") \
             if os.path.isdir(TR_DIR) else subprocess.DEVNULL
         self.p = subprocess.Popen([exe, "-m", gguf, "--port", str(LLAMA_PORT), "--host", "127.0.0.1", "-ngl", "999",
-                                   "-c", "4096"], stdout=self.log, stderr=self.log, creationflags=flags)
+                                   "-c", "8192"], stdout=self.log, stderr=self.log, creationflags=flags)
         t0 = time.time()
         while time.time() - t0 < 300:
             if self.p.poll() is not None:
@@ -368,13 +437,23 @@ class Translator:
                 time.sleep(1)
         raise RuntimeError("번역 모델이 5분 안에 준비되지 않았어요")
 
-    def __call__(self, text, src="ja"):
-        body = json.dumps({"prompt": _prompt(text, src), "n_predict": 256, "temperature": 0, "cache_prompt": False,
-                           "stop": ["<end_of_turn>"]}).encode("utf-8")
-        req = urllib.request.Request(self.url + "/completion", data=body, headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=120) as r:
-            out = json.load(r).get("content", "")
-        return out.strip()
+    def chat(self, messages, max_tokens):
+        body = json.dumps({"messages": messages, "max_tokens": max_tokens, "temperature": 0.3, "top_p": 0.8, "top_k": 20,
+                           "min_p": 0, "chat_template_kwargs": {"enable_thinking": False}}).encode("utf-8")
+        req = urllib.request.Request(self.url + "/v1/chat/completions", data=body, headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=300) as r:
+            return json.load(r)["choices"][0]["message"].get("content") or ""
+
+    def translate(self, batch, ctx, src="ja"):
+        """여러 줄을 한 번에 (앞 대사를 같이 보여 줘서 흐름에 맞게) → 줄마다 한국어. 번호가 빠진 줄은 한 줄씩 다시"""
+        got = _parse(self.chat(_messages(batch, ctx, src), 80 * len(batch) + 64), len(batch))
+        res = []
+        for i, t in enumerate(batch):
+            if not got.get(i):
+                one = _parse(self.chat(_messages([t], (ctx + list(zip(batch[:i], res)))[-CTX:], src), 120), 1)
+                got[i] = one.get(0, "")
+            res.append(got[i])
+        return res
 
     def close(self):
         try:
@@ -387,25 +466,34 @@ class Translator:
                 pass
 
 
+BATCH = 8       # 한 번에 번역하는 줄 수
+CTX = 4         # 같이 보여 주는 앞 대사 수
+
+
 def translate_lines(lines, job=None, tr=None):
     own = tr is None
     tr = tr or Translator(job)
     try:
         t0 = time.time()
         bad = 0
-        for k, l in enumerate(lines):
+        done = []
+        for k in range(0, len(lines), BATCH):
+            part = lines[k:k + BATCH]
             try:
-                l["ko"] = tr(l["src"], l.get("lang", "ja"))
+                kos = tr.translate([l["src"] for l in part], done[-CTX:], part[0].get("lang", "ja"))
                 bad = 0
             except Exception as e:
-                l["ko"] = ""
+                kos = [""] * len(part)
                 bad += 1
                 if bad >= 3:                  # 연달아 안 되면 번역기 자체 문제 → 빈 자막으로 '완성'이라 하지 않고 멈춤
                     raise RuntimeError(f"번역이 계속 실패해요: {e}")
-            el = time.time() - t0
-            left = el / (k + 1) * (len(lines) - k - 1)
-            _log(job, f"한국어로 번역 중 {k + 1}/{len(lines)}줄 · 남은 시간 약 {int(left // 60)}분 {int(left % 60)}초",
-                 60 + int((k + 1) * 39 / max(len(lines), 1)))
+            for l, ko in zip(part, kos):
+                l["ko"] = ko
+                done.append((l["src"], ko))
+            n = min(k + BATCH, len(lines))
+            left = (time.time() - t0) / n * (len(lines) - n)
+            _log(job, f"한국어로 번역 중 {n}/{len(lines)}줄 · 남은 시간 약 {int(left // 60)}분 {int(left % 60)}초",
+                 60 + int(n * 39 / max(len(lines), 1)))
     finally:
         if own:
             tr.close()
@@ -424,7 +512,7 @@ def make_subtitles(src, out_json, job=None):
                 old = json.load(open(out_json, encoding="utf-8"))
             except Exception:
                 old = None
-        if old and old.get("lines") and not old.get("translated"):
+        if old and old.get("lines") and not old.get("translated") and old.get("asr") == ASR_ID:
             lines = old["lines"]                      # 받아쓰기는 이미 끝남 → 번역만 다시
             _log(job, f"받아 적은 {len(lines)}줄로 번역만 다시 해요", 60)
         else:
@@ -435,9 +523,9 @@ def make_subtitles(src, out_json, job=None):
                 dur = w.getnframes() / float(w.getframerate())
             words = transcribe(wav, dur, job)
             lines = build_lines(words)
-            json.dump({"lines": lines, "translated": False}, open(out_json, "w", encoding="utf-8"), ensure_ascii=False)
+            json.dump({"lines": lines, "translated": False, "asr": ASR_ID}, open(out_json, "w", encoding="utf-8"), ensure_ascii=False)
         translate_lines(lines, job)
-        json.dump({"lines": lines, "translated": True}, open(out_json, "w", encoding="utf-8"), ensure_ascii=False)
+        json.dump({"lines": lines, "translated": True, "asr": ASR_ID}, open(out_json, "w", encoding="utf-8"), ensure_ascii=False)
         _log(job, f"자막 완성 ({len(lines)}줄)", 100)
         if job is not None:
             job["sub_done"] = True

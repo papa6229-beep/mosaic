@@ -897,6 +897,9 @@ def review_subs(jid):
         return jsonify(error="없는 작업"), 404
     p = os.path.join(d, "subs.json")
     data = json.load(open(p, encoding="utf-8")) if os.path.exists(p) else None
+    if data is not None:
+        import subs
+        data["current"] = data.get("asr") == subs.ASR_ID       # 지금 받아쓰기 방식으로 만든 자막인지
     return jsonify(subs=data, state=sub_state.get(jid))
 
 

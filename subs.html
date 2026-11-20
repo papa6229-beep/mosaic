@@ -357,13 +357,13 @@ function showMake(st) {
     $("bMake").disabled = true; $("makeMsg").textContent = st.sub_msg || "자막 만드는 중"; $("makeBar").style.width = (st.sub_pct || 0) + "%";
   } else {
     $("bMake").disabled = false;
-    $("makeMsg").innerHTML = st && st.sub_error ? `<span style="color:var(--bad)">실패 — ${esc(st.sub_error)}</span>` : L.length && !translated ? "받아쓰기는 끝났고, 한국어 번역이 아직이에요." : "이 영상은 아직 자막이 없어요.";
+    $("makeMsg").innerHTML = st && st.sub_error ? `<span style="color:var(--bad)">실패 — ${esc(st.sub_error)}</span>` : L.length && !current ? "예전 모델로 만든 자막이에요. 새 모델(속삭임·성인 대사 대응)로 다시 만들 수 있어요." : L.length && !translated ? "받아쓰기는 끝났고, 한국어 번역이 아직이에요." : "이 영상은 아직 자막이 없어요.";
     $("makeBar").style.width = "0";
   }
 }
-let translated = true;
+let translated = true, current = true, edited = false;
 $("bMake").onclick = () => {
-  if (L.length && translated && !confirmRemake()) return;
+  if (L.length && edited && !confirmRemake()) return;
   fetch(`/review/${JID}/subs/make`, { method: "POST" }).then(r => r.json()).then(r => { showMake(r.state); pollSubs(); });
 };
 function confirmRemake() { return $("bMake").dataset.ok === "1" || ($("bMake").dataset.ok = "1", msg("한 번 더 누르면 지금 자막을 지우고 처음부터 다시 만들어요", "bad"), false); }
@@ -379,9 +379,10 @@ function pollSubs() {
       return setTimeout(go, 1500);
     }
     polling = false;
-    translated = !!(d.subs && d.subs.translated);
-    $("bMake").textContent = d.subs && d.subs.lines && !translated ? "한국어 번역 다시 하기 (받아쓰기는 그대로)" : "이 영상 자막 만들기";
-    if (d.subs && d.subs.lines) { L = d.subs.lines; hist = []; render(); $("makeBox").style.display = "none"; msg(`자막 ${L.length}줄 불러옴`, "ok"); if ((st && st.sub_error) || !translated) showMake(st); }
+    translated = !!(d.subs && d.subs.translated); current = !d.subs || !!d.subs.current; edited = !!(d.subs && d.subs.edited);
+    $("bMake").textContent = !d.subs || !d.subs.lines ? "이 영상 자막 만들기"
+      : !current ? "새 받아쓰기·번역 모델로 다시 만들기" : !translated ? "한국어 번역 다시 하기 (받아쓰기는 그대로)" : "자막 처음부터 다시 만들기";
+    if (d.subs && d.subs.lines) { L = d.subs.lines; hist = []; render(); $("makeBox").style.display = "none"; msg(`자막 ${L.length}줄 불러옴`, "ok"); if ((st && st.sub_error) || !translated || !current) showMake(st); }
     else showMake(st);
   }).catch(() => setTimeout(go, 3000));
   go();
