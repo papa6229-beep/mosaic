@@ -22,9 +22,17 @@ def fake_entries(W, H):
 
 
 # ---------- 일꾼들 (여러 개 동시 점검용) ----------
+def _prio(app):
+    if os.environ.get("BENCH_NORMAL") == "1":       # 보통 우선순위로 (비교용) - CPU 하나만 쓰게 하는 것만
+        import cv2
+        cv2.setNumThreads(1)
+    else:
+        app._low_priority()
+
+
 def w_pipe(src, start, n, W, H, fmt, q):
     import app
-    app._low_priority()
+    _prio(app)
     import media
     fsz = media.frame_bytes(fmt, W, H) if fmt != "bgr24" else W * H * 3
     info = media.probe(src)
@@ -38,7 +46,7 @@ def w_pipe(src, start, n, W, H, fmt, q):
 
 def w_scan(src, start, n, W, H, q):
     import app, numpy as np
-    app._low_priority()
+    _prio(app)
     import cover2, media
     info = media.probe(src)
     d = app.Dec(src, start, n, W, H, info["fps"], t0=info.get("t0", 0.0), mi=info)
@@ -59,7 +67,7 @@ def w_scan(src, start, n, W, H, q):
 
 def w_paint(src, start, n, W, H, q, to_disk=None):
     import app, numpy as np
-    app._low_priority()
+    _prio(app)
     import cover2, media
     info = media.probe(src)
     fmt = media.compose_fmt(info)
@@ -139,6 +147,14 @@ def main():
     K = app._cpu_workers(10 ** 6)
     out("===== 모자이크 생성기 속도 점검 =====")
     out(f"파일: {os.path.basename(src)} ({info.get('codec')} {info.get('pix_fmt')} {W}x{H}, {total}프레임)")
+    cpu = platform.processor()
+    try:
+        import winreg
+        cpu = winreg.QueryValueEx(winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"HARDWARE\DESCRIPTION\System\CentralProcessor\0"),
+                                  "ProcessorNameString")[0].strip()
+    except Exception:
+        pass
+    out(f"CPU 이름: {cpu}")
     out(f"CPU {os.cpu_count()}개 · 동시 작업 {K}개 · 파이썬 {platform.python_version()} · OS {platform.platform()}")
     v = subprocess.run([media.ffmpeg_exe(), "-version"], capture_output=True, text=True).stdout.splitlines()
     out(f"ffmpeg: {v[0] if v else '?'}")
@@ -219,6 +235,15 @@ def main():
     out(f"11. {K}개 동시에 털 찾기: 합계 {fps:.1f} 프레임/초")
     fps, el = parallel(w_paint, K, src, N, W, H, total)
     out(f"12. {K}개 동시에 블러 칠하고 압축 (저장 안 함): 합계 {fps:.1f} 프레임/초")
+    os.environ["BENCH_NORMAL"] = "1"
+    fps, el = parallel(w_scan, K, src, N, W, H, total)
+    out(f"11-2. 11번을 보통 우선순위로: 합계 {fps:.1f} 프레임/초")
+    fps, el = parallel(w_paint, K, src, N, W, H, total)
+    out(f"12-2. 12번을 보통 우선순위로: 합계 {fps:.1f} 프레임/초")
+    for k2 in (2, 4):
+        fps, el = parallel(w_scan, k2, src, N, W, H, total)
+        out(f"11-{k2 + 1}. 털 찾기 {k2}개 동시 (보통 우선순위): 합계 {fps:.1f} 프레임/초")
+    os.environ["BENCH_NORMAL"] = "0"
     tmpd = os.path.join(ROOT, "jobs")
     os.makedirs(tmpd, exist_ok=True)
     _one_cpu_env()
