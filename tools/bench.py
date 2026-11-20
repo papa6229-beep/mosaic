@@ -28,7 +28,7 @@ def w_pipe(src, start, n, W, H, fmt, q):
     import media
     fsz = media.frame_bytes(fmt, W, H) if fmt != "bgr24" else W * H * 3
     info = media.probe(src)
-    d = app.Dec(src, start, n, W, H, info["fps"], fmt, fsz, t0=info.get("t0", 0.0))
+    d = app.Dec(src, start, n, W, H, info["fps"], fmt, fsz, t0=info.get("t0", 0.0), mi=info)
     t = time.time(); k = 0
     while d.read() is not None:
         k += 1
@@ -41,7 +41,7 @@ def w_scan(src, start, n, W, H, q):
     app._low_priority()
     import cover2, media
     info = media.probe(src)
-    d = app.Dec(src, start, n, W, H, info["fps"], t0=info.get("t0", 0.0))
+    d = app.Dec(src, start, n, W, H, info["fps"], t0=info.get("t0", 0.0), mi=info)
     x1, y1, x2, y2 = fake_entries(W, H)
     A = cover2.Analyzer()
     poly = [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]
@@ -173,7 +173,7 @@ def main():
     q = _q.Queue()
     w_pipe(src, int(total * 0.3), N, W, H, "bgr24", q)
     k, el = q.get()
-    out(f"5. 생성기 방식으로 풀어 넘기기 (프레임 번호 맞추기 포함): {k / el:.0f} 프레임/초")
+    out(f"5. 생성기 방식으로 풀어 넘기기 (프레임 번호 맞추기·색 바꾸기 포함): {k / el:.0f} 프레임/초")
 
     # 6. 털 찾기 / 블러 칠하기 / 저장 (한 개)
     w_scan(src, int(total * 0.3), N, W, H, q)

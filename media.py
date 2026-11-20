@@ -66,8 +66,10 @@ def probe(src):
                     info["range"] = "pc"
                 if "bt601" in extra or "smpte170m" in extra or "bt470bg" in extra:
                     info["matrix"] = "bt601"
+                    info["matrix_tagged"] = True
                 elif "bt709" in extra:
                     info["matrix"] = "bt709"
+                    info["matrix_tagged"] = True
                 elif info["H"] and info["H"] < 720:
                     info["matrix"] = "bt601"
             m = re.search(r"(\d+)\s*kb/s", v)

@@ -39,7 +39,7 @@ def frames(src, depth=16, table=None):
     q = queue.Queue(maxsize=depth)
 
     def reader():
-        d = Dec(src, 0, 10 ** 9, W, H, info["fps"], seek=False, threads=max(2, min(8, (os.cpu_count() or 4) // 2)))   # 혼자 읽으니까 CPU를 넉넉히
+        d = Dec(src, 0, 10 ** 9, W, H, info["fps"], seek=False, threads=max(2, min(8, (os.cpu_count() or 4) // 2)), mi=info)   # 혼자 읽으니까 CPU를 넉넉히
         while True:
             got = d.read()
             if got is None:
@@ -312,14 +312,33 @@ def detect_all(src, job, n, proxy=None, table=None):
 WARMUP = 30   # 조각 앞부분에서 미리 돌려 두는 프레임 수 (앞 조각과 블러가 자연스럽게 이어지게)
 
 
+def _bt_fix():
+    """BT.601로 바꾼 BGR → BT.709로 바꾼 BGR (같은 YUV를 두 공식으로 바꾼 결과 사이의 관계, BGR 순서)"""
+    def T(kr, kb):
+        kg = 1 - kr - kb
+        return np.array([[kr, kg, kb], [-kr / (2 * (1 - kb)), -kg / (2 * (1 - kb)), 0.5], [0.5, -kg / (2 * (1 - kr)), -kb / (2 * (1 - kr))]])
+    C = np.linalg.inv(T(0.2126, 0.0722)) @ T(0.299, 0.114)
+    return np.ascontiguousarray(C[::-1, ::-1]).astype(np.float32)
+
+
+_BT709_FIX = _bt_fix()
+
+
 class Dec:
     """영상의 start번째 프레임부터 count장을 정확히 풀어 읽음.
     시간으로 건너뛰면 영상 형식에 따라 1~2프레임 어긋날 수 있어서, 1초 앞에서부터 풀고 각 프레임의 시간을 보고 번호를 맞춤.
     table(위치 찾기 단계에서 기록한 프레임별 시간)이 있으면 그걸로 번호를 찾음 (시간이 고르지 않은 영상도 정확)"""
 
-    def __init__(self, src, start, count, W, H, fps, pix_fmt="bgr24", fsz=None, t0=0.0, table=None, seek=True, threads=2):
+    def __init__(self, src, start, count, W, H, fps, pix_fmt="bgr24", fsz=None, t0=0.0, table=None, seek=True, threads=2, mi=None):
         self.src, self.start, self.end, self.fps, self.t0 = src, start, start + count, fps, t0
         self.pix_fmt, self.fsz = pix_fmt, fsz or W * H * 3
+        self.W, self.H, self.conv = W, H, None
+        # BGR이 필요할 때: ffmpeg에서 BGR로 바꿔 넘기면 한 장이 6MB라 윈도우에서 넘기는 통로가 막힘 →
+        # 절반 크기(YUV 4:2:0)로 넘겨받고 여기서 바꿈 (ffmpeg가 바꾸던 것과 같은 색 공식)
+        if pix_fmt == "bgr24" and mi and mi.get("range") != "pc" and W % 2 == 0 and H % 2 == 0 \
+                and str(mi.get("pix_fmt", "")).startswith("yuv"):
+            self.pix_fmt, self.fsz = "yuv420p", W * H * 3 // 2
+            self.conv = _BT709_FIX if (mi.get("matrix_tagged") and mi.get("matrix") == "bt709") else False
         self.table, self.threads = table, threads
         self.lut = {round(t * 1000, 1): k for k, t in enumerate(table)} if table else None
         self.order = 0
@@ -367,7 +386,17 @@ class Dec:
         return int(round((t - self.t0) * self.fps))
 
     def read(self):
-        """→ (프레임 번호, 바이트, 프레임 시간) 또는 None(끝)"""
+        """→ (프레임 번호, 바이트(또는 BGR 배열), 프레임 시간) 또는 None(끝)"""
+        got = self._read()
+        if got is None or self.conv is None:
+            return got
+        idx, buf, t = got
+        b = cv2.cvtColor(np.frombuffer(buf, np.uint8).reshape(self.H * 3 // 2, self.W), cv2.COLOR_YUV2BGR_I420)
+        if self.conv is not False:
+            b = cv2.transform(b, self.conv)
+        return idx, b, t
+
+    def _read(self):
         while True:
             buf = self.p.stdout.read(self.fsz)
             if len(buf) < self.fsz:
@@ -403,7 +432,13 @@ class Dec:
 
 
 def _low_priority():
-    """생성 작업은 낮은 우선순위로 (작업 중에도 컴퓨터를 쓸 수 있게). ffmpeg 같은 하위 작업도 그대로 물려받음"""
+    """생성 작업은 낮은 우선순위로 (작업 중에도 컴퓨터를 쓸 수 있게). ffmpeg 같은 하위 작업도 그대로 물려받음.
+    또 일꾼 하나는 CPU 하나만 쓰게 함: 그림 계산 도구(cv2)는 원래 혼자서 CPU를 전부 쓰려고 해서,
+    8개가 동시에 그러면 서로 자리를 뺏느라 8배가 아니라 1.7배밖에 안 빨라짐 (속도 점검으로 확인)"""
+    try:
+        cv2.setNumThreads(1)
+    except Exception:
+        pass
     try:
         import psutil
         pr = psutil.Process()
@@ -421,7 +456,7 @@ def _cpu_workers(n):
     return max(1, min(cores - 2, 8, n // 60))
 
 
-def _scan_worker(src, start, count, W, H, fps, t0, table, entries, exps, params, outp, counter, q):
+def _scan_worker(src, start, count, W, H, fps, mi, table, entries, exps, params, outp, counter, q):
     """1단계(훑기): 이 조각의 프레임마다 '반드시 덮을 곳'을 모아 파일로 저장"""
     _low_priority()
     try:
@@ -430,7 +465,7 @@ def _scan_worker(src, start, count, W, H, fps, t0, table, entries, exps, params,
             setattr(cover2, k, v)
         w0 = max(0, start - WARMUP)
         total = start + count - w0
-        dec = Dec(src, w0, total, W, H, fps, t0=t0, table=table)
+        dec = Dec(src, w0, total, W, H, fps, t0=mi.get("t0", 0.0), table=table, mi=mi)
         A = cover2.Analyzer()
         res = [None] * count
         while True:
@@ -510,6 +545,8 @@ def _paint_worker(src, start, count, W, H, fps, ells, polys, params, mi, seg, co
 def _run_parallel(job, K, n, make_args, target, label, p0=50, p1=99):
     import multiprocessing as mp
     ctx = mp.get_context("spawn")
+    for k_ in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+        os.environ[k_] = "1"                                # 일꾼(새 프로그램)들이 계산 도구를 CPU 하나로만 쓰게
     counters = [ctx.Value("i", 0) for _ in range(K)]      # 일꾼마다 따로 셈 (남은 시간을 일꾼별 속도로 계산하려고)
     q = ctx.Queue()
     procs, sizes = [], []
@@ -588,7 +625,7 @@ def render(src, boxes_json, dst, job, n, times=None):
     # 1단계: 훑기 (덮을 곳 모으기)
     t0 = time.time()
     scans = [os.path.join(d, f"scan{k:02d}.pkl") for k in range(K)]
-    t0v = media.probe(src).get("t0", 0.0)
+    t0v = media.probe(src)
     table = _load_table(os.path.dirname(boxes_json))
     _run_parallel(job, K, n, lambda k: (src, bounds[k], bounds[k + 1] - bounds[k], W, H, fps, t0v, table, per[wb(k):bounds[k + 1]], (ex[wb(k):bounds[k + 1]] if ex else None), params, scans[k]),
                   _scan_worker, "1/3 덮을 곳 훑는 중", 50, 75)
