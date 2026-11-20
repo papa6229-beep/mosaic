@@ -37,11 +37,18 @@ def _find_path(args):
 def main():
     minutes = float(os.environ.get("CUT_MIN", "30"))
     src = _find_path(sys.argv[1:])
-    if not src:
-        print("영상 파일을 30분자르기.bat 위에 끌어다 놓아 주세요.")
-        print("(받은 내용:", repr(sys.argv[1:]), ")")
-        print("이 창을 캡처해서 보내 주세요.")
-        return 1
+    while not src:                                       # 경로를 못 받았으면 이 창에 직접 끌어다 놓게 함
+        print("영상 파일을 이 창에 끌어다 놓은 뒤 엔터를 눌러 주세요.")
+        try:
+            line = input("> ")
+        except Exception:
+            return 1
+        line = line.strip()
+        if line.startswith("& "):                        # 파워셸 창에 끌어다 놓으면 앞에 & 가 붙음
+            line = line[2:]
+        src = _find_path([line.strip().strip("'")])
+        if not src:
+            print("그 경로에서 파일을 못 찾았어요:", line)
     import media
     base, ext = os.path.splitext(src)
     dst = f"{base}_앞{int(minutes)}분{ext}"
