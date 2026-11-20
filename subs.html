@@ -357,7 +357,7 @@ function showMake(st) {
     $("bMake").disabled = true; $("makeMsg").textContent = st.sub_msg || "자막 만드는 중"; $("makeBar").style.width = (st.sub_pct || 0) + "%";
   } else {
     $("bMake").disabled = false;
-    $("makeMsg").innerHTML = st && st.sub_error ? `<span style="color:var(--bad)">실패 — ${esc(st.sub_error)}</span>` : "이 영상은 아직 자막이 없어요.";
+    $("makeMsg").innerHTML = st && st.sub_error ? `<span style="color:var(--bad)">실패 — ${esc(st.sub_error)}</span>` : L.length && !translated ? "받아쓰기는 끝났고, 한국어 번역이 아직이에요." : "이 영상은 아직 자막이 없어요.";
     $("makeBar").style.width = "0";
   }
 }
@@ -381,7 +381,7 @@ function pollSubs() {
     polling = false;
     translated = !!(d.subs && d.subs.translated);
     $("bMake").textContent = d.subs && d.subs.lines && !translated ? "한국어 번역 다시 하기 (받아쓰기는 그대로)" : "이 영상 자막 만들기";
-    if (d.subs && d.subs.lines) { L = d.subs.lines; hist = []; render(); $("makeBox").style.display = "none"; msg(`자막 ${L.length}줄 불러옴`, "ok"); if (st && st.sub_error) showMake(st); }
+    if (d.subs && d.subs.lines) { L = d.subs.lines; hist = []; render(); $("makeBox").style.display = "none"; msg(`자막 ${L.length}줄 불러옴`, "ok"); if ((st && st.sub_error) || !translated) showMake(st); }
     else showMake(st);
   }).catch(() => setTimeout(go, 3000));
   go();
