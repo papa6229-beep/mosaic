@@ -836,10 +836,22 @@ function mergeTwo(A, B) {           // A(먼저 시작) 뒤로 B의 움직임을
     prevRot = o.rot;
     vals.push({ f, dx: T.cx - bb.cx, dy: T.cy - bb.cy, scale: 1, ...o });
   }
-  const Q = ["dx", "dy", "rot", "sx", "sy"], tol = { dx: 0.05, dy: 0.05, rot: 1e-4, sx: 1e-4, sy: 1e-4 };
-  const keep = vals.filter((v, i) => i === 0 || i === vals.length - 1 ||
-    Q.some(q => Math.abs((vals[i + 1][q] - v[q]) / Math.max(1, vals[i + 1].f - v.f) - (v[q] - vals[i - 1][q]) / Math.max(1, v.f - vals[i - 1].f)) > tol[q]) ||
-    vals[i + 1].f - v.f > 1 || v.f - vals[i - 1].f > 1);
+  // 키프레임은 꼭 필요한 곳에만: 직선으로 이었을 때 원래 움직임과 6픽셀·2도·4% 넘게 어긋나는 곳만 남김
+  const tol = { dx: 6, dy: 6, rot: 0.035, sx: 0.04, sy: 0.04 }, Q = Object.keys(tol);
+  const mark = new Array(vals.length).fill(false);
+  if (vals.length) { mark[0] = true; mark[vals.length - 1] = true; }
+  const simp = (i, j) => {
+    if (j <= i + 1) return;
+    let worst = -1, wi = -1;
+    for (let m = i + 1; m < j; m++) {
+      const t = (vals[m].f - vals[i].f) / Math.max(1, vals[j].f - vals[i].f);
+      const d = Math.max(...Q.map(q => Math.abs(vals[i][q] + (vals[j][q] - vals[i][q]) * t - vals[m][q]) / tol[q]));
+      if (d > worst) { worst = d; wi = m; }
+    }
+    if (worst > 1) { mark[wi] = true; simp(i, wi); simp(wi, j); }
+  };
+  simp(0, vals.length - 1);
+  const keep = vals.filter((v, i) => mark[i]);
   edA.keys = edA.keys.filter(k => k.f <= a1).concat(keep).sort((p, q) => p.f - q.f);
   edA.start = Math.min(a0, b0); edA.end = Math.max(a1, b1);
   edOf(B).del = true;
