@@ -925,15 +925,17 @@ class Painter:
         self.alpha = None
         self.a3 = None
 
-    def paint(self, frame, ells, polys):
-        H, W = frame.shape[:2]
-        small = cv2.resize(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), (64, 36), interpolation=cv2.INTER_AREA).astype(np.float32)
+    def cut_check(self, small):
+        """화면이 바뀌면 블러 속 색을 이어 쓰지 않음 (small: 64x36 흑백)"""
         if self.prev_small is not None and np.abs(small - self.prev_small).mean() > CUT_DIFF:
             self.fill = None
         self.prev_small = small
+
+    def core(self, W, H, ells, polys, get_sub, align=None):
+        """블러 영역(X0,Y0,X1,Y1), 그 영역의 원본(sub, BGR), 블러 결과(soft), 투명도(alpha) 계산"""
         if not ells:
             self.fill = None
-            return frame, None
+            return None
         boxes, ws = [], []
         for e in ells:
             c, A = np.asarray(e[0], float), np.asarray(e[1], float)
@@ -946,7 +948,9 @@ class Painter:
         X1 = int(min(W, max(c[0] + R for c, _, _, _, R in boxes) + 1))
         Y1 = int(min(H, max(c[1] + R for c, _, _, _, R in boxes) + 1))
         if X1 - X0 < 4 or Y1 - Y0 < 4:
-            return frame, None
+            return None
+        if align is not None:
+            X0, Y0, X1, Y1 = align(X0, Y0, X1, Y1)
         key = (X0, Y0, X1, Y1, tuple(np.round(np.concatenate([np.ravel(c) for c, A, _, _, _ in boxes] +
                                                              [np.ravel(A) * 1e6 for c, A, _, _, _ in boxes] + [np.array(ws)]), 3)))
         if self.akey == key:                         # 블러가 가만히 있으면 투명도 계산을 다시 하지 않음 (빠르게)
@@ -967,7 +971,7 @@ class Painter:
         for p in polys:
             if p is not None and len(p) >= 3:
                 cv2.fillPoly(need, [(np.asarray(p, np.float32) - (X0, Y0)).astype(np.int32)], 1)
-        sub = frame[Y0:Y1, X0:X1]
+        sub = get_sub(X0, Y0, X1, Y1)
         minr = min(min(r) for _, _, r, _, _ in boxes)
         kmax = max([float(e[4]) if len(e) > 4 and e[4] else 1.0 for e in ells] or [1.0])   # 검수 화면에서 고친 흐림 세기 (배수)
         soft = natural_fill(sub, need, max(15.0, 2 * minr * BLUR_FRAC) * kmax, alpha).astype(np.float32)
@@ -978,10 +982,29 @@ class Painter:
                 cur = soft[oy0 - Y0:oy1 - Y0, ox0 - X0:ox1 - X0]
                 soft[oy0 - Y0:oy1 - Y0, ox0 - X0:ox1 - X0] = FILL_KEEP * ps[oy0 - pY0:oy1 - pY0, ox0 - pX0:ox1 - pX0] + (1 - FILL_KEEP) * cur
         self.fill = ((X0, Y0, X1, Y1), soft)
+        return X0, Y0, X1, Y1, sub, soft, alpha
+
+    def paint(self, frame, ells, polys):
+        H, W = frame.shape[:2]
+        self.cut_check(cv2.resize(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), (64, 36), interpolation=cv2.INTER_AREA).astype(np.float32))
+        r = self.core(W, H, ells, polys, lambda X0, Y0, X1, Y1: frame[Y0:Y1, X0:X1])
+        if r is None:
+            return frame, None
+        X0, Y0, X1, Y1, sub, soft, alpha = r
         out = frame.copy()
         sf = sub.astype(np.float32)
         out[Y0:Y1, X0:X1] = np.clip(cv2.add(sf, cv2.multiply(cv2.subtract(soft, sf), self.a3)), 0, 255).astype(np.uint8)
         return out, (X0, Y0, alpha)
+
+    def paint_yuv(self, yf, ells, polys):
+        """원본 형식(YUV) 프레임에 바로 블러를 섞음. 블러 밖 픽셀은 원본 그대로"""
+        self.cut_check(yf.small_gray())
+        r = self.core(yf.W, yf.H, ells, polys, yf.bgr, align=yf.align)
+        if r is None:
+            return False
+        X0, Y0, X1, Y1, sub, soft, alpha = r
+        yf.blend(X0, Y0, soft, alpha)
+        return True
 
 
 # ======================= 7. 검수 화면에서 고친 내용 적용 =======================

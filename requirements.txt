@@ -1,9 +1,9 @@
 flask
-opencv-python
+opencv-python<5
 numpy
 scipy
 ultralytics
-imageio-ffmpeg
+imageio-ffmpeg>=0.8.1
 psutil
 nudenet
 onnx

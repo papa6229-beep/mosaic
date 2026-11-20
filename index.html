@@ -122,12 +122,15 @@ function poll(id){
       <div><span>털 비침 의심</span><span class="${r.leak?'warn':'good'}">${r.leak?r.leak+"프레임":"없음"}</span></div>
       ${r.leak?`<div><span>의심 위치(초)</span><span>${r.leak_times.join(", ")}</span></div>`:""}
       <div><span>영상 길이</span><span>${fmt(r.video_sec)}</span></div>
-      <div><span>원본 모자이크 위치 찾기</span><span>${fmt(r.t_detect)}</span></div>
-      <div><span>블러 덮기 + 저장 (CPU ${r.workers||1}개 동시 · 저장 ${r.encoder})</span><span>${fmt(r.t_cover)}</span></div>
-      ${r.encoder_note?`<div style="display:block;font-size:12px;color:var(--sub)">그래픽카드 저장이 안 된 이유: ${r.encoder_note.replace(/</g,"&lt;")}</div>`:""}
+      <div><span>저장 형식 (원본과 같게)</span><span>${(r.out_fmt||"").replace(/</g,"&lt;")}</span></div>
+      <div><span>1. 원본 모자이크 위치 찾기 (${(r.det_how||"").replace(/</g,"&lt;")}${r.nude_how?" · 얼굴·노출 "+r.nude_how:""})</span><span>${fmt(r.t_detect)}</span></div>
+      ${r.times?`<div><span>2. 털·덮을 곳 훑기 (CPU ${r.workers||1}개)</span><span>${fmt(r.times.scan||0)}</span></div>
+      <div><span>3. 블러 위치·크기 정하기</span><span>${fmt(r.times.plan||0)}</span></div>
+      <div><span>4. 블러 그리고 저장 (CPU ${r.workers||1}개)</span><span>${fmt(r.times.paint||0)}</span></div>
+      <div><span>5. 이어 붙이고 소리 붙이기</span><span>${fmt(r.times.mux||0)}</span></div>`:""}
       <div><span><b>전체 작업 시간</b></span><span><b>${fmt(r.sec)}</b> (영상 길이의 ${(r.sec/r.video_sec).toFixed(1)}배)</span></div>
       <div><span>1시간 영상이면 (예상)</span><span>${fmt(r.sec/r.video_sec*3600)}</span></div></div>
-      <a class="dl" href="/download/${id}">결과 영상 받기</a>
+      <a class="dl" href="/download/${id}">결과 영상 받기 (${(r.out_name||"").replace(/</g,"&lt;")})</a>
       <a class="dl" style="background:#d97706" href="/review/${id}" target="_blank">검수·수정하기 (블러 직접 고치기)</a>`;
     loadJobs();
     $("go").disabled=false;
