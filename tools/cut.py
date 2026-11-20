@@ -5,14 +5,42 @@ import os, sys, subprocess, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
+def _find_path(args):
+    """끌어다 놓은 파일 경로 찾기. 띄어쓰기·한글이 든 경로가 여러 조각으로 나뉘어 들어와도 다시 붙여서 찾음"""
+    cands = []
+    if os.name == "nt":                                   # 윈도우가 넘겨준 원래 명령줄(유니코드)에서 직접 읽기
+        try:
+            import ctypes
+            from ctypes import wintypes
+            GetCommandLineW = ctypes.windll.kernel32.GetCommandLineW
+            GetCommandLineW.restype = wintypes.LPCWSTR
+            CommandLineToArgvW = ctypes.windll.shell32.CommandLineToArgvW
+            CommandLineToArgvW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_int)]
+            CommandLineToArgvW.restype = ctypes.POINTER(wintypes.LPWSTR)
+            n = ctypes.c_int()
+            av = CommandLineToArgvW(GetCommandLineW(), ctypes.byref(n))
+            wargs = [av[k] for k in range(n.value)]
+            k = next((k for k, a in enumerate(wargs) if a.lower().endswith("cut.py")), None)
+            if k is not None:
+                rest = wargs[k + 1:]
+                cands += rest + [" ".join(rest)]
+        except Exception:
+            pass
+    cands += list(args) + [" ".join(args)]
+    for c in cands:
+        c = c.strip().strip('"').strip()
+        if c and os.path.isfile(c):
+            return c
+    return None
+
+
 def main():
-    if len(sys.argv) < 2:
+    minutes = float(os.environ.get("CUT_MIN", "30"))
+    src = _find_path(sys.argv[1:])
+    if not src:
         print("영상 파일을 30분자르기.bat 위에 끌어다 놓아 주세요.")
-        return 1
-    src = sys.argv[1].strip('"')
-    minutes = float(sys.argv[2]) if len(sys.argv) > 2 else 30
-    if not os.path.exists(src):
-        print("파일을 찾을 수 없어요:", src)
+        print("(받은 내용:", repr(sys.argv[1:]), ")")
+        print("이 창을 캡처해서 보내 주세요.")
         return 1
     import media
     base, ext = os.path.splitext(src)
