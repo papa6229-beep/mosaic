@@ -49,6 +49,8 @@
   #msg{font-size:13px;color:var(--sub)}
   #msg.ok{color:var(--ok)} #msg.bad{color:var(--bad)}
   a.dl{display:inline-block;background:var(--ok);color:#1c1917;font-weight:700;padding:7px 12px;border-radius:8px;text-decoration:none}
+  .marks{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+  .marks .mk{border-color:#ef4444;color:#fca5a5;padding:4px 8px;font-size:12px}
   hr{border:0;border-top:1px solid var(--line);margin:12px 0}
 </style>
 </head>
@@ -61,6 +63,7 @@
   <button id="bPreview" class="on" title="고친 결과를 화면에 흐림으로 미리 보여요 (P)">흐림 미리보기</button>
   <button id="bUndo" title="되돌리기 (Ctrl+Z)">↶ 되돌리기</button>
   <a id="toSubs" href="#" target="_blank" style="color:var(--acc);text-decoration:none;border:1px solid var(--acc);border-radius:8px;padding:6px 11px">자막 편집 →</a>
+  <button id="bResetAll" title="검수에서 고친 블러·표시를 모두 지우고 처음 만든 상태로">처음 상태로</button>
   <button id="bRender" class="main">수정본 만들기</button>
   <span id="msg"></span>
 </header>
@@ -111,17 +114,24 @@
       <div class="row"><button id="bKeyDel" title="지금 프레임의 키프레임 지우기 (K)">◆ 이 프레임 키 지우기</button><button id="bKeyAll">키프레임 모두 지우기</button></div>
       <div class="row"><label>흐림 세기</label><input type="range" id="iBlur" min="0.5" max="3" step="0.05"><span id="blurV" class="muted"></span></div>
       <div class="row" title="블러 끝으로 갈수록 투명해지는 폭. 키우면 더 넓게 천천히, 줄이면 경계가 또렷해져요"><label>가장자리 번짐</label><input type="range" id="iFea" min="0.3" max="3" step="0.05"><span id="feaV" class="muted"></span></div>
+      <div class="row"><label>전체 크기</label><button id="bWholeDn" title="이 블러의 모든 프레임을 한 번에 10% 작게">－10%</button><button id="bWholeUp" title="이 블러의 모든 프레임을 한 번에 10% 크게">＋10%</button></div>
       <div class="row"><button id="bReset">이 블러 원래대로</button><button id="bDel" class="danger">이 블러 삭제 (Del)</button></div>
       <div class="muted">옮기거나 크기를 바꾸면 <b>지금 프레임에 키프레임 ◆</b>이 찍혀요. 다른 프레임에서 또 바꾸면 두 키프레임 사이는 부드럽게 이동해요. 키프레임이 하나면 구간 전체가 같은 위치·크기예요.</div>
     </div>
     <hr>
     <div class="muted" id="sumEd"></div>
+    <h2 style="margin-top:12px">표시한 곳 <span class="muted">(M 표시 · J 다음 · H 이전)</span></h2>
+    <div id="marks" class="marks"></div>
     <div class="keys">
       <div class="kg"><div class="kt">재생</div>
         <div class="kr"><span class="kk"><kbd>Space</kbd></span><span>재생 / 멈춤</span></div>
         <div class="kr"><span class="kk"><kbd>← →</kbd></span><span>1프레임 이동</span></div>
         <div class="kr"><span class="kk"><kbd>Shift</kbd> <i>+</i> <kbd>← →</kbd></span><span>1초 이동</span></div>
         <div class="kr"><span class="kk"><kbd>S</kbd></span><span>소리 켜기 / 끄기</span></div>
+      </div>
+      <div class="kg"><div class="kt">보면서 표시 → 나중에 고치기</div>
+        <div class="kr"><span class="kk"><kbd>M</kbd></span><span>지금 위치 표시 / 지우기</span></div>
+        <div class="kr"><span class="kk"><kbd>J</kbd> <kbd>H</kbd></span><span>다음 / 이전 표시로 (1초 앞에서)</span></div>
       </div>
       <div class="kg"><div class="kt">블러 고르기</div>
         <div class="kr"><span class="kk"><kbd>클릭</kbd></span><span>블러 선택</span></div>
@@ -468,6 +478,7 @@ function drawTL() {
   wctx.fillStyle = "rgba(245,158,11,.14)"; wctx.fillRect(bx0, 1, Math.max(2, bx1 - bx0), OVH - 2);
   wctx.strokeStyle = "#f59e0b"; wctx.lineWidth = 2; wctx.strokeRect(bx0, 1, Math.max(2, bx1 - bx0), OVH - 2);
   wctx.fillStyle = "#f59e0b"; wctx.fillRect(bx0 - 2, 8, 4, OVH - 16); wctx.fillRect(bx1 - 2, 8, 4, OVH - 16);
+  wctx.fillStyle = "#ef4444"; (ED.marks || []).forEach(m => wctx.fillRect(fx(m) - 1.5, 0, 3, OVH));   // 표시한 곳
   wctx.fillStyle = "#fafaf9"; wctx.fillRect(fx(cur) - 1, 0, 2, OVH);
   // 자세히 보기
   tctx.setTransform(dpr, 0, 0, dpr, 0, 0); tctx.clearRect(0, 0, w, h);
@@ -498,6 +509,8 @@ function drawTL() {
   for (const [k, st] of Object.entries(SEG)) { if (!st || !REAL.has(+k)) continue; const ed = segEd(+k) || {}; if (ed.del) continue;
     bar(+k, ed.start ?? st.start, ed.end ?? st.end, Object.keys(ed).length ? "#d97706" : "#a8a29e"); }
   ED.added.forEach((ad, k) => { if (!ad.del) bar("a" + k, ad.start, ad.end, "#84cc16"); });
+  (ED.marks || []).forEach(m => { const x = tx(m); tctx.fillStyle = "rgba(239,68,68,.55)"; tctx.fillRect(x - 1, 0, 2, h);
+    tctx.fillStyle = "#ef4444"; tctx.beginPath(); tctx.moveTo(x - 6, 0); tctx.lineTo(x + 6, 0); tctx.lineTo(x, 9); tctx.fill(); });
   tctx.fillStyle = "#fafaf9"; tctx.fillRect(tx(cur) - 1, 0, 2, h);
   if (drag && drag.type === "tlBox" && drag.moved) {                   // 상자 선택
     const x0 = Math.min(drag.x0, drag.x1), y0 = Math.min(drag.y0, drag.y1);
@@ -558,6 +571,34 @@ function changed() {
     .then(() => msg("저장됨", "ok")).catch(() => msg("저장 실패", "bad")), 400);
   const nS = Object.values(ED.segs).filter(e => Object.keys(e).length).length, nA = ED.added.filter(a => !a.del).length;
   $("sumEd").textContent = `고친 블러 구간 ${nS}개 · 새로 그린 블러 ${nA}개`;
+  showMarks();
+}
+// ---------- 보면서 표시해 두기 (M) → 다 본 뒤 표시한 곳만 돌아가서 고치기 (J 다음 · H 이전) ----------
+function toggleMark() {
+  snapshot(); ED.marks = ED.marks || [];
+  const near = ED.marks.findIndex(m => Math.abs(m - cur) <= Math.round(M.fps / 2));
+  if (near >= 0) { ED.marks.splice(near, 1); msg("표시를 지웠어요", "ok"); }
+  else { ED.marks.push(cur); ED.marks.sort((a, b) => a - b); msg(`표시했어요 (${ED.marks.length}곳) — 다 본 뒤 J로 하나씩 돌아가요`, "ok"); }
+  changed();
+}
+function jumpMark(dir) {
+  const ms = ED.marks || [];
+  const t = dir > 0 ? ms.find(m => m > cur) : [...ms].reverse().find(m => m < cur);
+  if (t == null) { msg(ms.length ? (dir > 0 ? "마지막 표시예요" : "첫 표시예요") : "표시한 곳이 없어요 (재생 중에 M)", "bad"); return; }
+  V.pause(); setFrame(Math.max(0, t - Math.round(M.fps)));     // 표시 1초 앞에서 (눌렀을 땐 이미 지나간 뒤라서)
+}
+function showMarks() {
+  const ms = ED.marks || [], el = $("marks");
+  if (!el) return;
+  el.innerHTML = ms.length ? ms.map((m, i) => `<button class="mk" data-f="${m}">${i + 1}. ${fmt(m)}</button>`).join("")
+    : '<span class="muted">재생하면서 이상한 곳에서 <b>M</b>을 누르면 여기에 쌓여요</span>';
+  el.querySelectorAll(".mk").forEach(b => b.onclick = () => { V.pause(); setFrame(Math.max(0, +b.dataset.f - Math.round(M.fps))); });
+}
+function scaleWhole(id, r) {        // 이 블러 전체(모든 프레임) 크기를 한 번에
+  const ed = edOf(id);
+  if (ed.keys && ed.keys.length) ed.keys.forEach(k => k.scale = Math.min(4, Math.max(0.1, (k.scale ?? 1) * r)));
+  else if (String(id).startsWith("a")) { ed.rx *= r; ed.ry *= r; }
+  else ed.scale = Math.min(4, Math.max(0.1, (ed.scale ?? 1) * r));
 }
 function edOf(id) {                // 블러의 고침 기록 (없으면 만듦)
   if (String(id).startsWith("a")) return ED.added[+String(id).slice(1)];
@@ -985,6 +1026,17 @@ $("bDel").onclick = () => { if (sel == null) return; snapshot(); edOf(sel).del =
 $("bDelM").onclick = delSel;
 $("bMerge").onclick = mergeSel;
 function delSel() { if (!selSet.size) return; snapshot(); const n = selSet.size; for (const id of selIds()) edOf(id).del = true; selectOnly(null); changed(); msg(`${n}개 삭제했어요 (Ctrl+Z로 되돌리기)`, "ok"); }
+$("bWholeUp").onclick = () => wholeBtn(1.1); $("bWholeDn").onclick = () => wholeBtn(1 / 1.1);
+function wholeBtn(r) {
+  const ids = selIds().filter(alive);
+  if (!ids.length) return;
+  snapshot(); ids.forEach(id => scaleWhole(id, r)); changed(); msg(`블러 전체 크기 ${r > 1 ? "+" : "−"}10%`, "ok");
+}
+$("bResetAll").onclick = () => {
+  if (!confirm("검수에서 고친 블러와 표시를 모두 지우고 처음 만든 상태로 되돌릴까요?\n(자막은 자막 화면에서 따로 되돌려요)")) return;
+  fetch(`/review/${JID}/reset`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ what: "blur" }) })
+    .then(() => location.reload());
+};
 $("bReset").onclick = () => { if (sel == null) return; snapshot();
   if (String(sel).startsWith("a")) { edOf(sel).del = true; } else delete ED.segs[String(sel)]; changed(); };
 
@@ -1021,6 +1073,9 @@ document.addEventListener("keydown", ev => {
   else if ((ev.ctrlKey || ev.metaKey) && K === "z") { ev.preventDefault(); undo(); }
   else if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
   else if (K === "k") $("bKeyDel").click();
+  else if (K === "m") toggleMark();
+  else if (K === "j") jumpMark(1);
+  else if (K === "h") jumpMark(-1);
   else if ((K === "q" || K === "e") && sel != null) {
     snapshot(); const o = curOff(sel, cur); setKey(sel, cur, { rot: o.rot + (K === "q" ? -1 : 1) * Math.PI / 36 }); changed(); }
   else if (k === "[" || k === "{") setEdge("start");
@@ -1064,7 +1119,7 @@ function poll(id) {
 
 // ---------- 시작 ----------
 fetch(`/review/${JID}/data`).then(r => r.json()).then(d => {
-  M = d.meta; SEG = d.segments; PLAN = d.plan; ED = d.edits || { segs: {}, added: [] };
+  M = d.meta; SEG = d.segments; PLAN = d.plan; ED = d.edits || { segs: {}, added: [] }; setTimeout(showMarks, 0);
   ED.segs = ED.segs || {}; ED.added = ED.added || [];
   for (const fr of PLAN) for (const e of fr) if (e[3] != null && e[2] >= 1) REAL.add(e[3]);
   $("name").textContent = M.name; $("fnN").textContent = M.n - 1;

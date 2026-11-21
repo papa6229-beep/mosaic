@@ -5,148 +5,304 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>모자이크 생성기</title>
 <style>
-  :root{--bg:#f5f5f4;--card:#fff;--ink:#1c1917;--sub:#78716c;--line:#e7e5e4;--acc:#d97706;--ok:#15803d;--bad:#b91c1c}
+  :root{
+    --bg:#0c0b0a;--panel:#151312;--panel2:#1c1a18;--line:#2a2725;--line2:#3a3633;
+    --ink:#f5f2ee;--sub:#9c958d;--dim:#6b655f;--acc:#e8a54b;--acc2:#f3c27a;--ok:#5fbf8a;--bad:#ef6b5f;--blue:#6aa8e8;
+  }
   *{box-sizing:border-box}
-  body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 "Pretendard","Malgun Gothic",system-ui,sans-serif}
-  main{max-width:640px;margin:40px auto;padding:0 16px}
-  h1{font-size:22px;margin:0 0 4px}
-  .sub{color:var(--sub);margin:0 0 24px}
-  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px;margin-bottom:16px}
-  #drop{border:2px dashed var(--line);border-radius:12px;padding:36px 16px;text-align:center;cursor:pointer;transition:.15s}
-  #drop.on{border-color:var(--acc);background:#fffbeb}
-  #drop b{display:block;font-size:16px;margin-bottom:4px}
-  #fname{margin-top:8px;color:var(--acc);font-weight:600;word-break:break-all}
-  label{display:block;font-size:13px;color:var(--sub);margin:14px 0 4px}
-  input[type=text]{width:100%;padding:10px;border:1px solid var(--line);border-radius:8px;font:inherit}
-  .row{display:grid;grid-template-columns:1fr 60px;gap:10px;align-items:center}
-  input[type=range]{width:100%;accent-color:var(--acc)}
-  .val{text-align:right;font-variant-numeric:tabular-nums}
-  details summary{cursor:pointer;color:var(--sub);font-size:14px}
-  button{width:100%;padding:14px;border:0;border-radius:10px;background:var(--ink);color:#fff;font:inherit;font-weight:600;font-size:16px;cursor:pointer;margin-top:4px}
-  button:disabled{opacity:.4;cursor:default}
-  .bar{height:10px;background:var(--line);border-radius:6px;overflow:hidden;margin:10px 0}
-  .bar i{display:block;height:100%;width:0;background:var(--acc);transition:width .3s}
-  #msg{font-size:14px}
-  .rep div{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--line)}
-  .good{color:var(--ok);font-weight:600}.warn{color:var(--bad);font-weight:600}
-  a.dl{display:block;text-align:center;padding:14px;border-radius:10px;background:var(--ok);color:#fff;font-weight:600;text-decoration:none;margin-top:14px}
-  .hide{display:none}
+  html,body{margin:0;background:var(--bg);color:var(--ink)}
+  body{font:14px/1.55 "Pretendard","Malgun Gothic",system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+  main{max-width:760px;margin:0 auto;padding:44px 20px 80px}
+  button,input,textarea{font:inherit;color:inherit}
+
+  header{display:flex;align-items:center;gap:14px;margin-bottom:28px}
+  .mark{width:38px;height:38px;border-radius:11px;background:linear-gradient(135deg,var(--acc2),var(--acc));display:grid;place-items:center;flex:none;
+        box-shadow:0 6px 24px -8px rgba(232,165,75,.6)}
+  .mark i{width:16px;height:16px;border-radius:50%;background:radial-gradient(circle,rgba(12,11,10,.9) 0 35%,rgba(12,11,10,.35) 60%,transparent 72%)}
+  header h1{font-size:19px;font-weight:700;letter-spacing:-.02em;margin:0}
+  header p{margin:1px 0 0;color:var(--sub);font-size:13px}
+  .night{margin-left:auto;display:flex;align-items:center;gap:10px;padding:8px 12px 8px 14px;border:1px solid var(--line);border-radius:999px;
+         background:var(--panel);cursor:pointer;user-select:none;transition:.2s}
+  .night:hover{border-color:var(--line2)}
+  .night b{font-weight:600;font-size:13px}
+  .night small{display:block;color:var(--dim);font-size:11px;line-height:1.2}
+  .night.on{border-color:rgba(106,168,232,.5);background:rgba(106,168,232,.08)}
+
+  .sw{width:34px;height:20px;border-radius:999px;background:var(--line2);position:relative;flex:none;transition:.2s}
+  .sw::after{content:"";position:absolute;top:3px;left:3px;width:14px;height:14px;border-radius:50%;background:#d6d0c9;transition:.2s}
+  .on>.sw,.sw.on{background:var(--acc)} .on>.sw::after,.sw.on::after{left:17px;background:#fff}
+  .night.on>.sw{background:var(--blue)}
+
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:22px}
+  .panel+.panel,.sec{margin-top:16px}
+
+  #drop{border:1.5px dashed var(--line2);border-radius:14px;padding:38px 16px;text-align:center;cursor:pointer;transition:.2s;
+        background:radial-gradient(ellipse at top,rgba(232,165,75,.06),transparent 70%)}
+  #drop:hover,#drop.on{border-color:var(--acc);background:radial-gradient(ellipse at top,rgba(232,165,75,.12),transparent 70%)}
+  #drop .ic{width:44px;height:44px;margin:0 auto 12px;border-radius:12px;border:1px solid var(--line2);display:grid;place-items:center;color:var(--acc)}
+  #drop b{display:block;font-size:15px;font-weight:600}
+  #drop span{color:var(--sub);font-size:13px}
+  #picked{margin-top:12px;display:flex;flex-direction:column;gap:6px}
+  .chip{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:10px;background:var(--panel2);border:1px solid var(--line);font-size:13px}
+  .chip span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .chip em{font-style:normal;color:var(--dim)}
+  .chip button{border:0;background:none;color:var(--dim);cursor:pointer;padding:0 2px;font-size:16px;line-height:1}
+  .chip button:hover{color:var(--bad)}
+
+  .pathbox{margin-top:12px}
+  .pathbox summary{cursor:pointer;color:var(--sub);font-size:13px;list-style:none}
+  .pathbox summary::before{content:"＋ ";color:var(--acc)}
+  .pathbox[open] summary::before{content:"－ "}
+  textarea{width:100%;margin-top:8px;padding:11px 12px;border:1px solid var(--line);border-radius:10px;background:var(--panel2);resize:vertical;min-height:46px;outline:none}
+  textarea:focus{border-color:var(--acc)}
+
+  .opts{margin-top:18px;border-top:1px solid var(--line)}
+  .opt{display:flex;align-items:center;gap:14px;padding:14px 2px;border-bottom:1px solid var(--line);cursor:pointer;user-select:none}
+  .opt .t{flex:1}
+  .opt .t b{display:block;font-weight:600;font-size:14px}
+  .opt .t small{color:var(--sub);font-size:12px}
+  .range{padding:14px 2px;border-bottom:1px solid var(--line)}
+  .range .top{display:flex;justify-content:space-between;align-items:baseline}
+  .range .top b{font-weight:600}
+  .range .top span{font-variant-numeric:tabular-nums;color:var(--acc2)}
+  .range small{color:var(--sub);font-size:12px}
+  input[type=range]{width:100%;margin:10px 0 2px;accent-color:var(--acc);height:4px}
+  details.adv{padding:12px 2px 0}
+  details.adv summary{cursor:pointer;color:var(--sub);font-size:13px}
+  details.adv .range:last-child{border-bottom:0}
+
+  .go{width:100%;margin-top:18px;padding:16px;border:0;border-radius:14px;cursor:pointer;font-weight:700;font-size:15px;letter-spacing:-.01em;
+      background:linear-gradient(180deg,var(--acc2),var(--acc));color:#1b1206;box-shadow:0 10px 30px -12px rgba(232,165,75,.7);transition:.15s}
+  .go:hover{filter:brightness(1.05)} .go:active{transform:translateY(1px)}
+  .go:disabled{opacity:.35;cursor:default;box-shadow:none}
+
+  h2{font-size:13px;font-weight:600;color:var(--sub);letter-spacing:.02em;margin:34px 4px 10px;display:flex;align-items:center;gap:8px}
+  h2 .n{color:var(--dim);font-weight:500}
+
+  .job{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:16px 18px;margin-bottom:10px}
+  .job .hd{display:flex;align-items:center;gap:10px}
+  .job .nm{flex:1;min-width:0;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .badge{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line2);color:var(--sub);flex:none}
+  .badge.run{color:var(--acc2);border-color:rgba(232,165,75,.4)}
+  .badge.ok{color:var(--ok);border-color:rgba(95,191,138,.4)}
+  .badge.bad{color:var(--bad);border-color:rgba(239,107,95,.4)}
+  .bar{height:4px;background:var(--line);border-radius:4px;overflow:hidden;margin:12px 0 8px}
+  .bar i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--acc),var(--acc2));transition:width .4s}
+  .job .m{color:var(--sub);font-size:12.5px}
+  .job .m.bad{color:var(--bad)}
+  .acts{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}
+  .btn{display:inline-flex;align-items:center;gap:6px;padding:9px 14px;border-radius:10px;border:1px solid var(--line2);background:var(--panel2);
+       color:var(--ink);text-decoration:none;font-size:13px;font-weight:600;cursor:pointer;transition:.15s}
+  .btn:hover{border-color:var(--sub)}
+  .btn.pri{background:var(--acc);border-color:var(--acc);color:#1b1206}
+  .btn.blue{border-color:rgba(106,168,232,.5);color:#cfe3f8}
+  .rep{margin-top:12px}
+  .rep summary{cursor:pointer;color:var(--dim);font-size:12px}
+  .rep div{display:flex;justify-content:space-between;gap:12px;padding:6px 0;border-bottom:1px solid var(--line);font-size:12.5px;color:var(--sub)}
+  .rep div span:last-child{color:var(--ink);text-align:right}
+
+  .list{background:var(--panel);border:1px solid var(--line);border-radius:16px;overflow:hidden}
+  .row{display:flex;align-items:center;gap:12px;padding:13px 16px;border-bottom:1px solid var(--line)}
+  .row:last-child{border-bottom:0}
+  .row:hover{background:var(--panel2)}
+  .row .info{flex:1;min-width:0}
+  .row .info b{display:block;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .row .info small{color:var(--dim);font-size:12px}
+  .row .info small i{font-style:normal;color:var(--acc2)}
+  .row a.lk{color:var(--ink);text-decoration:none;font-size:13px;font-weight:600;padding:7px 11px;border-radius:9px;border:1px solid var(--line2);white-space:nowrap}
+  .row a.lk:hover{border-color:var(--acc);color:var(--acc2)}
+  .ib{width:32px;height:32px;border-radius:9px;border:1px solid transparent;background:none;color:var(--dim);cursor:pointer;display:grid;place-items:center;flex:none}
+  .ib:hover{border-color:var(--line2);color:var(--ink)}
+  .ib.del:hover{color:var(--bad);border-color:rgba(239,107,95,.4)}
+  .empty{padding:22px;text-align:center;color:var(--dim);font-size:13px}
+  .hide{display:none!important}
+  @media (max-width:560px){.night small{display:none}.row{flex-wrap:wrap}.row .info{flex-basis:100%}}
 </style>
 </head>
 <body>
 <main>
-  <h1>모자이크 생성기</h1>
-  <p class="sub">원본 모자이크 위에 더 크고 자연스러운 블러를 덮어요.</p>
+  <header>
+    <div class="mark"><i></i></div>
+    <div><h1>모자이크 생성기</h1><p>원본 모자이크 위에 더 크고 자연스러운 블러를 덮어요</p></div>
+    <div class="night" id="night" title="켜 두면 다음 단계부터 CPU를 전부 써서 더 빨리 끝나요. 그동안 컴퓨터가 느려지니 퇴근 후나 안 쓸 때 켜세요.">
+      <div><b>밤샘 모드</b><small>컴퓨터를 안 쓸 때 최대 속도</small></div><div class="sw"></div>
+    </div>
+  </header>
 
-  <div class="card">
-    <div id="drop"><b>영상 파일을 여기에 끌어 놓거나 눌러서 선택</b><span class="sub">mp4 등</span><div id="fname"></div></div>
-    <input id="file" type="file" accept="video/*" class="hide">
-    <label>또는 파일 경로 붙여넣기 (큰 파일은 이쪽이 빨라요. 복사하지 않고 바로 읽음)</label>
-    <input id="path" type="text" placeholder="예: D:\영상\원본.mp4">
-
-    <label style="display:flex;gap:8px;align-items:center;margin-top:16px;color:var(--ink);font-size:14px">
-      <input id="hair" type="checkbox" checked> 원본 모자이크 밖으로 나온 털까지 찾아서 같이 덮기
-    </label>
-    <label style="display:flex;gap:8px;align-items:center;margin-top:8px;color:var(--ink);font-size:14px">
-      <input id="subs" type="checkbox"> 말(일본어·영어)을 받아 적어서 한국어 자막도 만들기 (블러 작업과 같이 진행)
-    </label>
-    <label>털 찾는 범위 — 클수록 모자이크에서 멀리 떨어진 음모까지 잡아요 (최대 250픽셀)</label>
-    <div class="row"><input id="reach" type="range" min="0.2" max="1" step="0.05" value="0.8"><span class="val" id="reach_v"></span></div>
-
-    <details style="margin-top:16px">
-      <summary>덮는 모양 조절 (보통은 그대로)</summary>
-      <label>블러 크기 — 장면마다 가려야 할 곳 크기의 몇 배로 고정할지 (털이 나오면 올리고, 너무 크면 내리세요)</label>
-      <div class="row"><input id="scale" type="range" min="0.8" max="2.5" step="0.05" value="0.8"><span class="val" id="scale_v"></span></div>
-      <label>블러 세기</label>
-      <div class="row"><input id="blur" type="range" min="0.1" max="0.6" step="0.05" value="0.2"><span class="val" id="blur_v"></span></div>
-      <label>가장자리 번짐 폭 — 클수록 바깥으로 더 넓게 서서히 투명해져요 (최대 150픽셀)</label>
-      <div class="row"><input id="feather" type="range" min="0.1" max="0.8" step="0.05" value="0.5"><span class="val" id="feather_v"></span></div>
+  <section class="panel">
+    <div id="drop">
+      <div class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4M6 10l6-6 6 6"/><path d="M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/></svg></div>
+      <b>영상을 끌어 놓거나 눌러서 선택</b>
+      <span>여러 개를 한 번에 넣으면 차례대로 만들어요</span>
+    </div>
+    <input id="file" type="file" accept="video/*,.mxf,.MXF" multiple class="hide">
+    <div id="picked"></div>
+    <details class="pathbox"><summary>파일 경로로 넣기 — 큰 파일은 이쪽이 빨라요 (복사하지 않고 바로 읽음)</summary>
+      <textarea id="path" rows="2" placeholder="D:\영상\원본.mxf&#10;한 줄에 하나씩 여러 개 넣어도 돼요"></textarea>
     </details>
-  </div>
 
-  <button id="go">모자이크 만들기</button>
+    <div class="opts">
+      <div class="opt on" id="o_hair"><div class="t"><b>밖으로 나온 털까지 같이 덮기</b><small>원본 모자이크 밖의 음모를 찾아서 함께 가려요</small></div><div class="sw"></div></div>
+      <div class="opt" id="o_subs"><div class="t"><b>한국어 자막도 만들기</b><small>일본어·영어 대사를 받아 적고 번역해요 · 블러 작업과 같이 진행</small></div><div class="sw"></div></div>
+      <div class="range">
+        <div class="top"><b>털 찾는 범위</b><span id="reach_v"></span></div>
+        <input id="reach" type="range" min="0.2" max="1" step="0.05" value="0.8">
+        <small>클수록 모자이크에서 멀리 떨어진 음모까지 잡아요 (최대 250픽셀)</small>
+      </div>
+      <details class="adv"><summary>덮는 모양 조절 — 보통은 그대로</summary>
+        <div class="range"><div class="top"><b>블러 크기</b><span id="scale_v"></span></div>
+          <input id="scale" type="range" min="0.8" max="2.5" step="0.05" value="0.8"><small>장면마다 가려야 할 곳 크기의 몇 배로 고정할지</small></div>
+        <div class="range"><div class="top"><b>블러 세기</b><span id="blur_v"></span></div>
+          <input id="blur" type="range" min="0.1" max="0.6" step="0.05" value="0.2"></div>
+        <div class="range"><div class="top"><b>가장자리 번짐 폭</b><span id="feather_v"></span></div>
+          <input id="feather" type="range" min="0.1" max="0.8" step="0.05" value="0.5"><small>클수록 바깥으로 넓게 서서히 투명해져요 (최대 150픽셀)</small></div>
+      </details>
+    </div>
+    <button class="go" id="go">만들기 시작</button>
+  </section>
 
-  <div class="card hide" id="prog" style="margin-top:16px">
-    <div id="msg">준비 중</div>
-    <div id="submsg" class="sub" style="margin-top:4px"></div>
-    <div class="bar"><i id="bar"></i></div>
-    <div id="result"></div>
-  </div>
-  <div class="card" id="jobsCard" style="display:none">
-    <b>최근 작업 — 검수·수정하기</b>
-    <div id="jobs" style="margin-top:8px;font-size:14px"></div>
-  </div>
+  <div id="qWrap" class="hide"><h2>진행 <span class="n" id="qN"></span></h2><div id="queue"></div></div>
+
+  <h2>최근 작업 <span class="n">— 검수·수정하기</span></h2>
+  <div class="list" id="jobs"><div class="empty">아직 만든 작업이 없어요</div></div>
 </main>
 <script>
-function loadJobs(){
-  fetch("/jobs").then(r=>r.json()).then(js=>{
-    if(!js.length)return;
-    document.getElementById("jobsCard").style.display="";
-    document.getElementById("jobs").innerHTML=js.map(j=>`<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--line)"><span>${j.name} <span style="color:var(--sub)">(${j.sec}초 · ${new Date(j.t*1000).toLocaleString()})</span></span><span><a href="/review/${j.jid}" target="_blank">블러 검수</a> · <a href="/review/${j.jid}/subtitles" target="_blank">자막</a></span></div>`).join("");
-  }).catch(()=>{});
-}
-loadJobs();
-const $=id=>document.getElementById(id);
-let file=null;
-["scale","blur","feather","reach"].forEach(k=>{const s=()=>$(k+"_v").textContent=$(k).value;$(k).oninput=s;s();});
-$("drop").onclick=()=>$("file").click();
-$("file").onchange=e=>pick(e.target.files[0]);
-$("drop").ondragover=e=>{e.preventDefault();$("drop").classList.add("on")};
-$("drop").ondragleave=()=>$("drop").classList.remove("on");
-$("drop").ondrop=e=>{e.preventDefault();$("drop").classList.remove("on");pick(e.dataTransfer.files[0])};
-function pick(f){file=f;$("fname").textContent=f?f.name+" ("+(f.size/1e9).toFixed(2)+" GB)":""}
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+function fmt(s) { s = Math.round(s || 0); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), x = s % 60; return (h ? h + "시간 " : "") + (m ? m + "분 " : "") + (h ? "" : x + "초"); }
+const post = (u, b) => fetch(u, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(b || {}) }).then(r => r.json());
 
-$("go").onclick=()=>{
-  const path=$("path").value.trim();
-  if(!file&&!path){alert("영상을 고르거나 경로를 넣어 주세요");return}
-  const fd=new FormData();
-  if(path)fd.append("path",path);else fd.append("file",file);
-  ["scale","blur","feather","reach"].forEach(k=>fd.append(k,$(k).value));
-  fd.append("hair",$("hair").checked?"1":"0");
-  fd.append("subs",$("subs").checked?"1":"0");
-  $("go").disabled=true;$("prog").classList.remove("hide");$("result").innerHTML="";delete $("result").dataset.id;
-  const x=new XMLHttpRequest();x.open("POST","/start");
-  x.upload.onprogress=e=>{if(e.lengthComputable){$("msg").textContent="올리는 중 "+Math.round(e.loaded*100/e.total)+"%";}};
-  x.onload=()=>{const r=JSON.parse(x.responseText);if(r.error){fail(r.error);return}poll(r.job)};
-  x.onerror=()=>fail("업로드 실패");x.send(fd);
+// ---------- 옵션 ----------
+["o_hair", "o_subs"].forEach(id => $(id).onclick = () => $(id).classList.toggle("on"));
+["scale", "blur", "feather", "reach"].forEach(k => { const s = () => $(k + "_v").textContent = $(k).value; $(k).oninput = s; s(); });
+fetch("/night").then(r => r.json()).then(d => $("night").classList.toggle("on", d.on)).catch(() => {});
+$("night").onclick = () => post("/night", { on: !$("night").classList.contains("on") }).then(d => $("night").classList.toggle("on", d.on));
+
+// ---------- 영상 고르기 ----------
+let files = [];
+$("drop").onclick = () => $("file").click();
+$("file").onchange = e => { add([...e.target.files]); e.target.value = ""; };
+$("drop").ondragover = e => { e.preventDefault(); $("drop").classList.add("on"); };
+$("drop").ondragleave = () => $("drop").classList.remove("on");
+$("drop").ondrop = e => { e.preventDefault(); $("drop").classList.remove("on"); add([...e.dataTransfer.files]); };
+function add(fs) { files = files.concat(fs.filter(f => f && f.size)); showPicked(); }
+function paths() { return $("path").value.split(/\r?\n/).map(s => s.trim().replace(/^"|"$/g, "")).filter(Boolean); }
+function showPicked() {
+  $("picked").innerHTML = files.map((f, i) => `<div class="chip"><span>${esc(f.name)}</span><em>${(f.size / 1e9).toFixed(2)} GB</em><button data-i="${i}" title="빼기">×</button></div>`).join("");
+  $("picked").querySelectorAll("button").forEach(b => b.onclick = () => { files.splice(+b.dataset.i, 1); showPicked(); });
+  updGo();
+}
+function updGo() { const n = files.length + paths().length; $("go").textContent = n > 1 ? `${n}개 차례대로 만들기` : "만들기 시작"; }
+$("path").oninput = updGo;
+
+function form() {
+  const fd = new FormData();
+  ["scale", "blur", "feather", "reach"].forEach(k => fd.append(k, $(k).value));
+  fd.append("hair", $("o_hair").classList.contains("on") ? "1" : "0");
+  fd.append("subs", $("o_subs").classList.contains("on") ? "1" : "0");
+  return fd;
+}
+const uploads = {};      // 올리는 중인 파일 (화면 표시용)
+$("go").onclick = async () => {
+  const ps = paths(), fs = files.slice();
+  if (!ps.length && !fs.length) { $("drop").classList.add("on"); setTimeout(() => $("drop").classList.remove("on"), 600); return; }
+  $("go").disabled = true;
+  for (const p of ps) {
+    const fd = form(); fd.append("path", p);
+    const r = await fetch("/start", { method: "POST", body: fd }).then(r => r.json()).catch(() => ({ error: "생성기에 연결할 수 없어요" }));
+    if (r.error) alert(r.error);
+  }
+  $("path").value = ""; files = []; showPicked();
+  $("go").disabled = false;
+  pollQ();
+  for (const f of fs) await upload(f);
 };
-function fmt(s){s=Math.round(s);const h=Math.floor(s/3600),m=Math.floor(s%3600/60),x=s%60;return (h?h+"시간 ":"")+(m?m+"분 ":"")+x+"초"}
-let started=0;
-function fail(m){$("msg").innerHTML='<span class="warn">'+m+'</span>';$("go").disabled=false}
-function poll(id){
-  fetch("/status/"+id).then(r=>r.json()).then(s=>{
-    if(!started)started=Date.now();
-    $("msg").textContent=s.msg+(s.done?"":` · 지금까지 ${fmt((Date.now()-started)/1000)}`);$("bar").style.width=(s.pct||0)+"%";
-    const sb=s.subs;                                       // 자막 진행 상황 (따로 한 줄)
-    $("submsg").textContent=sb?("자막: "+(sb.sub_error?"실패 — "+sb.sub_error:sb.sub_msg)):"";
-    if(s.error){fail(s.error);return}
-    if(!s.done||(sb&&!sb.sub_done)){if(!s.done){setTimeout(()=>poll(id),700);return}setTimeout(()=>poll(id),1500)}
-    if(!s.done)return;
-    if($("result").dataset.id===id)return;
-    $("result").dataset.id=id;
-    const r=s.report;
-    $("result").innerHTML=`<div class="rep">
-      <div><span>전체 프레임</span><span>${r.frames}</span></div>
-      <div><span>덮은 프레임</span><span>${r.covered}</span></div>
-      <div><span>Lada가 놓친 프레임 (앞뒤로 채움)</span><span>${r.missing}</span></div>
-      <div><span>털 비침 의심</span><span class="${r.leak?'warn':'good'}">${r.leak?r.leak+"프레임":"없음"}</span></div>
-      ${r.leak?`<div><span>의심 위치(초)</span><span>${r.leak_times.join(", ")}</span></div>`:""}
-      <div><span>영상 길이</span><span>${fmt(r.video_sec)}</span></div>
-      <div><span>저장 형식 (원본과 같게)</span><span>${(r.out_fmt||"").replace(/</g,"&lt;")}</span></div>
-      <div><span>1. 원본 모자이크 위치 찾기 (${(r.det_how||"").replace(/</g,"&lt;")}${r.nude_how?" · 얼굴·노출 "+r.nude_how:""})</span><span>${fmt(r.t_detect)}</span></div>
-      ${r.times?`<div><span>2. 털·덮을 곳 훑기 (CPU ${r.workers||1}개)</span><span>${fmt(r.times.scan||0)}</span></div>
-      <div><span>3. 블러 위치·크기 정하기</span><span>${fmt(r.times.plan||0)}</span></div>
-      <div><span>4. 블러 그리고 저장 (CPU ${r.workers||1}개)</span><span>${fmt(r.times.paint||0)}</span></div>
-      <div><span>5. 이어 붙이고 소리 붙이기</span><span>${fmt(r.times.mux||0)}</span></div>`:""}
-      <div><span><b>전체 작업 시간</b></span><span><b>${fmt(r.sec)}</b> (영상 길이의 ${(r.sec/r.video_sec).toFixed(1)}배)</span></div>
-      <div><span>1시간 영상이면 (예상)</span><span>${fmt(r.sec/r.video_sec*3600)}</span></div></div>
-      <a class="dl" href="/download/${id}">결과 영상 받기 (${(r.out_name||"").replace(/</g,"&lt;")})</a>
-      <a class="dl" style="background:#d97706" href="/review/${id}" target="_blank">검수·수정하기 (블러 직접 고치기)</a>
-      ${sb?`<a class="dl" style="background:#0369a1" href="/review/${id}/subtitles" target="_blank">자막 보기·고치기 · 자막 파일(.srt) 받기</a>`:""}`;
-    loadJobs();
-    $("go").disabled=false;
+function upload(f) {
+  return new Promise(res => {
+    const key = Math.random().toString(36).slice(2); uploads[key] = { name: f.name, pct: 0 }; drawQ();
+    const fd = form(); fd.append("file", f);
+    const x = new XMLHttpRequest(); x.open("POST", "/start");
+    x.upload.onprogress = e => { if (e.lengthComputable) { uploads[key].pct = Math.round(e.loaded * 100 / e.total); drawQ(); } };
+    x.onload = () => { delete uploads[key]; try { const r = JSON.parse(x.responseText); if (r.error) alert(r.error); } catch (e) {} pollQ(); res(); };
+    x.onerror = () => { uploads[key].err = "올리기 실패"; drawQ(); res(); };
+    x.send(fd);
   });
 }
+
+// ---------- 진행 ----------
+let Q = [], qT = null;
+function pollQ() {
+  clearTimeout(qT);
+  fetch("/queue").then(r => r.json()).then(q => {
+    const was = Q.filter(j => j.done).length;
+    Q = q; drawQ();
+    if (Q.filter(j => j.done).length !== was) loadJobs();
+    const busy = Q.some(j => !j.done || (j.subs && !j.subs.sub_done)) || Object.keys(uploads).length;
+    qT = setTimeout(pollQ, busy ? 1000 : 5000);
+  }).catch(() => { qT = setTimeout(pollQ, 3000); });
+}
+function drawQ() {
+  const up = Object.values(uploads);
+  const vis = Q.filter(j => !j.hidden);
+  $("qWrap").classList.toggle("hide", !vis.length && !up.length);
+  const run = vis.filter(j => !j.done).length;
+  $("qN").textContent = run ? `${run}개 남음` : "모두 끝남";
+  const waitIdx = {}; let w = 0;
+  vis.filter(j => !j.done).forEach((j, i) => { if (i > 0) waitIdx[j.jid] = ++w; });
+  $("queue").innerHTML = up.map(u => `<div class="job"><div class="hd"><span class="nm">${esc(u.name)}</span><span class="badge ${u.err ? "bad" : "run"}">${u.err || "올리는 중 " + u.pct + "%"}</span></div>
+      <div class="bar"><i style="width:${u.pct}%"></i></div></div>`).join("") + [...vis].reverse().map(j => jobCard(j, waitIdx[j.jid])).join("");
+}
+function jobCard(j, wait) {
+  const s = j.subs, st = j.error ? ["bad", "오류"] : j.done ? ["ok", "완료"] : wait ? ["", `대기 ${wait}번째`] : ["run", (j.pct || 0) + "%"];
+  let h = `<div class="job"><div class="hd"><span class="nm">${esc(j.name)}</span><span class="badge ${st[0]}">${st[1]}</span></div>`;
+  if (!j.done) h += `<div class="bar"><i style="width:${j.pct || 0}%"></i></div><div class="m">${esc(j.msg)}</div>`;
+  else if (j.error) h += `<div class="m bad" style="margin-top:8px">${esc(j.error)}</div>`;
+  if (s) h += `<div class="m ${s.sub_error ? "bad" : ""}" style="margin-top:4px">자막 · ${esc(s.sub_error ? "실패 — " + s.sub_error : s.sub_msg)}</div>`;
+  if (j.done && !j.error) {
+    const r = j.report || {};
+    h += `<div class="acts"><a class="btn pri" href="/review/${j.jid}" target="_blank">블러 검수·수정</a>
+      ${s ? `<a class="btn blue" href="/review/${j.jid}/subtitles" target="_blank">자막 보기·고치기</a>` : ""}
+      <a class="btn" href="/download/${j.jid}">결과 영상 받기</a></div>`;
+    if (r.frames) h += `<details class="rep"><summary>작업 기록 · 전체 ${fmt(r.sec)} (영상 길이의 ${(r.sec / r.video_sec).toFixed(1)}배)</summary>
+      <div><span>영상 길이</span><span>${fmt(r.video_sec)}</span></div>
+      <div><span>덮은 프레임 / 전체</span><span>${r.covered} / ${r.frames}</span></div>
+      <div><span>털 비침 의심</span><span>${r.leak ? r.leak + "프레임 (" + r.leak_times.join(", ") + "초)" : "없음"}</span></div>
+      <div><span>저장 형식 (원본과 같게)</span><span>${esc(r.out_fmt)}</span></div>
+      <div><span>1. 원본 모자이크 위치 찾기 (${esc(r.det_how)})</span><span>${fmt(r.t_detect)}</span></div>
+      ${r.times ? `<div><span>2. 털·덮을 곳 훑기 (CPU ${r.workers || 1}개)</span><span>${fmt(r.times.scan)}</span></div>
+      <div><span>3. 블러 위치·크기 정하기</span><span>${fmt(r.times.plan)}</span></div>
+      <div><span>4. 블러 그리고 저장</span><span>${fmt(r.times.paint)}</span></div>
+      <div><span>5. 이어 붙이고 소리 붙이기</span><span>${fmt(r.times.mux)}</span></div>` : ""}
+      <div><span>1시간 영상이면 (예상)</span><span>${fmt(r.sec / r.video_sec * 3600)}</span></div></details>`;
+  }
+  return h + "</div>";
+}
+
+// ---------- 최근 작업 ----------
+const IC = {
+  undo: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14L4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/></svg>',
+  del: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3"/></svg>'
+};
+function loadJobs() {
+  fetch("/jobs").then(r => r.json()).then(js => {
+    if (!js.length) { $("jobs").innerHTML = '<div class="empty">아직 만든 작업이 없어요</div>'; return; }
+    $("jobs").innerHTML = js.map(j => `<div class="row"><div class="info"><b title="${esc(j.name)}">${esc(j.name)}</b>
+      <small>${fmt(j.sec)} · ${new Date(j.t * 1000).toLocaleString("ko-KR", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}${j.edited ? " · <i>검수에서 고친 내용 있음</i>" : ""}</small></div>
+      <a class="lk" href="/review/${j.jid}" target="_blank">블러 검수</a>
+      <a class="lk" href="/review/${j.jid}/subtitles" target="_blank">자막</a>
+      <button class="ib" data-reset="${j.jid}" title="처음 상태로 되돌리기 — 검수에서 고친 블러와 자막을 지우고 갓 만든 상태로">${IC.undo}</button>
+      <button class="ib del" data-del="${j.jid}" title="이 작업 지우기">${IC.del}</button></div>`).join("");
+    $("jobs").querySelectorAll("[data-reset]").forEach(b => b.onclick = () => {
+      if (!confirm("검수에서 고친 블러와 자막을 모두 지우고 처음 만든 상태로 되돌릴까요?")) return;
+      post(`/review/${b.dataset.reset}/reset`, { what: "all" }).then(loadJobs);
+    });
+    $("jobs").querySelectorAll("[data-del]").forEach(b => b.onclick = () => {
+      if (!confirm("이 작업을 지울까요?\n결과 영상·검수 기록·자막이 지워지고 되살릴 수 없어요. (경로로 넣은 원본 영상은 그대로 있어요)")) return;
+      post(`/jobs/${b.dataset.del}/delete`).then(r => { if (r.error) alert(r.error); loadJobs(); });
+    });
+  }).catch(() => {});
+}
+loadJobs(); pollQ();
 </script>
 </body>
 </html>

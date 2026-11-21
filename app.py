@@ -4,7 +4,7 @@
  - 영상 전체 위치를 시간순으로 다듬기 (점멸/크기 흔들림 방지)
  - 주변 피부색으로 채운 뒤 부드러운 블러로 덮기 -> 원본과 같은 형식(압축 방식·화질·소리 트랙)으로 저장
 """
-import os, sys, json, time, uuid, threading, subprocess, traceback, urllib.request
+import os, sys, json, time, uuid, threading, subprocess, traceback, urllib.request, hashlib, shutil
 import numpy as np
 import cv2
 from flask import Flask, request, jsonify, send_file, Response
@@ -309,6 +309,7 @@ def detect_all(src, job, n, proxy=None, table=None):
 
 
 # ---------------- 2단계: 덮기 + 저장 ----------------
+PART = 600    # 저장 조각 하나의 프레임 수 (약 20초). 수정본은 바뀐 조각만 다시 만듦
 WARMUP = 30   # 조각 앞부분에서 미리 돌려 두는 프레임 수 (앞 조각과 블러가 자연스럽게 이어지게)
 
 
@@ -491,9 +492,10 @@ def _scan_worker(src, start, count, W, H, fps, mi, table, entries, exps, params,
         q.put((start, 0, traceback.format_exc()[-800:]))
 
 
-def _paint_worker(src, start, count, W, H, fps, ells, polys, params, mi, seg, counter, q):
+def _paint_worker(src, runs, count, W, H, fps, params, mi, counter, q):
     """3단계(그리기): 원본을 원본 픽셀 형식(YUV) 그대로 풀고, 계획된 블러만 섞어서, 원본과 같은 압축 방식으로 조각 저장.
-    블러가 없는 곳의 픽셀은 원본 그대로"""
+    runs: [(시작, 프레임 수, 블러, 윤곽, [(조각번호, 조각시작, 조각길이, 파일)])] — 이어진 구간은 한 번에 풀고 조각마다 따로 압축
+    (조각은 남겨 둬서, 검수 뒤 수정본을 만들 때 안 바뀐 조각은 다시 만들지 않음). 블러가 없는 곳의 픽셀은 원본 그대로"""
     _low_priority()
     try:
         import cover2
@@ -501,49 +503,68 @@ def _paint_worker(src, start, count, W, H, fps, ells, polys, params, mi, seg, co
             setattr(cover2, k, v)
         fmt = mi["compose"]
         fsz = media.frame_bytes(fmt, W, H)
-        w0 = max(0, start - WARMUP)
-        total = start + count - w0
-        dec = Dec(src, w0, total, W, H, fps, fmt, fsz, t0=mi["t0"], table=mi.get("table"))
-        out = subprocess.Popen([ffmpeg_exe(), "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", fmt,
-                                "-s", f"{W}x{H}", "-r", mi["fps_str"], *mi["inp"], "-i", "-", *mi["enc"], "-threads", "2", "-f", "nut", seg],
-                               stdin=subprocess.PIPE, stderr=subprocess.PIPE)
-        P = cover2.Painter()
-        expect, data = start, None                       # 조각마다 정확히 count장을 순서대로 씀 (혹시 빠지면 앞 프레임으로 채움)
+        made = {}
+        for start, cnt, ells, polys, parts in runs:
+            w0 = max(0, start - WARMUP)
+            dec = Dec(src, w0, start + cnt - w0, W, H, fps, fmt, fsz, t0=mi["t0"], table=mi.get("table"))
+            P = cover2.Painter()
+            st = {"pi": 0, "out": None, "expect": start}
 
-        def put(b_):
-            try:
-                out.stdin.write(b_)
-            except (BrokenPipeError, OSError):
-                raise RuntimeError("조각 저장 실패: " + out.stderr.read().decode("utf-8", "ignore")[-400:])
-            with counter.get_lock():
-                counter.value += 1
-        while True:
-            got = dec.read()
-            if got is None:
-                break
-            i, buf, _ = got
-            j = i - w0
-            if i >= start and i < expect:                 # 같은 프레임이 또 나오면 건너뜀
-                continue
-            yf = media.YuvFrame(buf, fmt, W, H, mi["matrix"], mi["range"])
-            changed = P.paint_yuv(yf, ells[j] if j < len(ells) else [], polys[j] if j < len(polys) else [])
-            if i >= start:
-                cur_ = yf.tobytes() if changed else buf
-                while expect < i:
-                    put(data if data is not None else cur_); expect += 1
-                put(cur_); expect = i + 1
-                data = cur_
-        while data is not None and expect < start + count:
-            put(data); expect += 1
-        done = expect - start
-        dec.close()
-        out.stdin.close()
-        err = out.stderr.read().decode("utf-8", "ignore")
-        if out.wait() != 0:
-            raise RuntimeError("조각 저장 실패: " + err[-300:])
-        q.put((start, done, None))
+            def finish():
+                o = st["out"]
+                o.stdin.close()
+                err = o.stderr.read().decode("utf-8", "ignore")
+                if o.wait() != 0:
+                    raise RuntimeError("조각 저장 실패: " + err[-300:])
+                idx, ps, pc, path = parts[st["pi"]]
+                os.replace(path + ".tmp", path)
+                made[idx] = pc
+                st["out"] = None
+                st["pi"] += 1
+
+            def put(b_):
+                if st["out"] is None:
+                    path = parts[st["pi"]][3]
+                    st["out"] = subprocess.Popen([ffmpeg_exe(), "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", fmt,
+                                                  "-s", f"{W}x{H}", "-r", mi["fps_str"], *mi["inp"], "-i", "-", *mi["enc"], "-threads", "2",
+                                                  "-f", "nut", path + ".tmp"], stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+                try:
+                    st["out"].stdin.write(b_)
+                except (BrokenPipeError, OSError):
+                    raise RuntimeError("조각 저장 실패: " + st["out"].stderr.read().decode("utf-8", "ignore")[-400:])
+                st["expect"] += 1
+                with counter.get_lock():
+                    counter.value += 1
+                _, ps, pc, _ = parts[st["pi"]]
+                if st["expect"] >= ps + pc:
+                    finish()
+            data = None                                  # 조각마다 정확히 정해진 장수를 순서대로 씀 (혹시 빠지면 앞 프레임으로 채움)
+            while st["expect"] < start + cnt:
+                got = dec.read()
+                if got is None:
+                    break
+                i, buf, _ = got
+                j = i - w0
+                if i >= start and i < st["expect"]:           # 같은 프레임이 또 나오면 건너뜀
+                    continue
+                if i >= start + cnt:
+                    break
+                yf = media.YuvFrame(buf, fmt, W, H, mi["matrix"], mi["range"])
+                changed = P.paint_yuv(yf, ells[j] if j < len(ells) else [], polys[j] if j < len(polys) else [])
+                if i >= start:
+                    cur_ = yf.tobytes() if changed else buf
+                    while st["expect"] < i:
+                        put(data if data is not None else cur_)
+                    put(cur_)
+                    data = cur_
+            dec.close()
+            if data is None:
+                raise RuntimeError(f"{start}번 프레임부터 영상을 읽지 못했어요")
+            while st["expect"] < start + cnt:
+                put(data)
+        q.put((0, sum(made.values()), made, None))
     except Exception:
-        q.put((start, 0, traceback.format_exc()[-800:]))
+        q.put((0, 0, {}, traceback.format_exc()[-800:]))
 
 
 def _run_parallel(job, K, n, make_args, target, label, p0=50, p1=99):
@@ -690,24 +711,72 @@ def paint_save(src, ells, polys, dst, job, n, W, H, fps, params, p0=77, p1=99, t
     mi = {"compose": fmt, "enc": enc, "inp": media.input_args(info), "fps_str": info["fps_str"], "matrix": info["matrix"],
           "range": info["range"], "t0": info.get("t0", 0.0), "table": _load_table(os.path.dirname(dst))}
     times["out_fmt"] = desc
-    K = _cpu_workers(n)
-    KP = K
     d = os.path.dirname(dst)
-    bp = [round(n * k / KP) for k in range(KP + 1)]
-    segs = [os.path.join(d, f"part{k:02d}.nut") for k in range(KP)]
-    wp = lambda k: max(0, bp[k] - WARMUP)
-    results = _run_parallel(job, KP, n, lambda k: (src, bp[k], bp[k + 1] - bp[k], W, H, fps, ells[wp(k):bp[k + 1]], polys[wp(k):bp[k + 1]],
-                                                      params, mi, segs[k]), _paint_worker, f"블러 그리고 저장 중 (원본과 같은 형식: {desc})", p0, p1)
+    pd = os.path.join(d, "parts")
+    os.makedirs(pd, exist_ok=True)
+    bounds = [(s_, min(PART, n - s_)) for s_ in range(0, n, PART)]
+    paths = [os.path.join(pd, f"part{k:05d}.nut") for k in range(len(bounds))]
+    pk = {k: params.get(k) for k in ("SCALE", "BLUR_FRAC", "FEATHER_W", "HAIR", "HAIR_REACH")}   # 그리기에 쓰는 설정 (처음 만들 때와 수정본에서 같은 것만)
+    sig = json.dumps([desc, enc, pk, W, H, n, PART, WARMUP], default=str)
+
+    def _j(o):
+        return o.tolist() if hasattr(o, "tolist") else str(o)
+
+    def phash(k):                                       # 이 조각에 들어가는 블러(앞 준비 구간 포함)가 같으면 같은 값
+        s_, c_ = bounds[k]
+        w0 = max(0, s_ - WARMUP)
+        return hashlib.md5(json.dumps([sig, ells[w0:s_ + c_], polys[w0:s_ + c_]], default=_j).encode()).hexdigest()
+    man_p = os.path.join(pd, "parts.json")
+    try:
+        old = json.load(open(man_p))
+    except Exception:
+        old = {}
+    hs = [phash(k) for k in range(len(bounds))]
+    dirty = [k for k in range(len(bounds)) if old.get(str(k)) != hs[k] or not os.path.exists(paths[k])]
+    try:
+        os.remove(man_p)                                 # 만드는 도중에 멈추면 다음에 다 다시 확인하게
+    except Exception:
+        pass
+    times["parts"] = len(bounds)
+    times["reused"] = len(bounds) - len(dirty)
+    total = sum(bounds[k][1] for k in dirty)
+    K = max(1, min(_cpu_workers(total), len(dirty)))
+    KP = K
+    groups, acc, w = [[] for _ in range(K)], 0, 0      # 다시 만들 조각을 일꾼마다 비슷한 양으로 (순서대로 이어지게)
+    for k in dirty:
+        if acc >= total * (w + 1) / K and w < K - 1:
+            w += 1
+        groups[w].append(k)
+        acc += bounds[k][1]
+
+    def runs_of(g):
+        rs = []
+        for k in g:
+            if rs and rs[-1][-1] == k - 1:
+                rs[-1].append(k)
+            else:
+                rs.append([k])
+        out = []
+        for r_ in rs:
+            s_ = bounds[r_[0]][0]
+            c_ = sum(bounds[k][1] for k in r_)
+            w0 = max(0, s_ - WARMUP)
+            out.append((s_, c_, ells[w0:s_ + c_], polys[w0:s_ + c_], [(k, *bounds[k], paths[k]) for k in r_]))
+        return out
+    if dirty:
+        label = "블러 그리고 저장 중" + (f" (고친 곳만 다시: {len(dirty)}/{len(bounds)}조각)" if times["reused"] else f" (원본과 같은 형식: {desc})")
+        _run_parallel(job, K, total, lambda k: (src, runs_of(groups[k]), sum(bounds[i][1] for i in groups[k]), W, H, fps, params, mi),
+                      _paint_worker, label, p0, p1)
+    json.dump({str(k): h for k, h in enumerate(hs)}, open(man_p, "w"))
     times["paint"] = round(time.time() - t0, 1)
     t0 = time.time()
     job["msg"] = "조각 이어 붙이고 원본 소리 트랙 붙이는 중"
     lst = os.path.join(d, "parts.txt")
-    done_of = {r_[0]: r_[1] for r_ in results}
     fr = Fraction(info["fps_str"])
     with open(lst, "w", encoding="utf-8") as fp:      # 조각마다 길이를 적어 줌 → 이어 붙인 곳에서 시간이 1프레임씩 밀리지 않음
-        for k, s_ in enumerate(segs):
+        for k, s_ in enumerate(paths):
             fp.write("file '" + s_.replace("\\", "/").replace("'", "'\\''") + "'\n")
-            fp.write(f"duration {float(done_of.get(bp[k], bp[k + 1] - bp[k]) / fr):.9f}\n")
+            fp.write(f"duration {float(bounds[k][1] / fr):.9f}\n")
     base = os.path.splitext(dst)[0]
     tmpv = base + "_v.mov"
     tries = [(base + media.out_ext(info), False), (base + media.out_ext(info), True), (base + ".mov", False), (base + ".mkv", False)]
@@ -720,7 +789,9 @@ def paint_save(src, ells, polys, dst, job, n, W, H, fps, params, p0=77, p1=99, t
         else:
             vin = ["-f", "concat", "-safe", "0", "-i", lst]
         r = subprocess.run([ffmpeg_exe(), "-y", "-loglevel", "error", *vin, "-i", src,
-                            "-map", "0:v", "-map", "1:a?", "-c", "copy", *media.mux_args(info, out), out], capture_output=True)
+                            "-map", "0:v", "-map", "1:a?", "-c", "copy",
+                            *(["-r", info["fps_str"]] if out.lower().endswith(".mxf") else []),   # 이어 붙인 영상의 초당 프레임을 MXF에 정확히 적음 (안 적으면 2배로 적혀 길이가 반이 됨)
+                            *media.mux_args(info, out), out], capture_output=True)
         if r.returncode == 0:
             break
         err = r.stderr.decode("utf-8", "ignore")[-400:]
@@ -738,12 +809,11 @@ def paint_save(src, ells, polys, dst, job, n, W, H, fps, params, p0=77, p1=99, t
         times["out_fmt"] = desc + f" (원본 파일 형식으로는 저장이 안 돼서 {os.path.splitext(out)[1]}로 저장: {err[-150:]})"
     times["out_path"] = out
     times["mux"] = round(time.time() - t0, 1)
-    for s_ in segs + [lst]:
-        try:
-            os.remove(s_)
-        except Exception:
-            pass
-    return results, KP
+    try:
+        os.remove(lst)
+    except Exception:
+        pass
+    return [(0, n)], KP
 
 
 def run_job(jid, src, params):
@@ -752,6 +822,7 @@ def run_job(jid, src, params):
         job["msg"] = "앞 작업이 끝나길 기다리는 중"
     with run_lock:
         job["msg"] = "시작하는 중"
+        os.environ["MOSAIC_FULL"] = "1" if night["on"] else "0"
         try:
             import cover2
             cover2.SIZE_K = float(params.get("scale", cover2.SIZE_K))
@@ -871,9 +942,32 @@ def start():
             return jsonify(error="영상 파일을 선택해 주세요"), 400
         src = os.path.join(d, os.path.basename(f.filename) or "input.mp4")
         f.save(src)
-    state[jid] = {"pct": 0, "msg": "대기 중", "done": False}
+    state[jid] = {"pct": 0, "msg": "앞 작업이 끝나길 기다리는 중", "done": False, "name": os.path.basename(src),
+                  "added": time.time(), "main": True, "subs_on": request.form.get("subs") == "1"}
     threading.Thread(target=run_job, args=(jid, src, request.form), daemon=True).start()
     return jsonify(job=jid)
+
+
+night = {"on": False}     # 밤샘 모드: 켜 두면 다음 단계부터 CPU를 전부, 보통 우선순위로 씀 (컴퓨터를 안 쓸 때)
+
+
+@app.route("/night", methods=["GET", "POST"])
+def night_mode():
+    if request.method == "POST":
+        night["on"] = bool((request.get_json(silent=True) or {}).get("on"))
+    return jsonify(on=night["on"])
+
+
+@app.get("/queue")
+def queue_list():
+    """이번에 켠 뒤로 넣은 작업들 (줄 선 순서대로)"""
+    out = []
+    for jid, j in state.items():
+        if j.get("main"):
+            out.append({"jid": jid, "name": j.get("name"), "pct": j.get("pct", 0), "msg": j.get("msg", ""), "done": j.get("done"),
+                        "error": j.get("error"), "added": j.get("added"), "report": j.get("report"), "subs": sub_state.get(jid)})
+    out.sort(key=lambda x: x["added"])
+    return jsonify(out)
 
 
 @app.get("/status/<jid>")
@@ -921,6 +1015,46 @@ def start_subs(jid, src):
     return st
 
 
+def _busy(jid):
+    j = state.get(jid)
+    sj = sub_state.get(jid)
+    return (j and not j.get("done")) or (sj and not sj.get("sub_done"))
+
+
+@app.post("/jobs/<jid>/delete")
+def job_delete(jid):
+    """최근 작업 지우기: 이 작업 폴더(결과 영상·검수 기록·자막)만 지움. 경로로 넣은 원본 영상은 건드리지 않음"""
+    d = os.path.join(JOBS, os.path.basename(jid))
+    if not os.path.isdir(d):
+        return jsonify(error="없는 작업"), 404
+    if _busy(os.path.basename(jid)):
+        return jsonify(error="아직 만드는 중인 작업은 지울 수 없어요"), 400
+    shutil.rmtree(d, ignore_errors=True)
+    return jsonify(ok=not os.path.exists(d))
+
+
+@app.post("/review/<jid>/reset")
+def review_reset(jid):
+    """처음 상태로 되돌리기: 검수에서 고친 블러와 자막을 지우고 갓 만든 상태로"""
+    d = _jdir(jid)
+    if not d:
+        return jsonify(error="없는 작업"), 404
+    what = (request.get_json(silent=True) or {}).get("what", "all")
+    if what in ("all", "blur"):
+        try:
+            os.remove(os.path.join(d, "edits.json"))
+        except FileNotFoundError:
+            pass
+    p = os.path.join(d, "subs.json")
+    if what in ("all", "subs") and os.path.exists(p):
+        s_ = json.load(open(p, encoding="utf-8"))
+        if s_.get("lines_orig"):
+            s_["lines"] = s_.pop("lines_orig")
+        s_.pop("edited", None)
+        json.dump(s_, open(p, "w", encoding="utf-8"), ensure_ascii=False)
+    return jsonify(ok=True)
+
+
 @app.get("/review/<jid>/subs")
 def review_subs(jid):
     d = _jdir(jid)
@@ -947,6 +1081,8 @@ def review_subs_save(jid):
         return jsonify(error="자막 내용이 없어요"), 400
     p = os.path.join(d, "subs.json")
     old = json.load(open(p, encoding="utf-8")) if os.path.exists(p) else {}
+    if "lines_orig" not in old and old.get("lines"):       # 처음 손대기 전 자막을 남겨 둠 (처음 상태로 되돌리기용)
+        old["lines_orig"] = old["lines"]
     tmp = p + ".tmp"
     json.dump({**old, "lines": lines, "edited": True}, open(tmp, "w", encoding="utf-8"), ensure_ascii=False)
     os.replace(tmp, p)
@@ -1006,8 +1142,10 @@ def jobs_list():
         if os.path.exists(rp):
             try:
                 r = json.load(open(rp, encoding="utf-8"))
+                sp = os.path.join(d, "subs.json")
                 out.append({"jid": jid, "name": os.path.basename(r["src"]), "t": os.path.getmtime(rp),
-                            "sec": round(r["n"] / r["fps"], 1)})
+                            "sec": round(r["n"] / r["fps"], 1), "edited": os.path.exists(os.path.join(d, "edits.json")),
+                            "subs": os.path.exists(sp)})
             except Exception:
                 pass
     out.sort(key=lambda x: -x["t"])
@@ -1204,6 +1342,7 @@ def review_save(jid):
 def run_fix(fid, d):
     job = state[fid]
     with run_lock:
+        os.environ["MOSAIC_FULL"] = "1" if night["on"] else "0"
         try:
             import cover2
             r = json.load(open(os.path.join(d, "review.json"), encoding="utf-8"))
