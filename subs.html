@@ -296,7 +296,7 @@ function showCap() {
   if (ch > eh) { ch = eh; cw = eh * ar; }
   const ox = (ew - cw) / 2, oy = (eh - ch) / 2, c = $("cap");
   c.style.left = ox + "px"; c.style.width = cw + "px";
-  c.style.bottom = (eh - oy - ch + ch * 0.105) + "px";
+  c.style.bottom = (eh - oy - ch + ch * 0.096) + "px";
   c.style.fontSize = Math.max(12, ch * 0.046) + "px";
   if (i !== nowIdx) {
     const o = rowEl(nowIdx); if (o) o.classList.remove("now");
