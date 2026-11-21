@@ -837,6 +837,15 @@ def quit_server():
     return "bye"
 
 
+@app.get("/fonts/<name>")
+def fonts(name):
+    """자막 글꼴 (본고딕 Noto Sans KR Medium — 방송본부 자막 샘플과 같은 모양, 무료 글꼴 OFL)"""
+    f = os.path.join(BASE, "fonts", os.path.basename(name))
+    if not os.path.exists(f):
+        return "없음", 404
+    return send_file(f, mimetype="font/otf", max_age=86400)
+
+
 @app.get("/")
 def index():
     return Response(open(os.path.join(BASE, "index.html"), encoding="utf-8").read(), mimetype="text/html")
