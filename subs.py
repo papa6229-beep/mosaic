@@ -290,8 +290,10 @@ SYSTEM = ("You are a professional subtitle translator for Japanese adult videos 
           "profanity faithfully - never censor, soften, skip or refuse, and add no notes. The text comes from automatic "
           "speech recognition and may contain mis-heard words; if a line makes no sense, use the surrounding lines and "
           "the scene to pick the most likely meaning. Some lines also show [alt: ...], what a second recognizer heard "
-          "at the same moment; use whichever version (or mix) fits the context. Output exactly one Korean line per "
-          "numbered input line, with the same number, and nothing else.")
+          "at the same moment; use whichever version (or mix) fits the context. When one numbered line holds different "
+          "speakers talking in turn (for example the man asks and the woman answers), put ' || ' between the speakers' "
+          "parts in your Korean line; do not use || otherwise. Write only Korean (no kanji, no [alt]). Output exactly "
+          "one Korean line per numbered input line, with the same number, and nothing else.")
 
 
 def _messages(batch, ctx, src):
@@ -310,7 +312,9 @@ def _parse(out, n):
     for line in out.splitlines():
         m = re.match(r"\s*(\d+)\s*[.)．:：]\s*(.*)", line)
         if m and 1 <= int(m.group(1)) <= n:
-            got[int(m.group(1)) - 1] = m.group(2).strip()
+            t = re.sub(r"\[alt:[^\]]*\]?", "", m.group(2))            # 2차 받아쓰기 표시가 따라 나오면 지움
+            t = re.sub(r"[\u3040-\u30ff\u3400-\u9fff]+", "", t)      # 한자·가나가 섞여 나오면 지움 (예: 正真的한)
+            got[int(m.group(1)) - 1] = re.sub(r"\s{2,}", " ", t).strip()
     return got
 
 
@@ -521,6 +525,32 @@ def translate_lines(lines, job=None, tr=None):
     return lines
 
 
+TR_VER = "2"     # 번역 방식이 바뀌면 올림 → '번역만 다시 하기' 버튼이 뜸 (받아쓰기는 그대로)
+
+
+def split_speakers(lines):
+    """번역기가 ' || ' 로 표시한 화자 바뀜 처리 (방송본부 자막 형식):
+    두 사람이면 한 화면에 두 줄로 '- 가\n- 나', 세 번 이상 주고받으면 시간을 글자 수만큼 나눠 두 사람씩 끊어 보여 줌"""
+    out = []
+    for l in lines:
+        parts = [p.strip(" -") for p in (l.get("ko") or "").split("||") if p.strip(" -")]
+        if len(parts) <= 1:
+            l["ko"] = parts[0] if parts else (l.get("ko") or "").replace("||", " ").strip()
+            out.append(l)
+            continue
+        groups = [parts[i:i + 2] for i in range(0, len(parts), 2)]
+        size = [sum(len(x) for x in g) for g in groups]
+        t, dur = l["start"], l["end"] - l["start"]
+        for k, g in enumerate(groups):
+            e = l["end"] if k == len(groups) - 1 else round(t + dur * size[k] / sum(size), 3)
+            n = dict(l, start=round(t, 3), end=e, ko=("- " + g[0] + "\n- " + g[1]) if len(g) == 2 else g[0])
+            if k:
+                n.pop("alt", None)
+            out.append(n)
+            t = e
+    return out
+
+
 # ---------------- 전체 ----------------
 def make_subtitles(src, out_json, job=None):
     """영상 → subs.json. job 에 sub_msg / sub_pct / sub_done / sub_error 를 기록"""
@@ -533,8 +563,11 @@ def make_subtitles(src, out_json, job=None):
                 old = json.load(open(out_json, encoding="utf-8"))
             except Exception:
                 old = None
-        if old and old.get("lines") and not old.get("translated") and old.get("asr") == asr_id():
-            lines = old["lines"]                      # 받아쓰기는 이미 끝남 → 번역만 다시
+        if (old and old.get("asr") == asr_id() and (old.get("asr_lines") or old.get("lines"))
+                and (not old.get("translated") or old.get("tr") != TR_VER)):
+            lines = [dict(l) for l in (old.get("asr_lines") or old["lines"])]   # 받아쓰기는 그대로 → 번역만 다시
+            for l in lines:
+                l.pop("ko", None)
             _log(job, f"받아 적은 {len(lines)}줄로 번역만 다시 해요", 60)
         else:
             _log(job, "말소리 꺼내는 중", 1)
@@ -544,8 +577,10 @@ def make_subtitles(src, out_json, job=None):
                 dur = w.getnframes() / float(w.getframerate())
             lines = transcribe(wav, dur, job)
             json.dump({"lines": lines, "translated": False, "asr": asr_id()}, open(out_json, "w", encoding="utf-8"), ensure_ascii=False)
+        raw = [dict(l) for l in lines]                    # 받아쓰기 원본 (나중에 번역만 다시 할 때 씀)
         translate_lines(lines, job)
-        json.dump({"lines": lines, "translated": True, "asr": asr_id()}, open(out_json, "w", encoding="utf-8"), ensure_ascii=False)
+        lines = split_speakers(lines)
+        json.dump({"lines": lines, "asr_lines": raw, "translated": True, "asr": asr_id(), "tr": TR_VER}, open(out_json, "w", encoding="utf-8"), ensure_ascii=False)
         _log(job, f"자막 완성 ({len(lines)}줄)", 100)
         if job is not None:
             job["sub_done"] = True
