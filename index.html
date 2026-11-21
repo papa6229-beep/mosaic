@@ -65,6 +65,13 @@
   .opt .t{flex:1}
   .opt .t b{display:block;font-weight:600;font-size:16px}
   .opt .t small{color:var(--sub);font-size:14px}
+  .modes{display:flex;align-items:center;gap:14px;padding:14px 2px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+  .modes .t{flex:1;min-width:200px}
+  .modes .t b{display:block;font-weight:600;font-size:16px}
+  .modes .t small{color:var(--sub);font-size:14px}
+  .seg{display:flex;background:var(--panel2);border:1px solid var(--line);border-radius:11px;padding:3px;gap:2px}
+  .seg button{border:0;background:none;color:var(--sub);padding:8px 13px;border-radius:8px;cursor:pointer;font-weight:600;font-size:15px;white-space:nowrap}
+  .seg button.on{background:var(--acc);color:#1b1206}
   .range{padding:14px 2px;border-bottom:1px solid var(--line)}
   .range .top{display:flex;justify-content:space-between;align-items:baseline}
   .range .top b{font-weight:600}
@@ -147,14 +154,15 @@
     </details>
 
     <div class="opts">
-      <div class="opt on" id="o_hair"><div class="t"><b>밖으로 나온 털까지 같이 덮기</b><small>원본 모자이크 밖의 음모를 찾아서 함께 가려요</small></div><div class="sw"></div></div>
-      <div class="opt" id="o_subs"><div class="t"><b>한국어 자막도 만들기</b><small>일본어·영어 대사를 받아 적고 번역해요 · 블러 작업과 같이 진행</small></div><div class="sw"></div></div>
-      <div class="range">
+      <div class="opt on blurOnly" id="o_hair"><div class="t"><b>밖으로 나온 털까지 같이 덮기</b><small>원본 모자이크 밖의 음모를 찾아서 함께 가려요</small></div><div class="sw"></div></div>
+      <div class="modes"><div class="t"><b>무엇을 만들까요</b><small id="modeHelp"></small></div>
+        <div class="seg" id="mode"><button data-m="both" class="on">블러 + 자막</button><button data-m="blur">블러만</button><button data-m="subs">자막만</button></div></div>
+      <div class="range blurOnly">
         <div class="top"><b>털 찾는 범위</b><span id="reach_v"></span></div>
         <input id="reach" type="range" min="0.2" max="1" step="0.05" value="0.8">
         <small>클수록 모자이크에서 멀리 떨어진 음모까지 잡아요 (최대 250픽셀)</small>
       </div>
-      <details class="adv"><summary>덮는 모양 조절 — 보통은 그대로</summary>
+      <details class="adv blurOnly"><summary>덮는 모양 조절 — 보통은 그대로</summary>
         <div class="range"><div class="top"><b>블러 크기</b><span id="scale_v"></span></div>
           <input id="scale" type="range" min="0.8" max="2.5" step="0.05" value="0.8"><small>장면마다 가려야 할 곳 크기의 몇 배로 고정할지</small></div>
         <div class="range"><div class="top"><b>블러 세기</b><span id="blur_v"></span></div>
@@ -181,7 +189,14 @@ function fmt(s) { s = Math.round(s || 0); const h = Math.floor(s / 3600), m = Ma
 const post = (u, b) => fetch(u, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(b || {}) }).then(r => r.json());
 
 // ---------- 옵션 ----------
-["o_hair", "o_subs"].forEach(id => $(id).onclick = () => $(id).classList.toggle("on"));
+$("o_hair").onclick = () => $("o_hair").classList.toggle("on");
+const MODE_HELP = { both: "블러를 먼저 시작하고, 자막은 메모리가 넉넉하면 같이 · 빠듯하면 블러가 끝난 뒤에 자동으로",
+  blur: "블러만 만들어요 (자막은 나중에 자막 화면에서 만들 수도 있어요)", subs: "블러 없이 일본어·영어 대사를 받아 적고 한국어로 번역만 해요" };
+let mode = "both";
+try { mode = localStorage.getItem("mode") || "both"; } catch (e) {}
+function setMode(m) { mode = m; $("mode").querySelectorAll("button").forEach(b => b.classList.toggle("on", b.dataset.m === m)); $("modeHelp").textContent = MODE_HELP[m];
+  document.querySelectorAll(".blurOnly").forEach(el => el.classList.toggle("hide", m === "subs")); try { localStorage.setItem("mode", m); } catch (e) {} }
+$("mode").querySelectorAll("button").forEach(b => b.onclick = () => setMode(b.dataset.m));
 ["scale", "blur", "feather", "reach"].forEach(k => { const s = () => $(k + "_v").textContent = $(k).value; $(k).oninput = s; s(); });
 fetch("/night").then(r => r.json()).then(d => $("night").classList.toggle("on", d.on)).catch(() => {});
 $("night").onclick = () => post("/night", { on: !$("night").classList.contains("on") }).then(d => $("night").classList.toggle("on", d.on));
@@ -207,7 +222,8 @@ function form() {
   const fd = new FormData();
   ["scale", "blur", "feather", "reach"].forEach(k => fd.append(k, $(k).value));
   fd.append("hair", $("o_hair").classList.contains("on") ? "1" : "0");
-  fd.append("subs", $("o_subs").classList.contains("on") ? "1" : "0");
+  fd.append("subs", mode === "both" ? "1" : "0");
+  fd.append("mode", mode);
   return fd;
 }
 const uploads = {};      // 올리는 중인 파일 (화면 표시용)
@@ -253,22 +269,24 @@ function drawQ() {
   const up = Object.values(uploads);
   const vis = Q.filter(j => !j.hidden);
   $("qWrap").classList.toggle("hide", !vis.length && !up.length);
-  const run = vis.filter(j => !j.done).length;
+  const run = vis.filter(j => !fin(j)).length;
   $("qN").textContent = run ? `${run}개 남음` : "모두 끝남";
   const waitIdx = {}; let w = 0;
   vis.filter(j => !j.done).forEach((j, i) => { if (i > 0) waitIdx[j.jid] = ++w; });
   $("queue").innerHTML = up.map(u => `<div class="job"><div class="hd"><span class="nm">${esc(u.name)}</span><span class="badge ${u.err ? "bad" : "run"}">${u.err || "올리는 중 " + u.pct + "%"}</span></div>
       <div class="bar"><i style="width:${u.pct}%"></i></div></div>`).join("") + [...vis].reverse().map(j => jobCard(j, waitIdx[j.jid])).join("");
 }
+function fin(j) { return j.done && (!j.subs || j.subs.sub_done); }      // 블러와 자막이 다 끝났는지
 function jobCard(j, wait) {
-  const s = j.subs, st = j.error ? ["bad", "오류"] : j.done ? ["ok", "완료"] : wait ? ["", `대기 ${wait}번째`] : ["run", (j.pct || 0) + "%"];
+  const s = j.subs, st = j.error ? ["bad", "오류"] : fin(j) ? ["ok", "완료"] : j.done ? ["run", "자막 만드는 중"] : wait ? ["", `대기 ${wait}번째`] : ["run", (j.pct || 0) + "%"];
   let h = `<div class="job"><div class="hd"><span class="nm">${esc(j.name)}</span><span class="badge ${st[0]}">${st[1]}</span></div>`;
   if (!j.done) h += `<div class="bar"><i style="width:${j.pct || 0}%"></i></div><div class="m">${esc(j.msg)}</div>`;
   else if (j.error) h += `<div class="m bad" style="margin-top:8px">${esc(j.error)}</div>`;
   if (s) h += `<div class="m ${s.sub_error ? "bad" : ""}" style="margin-top:4px">자막 · ${esc(s.sub_error ? "실패 — " + s.sub_error : s.sub_msg)}</div>`;
   if (j.done && !j.error) {
     const r = j.report || {};
-    h += `<div class="acts"><a class="btn pri" href="/review/${j.jid}" target="_blank">블러 검수·수정</a>
+    h += j.mode === "subs" ? `<div class="acts"><a class="btn pri" href="/review/${j.jid}/subtitles" target="_blank">자막 보기·고치기</a></div>`
+      : `<div class="acts"><a class="btn pri" href="/review/${j.jid}" target="_blank">블러 검수·수정</a>
       ${s ? `<a class="btn blue" href="/review/${j.jid}/subtitles" target="_blank">자막 보기·고치기</a>` : ""}
       <a class="btn" href="/download/${j.jid}">결과 영상 받기</a></div>`;
     if (r.frames) h += `<details class="rep"><summary>작업 기록 · 전체 ${fmt(r.sec)} (영상 길이의 ${(r.sec / r.video_sec).toFixed(1)}배)</summary>
@@ -296,7 +314,7 @@ function loadJobs() {
     if (!js.length) { $("jobs").innerHTML = '<div class="empty">아직 만든 작업이 없어요</div>'; return; }
     $("jobs").innerHTML = js.map(j => `<div class="row"><div class="info"><b title="${esc(j.name)}">${esc(j.name)}</b>
       <small>${fmt(j.sec)} · ${new Date(j.t * 1000).toLocaleString("ko-KR", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}${j.edited ? " · <i>검수에서 고친 내용 있음</i>" : ""}</small></div>
-      <a class="lk" href="/review/${j.jid}" target="_blank">블러 검수</a>
+      ${j.mode === "subs" ? '<span class="badge">자막만</span>' : `<a class="lk" href="/review/${j.jid}" target="_blank">블러 검수</a>`}
       <a class="lk" href="/review/${j.jid}/subtitles" target="_blank">자막</a>
       <button class="ib" data-reset="${j.jid}" title="처음 상태로 되돌리기 — 검수에서 고친 블러와 자막을 지우고 갓 만든 상태로">${IC.undo}</button>
       <button class="ib del" data-del="${j.jid}" title="이 작업 지우기">${IC.del}</button></div>`).join("");
@@ -310,7 +328,7 @@ function loadJobs() {
     });
   }).catch(() => {});
 }
-loadJobs(); pollQ();
+setMode(mode); loadJobs(); pollQ();
 </script>
 </body>
 </html>

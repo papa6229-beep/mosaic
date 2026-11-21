@@ -487,6 +487,14 @@ def _low_priority():
         pass
 
 
+def _mem_free_gb():
+    try:
+        import psutil
+        return psutil.virtual_memory().available / 1e9
+    except Exception:
+        return 99
+
+
 def _is_mem_err(e):
     t = str(e)
     return "MemoryError" in t or "Unable to allocate" in t or "out of memory" in t.lower()
@@ -931,8 +939,13 @@ def run_job(jid, src, params):
                     px = None
             table = []
             boxes, all_boxes, exps, n2 = detect_all(src, job, n, px, table)
+            subs_later = False
             if params.get("subs") == "1":                   # 자막은 그래픽카드가 비는 지금부터 뒤에서 같이 만듦
-                start_subs(jid, src)
+                if _mem_free_gb() >= 12:
+                    start_subs(jid, src)
+                else:                                       # 메모리가 빠듯하면 블러가 끝난 뒤에 시작
+                    subs_later = True
+                    sub_state[jid] = {"sub_msg": "블러가 끝나면 시작해요 (메모리가 빠듯해서 차례로)", "sub_pct": 0, "sub_done": False, "kind": "make"}
             try:
                 json.dump(table, open(os.path.join(JOBS, jid, "pts.json"), "w"))
             except Exception:
@@ -966,6 +979,9 @@ def run_job(jid, src, params):
                 json.dump(rep, open(os.path.join(JOBS, jid, "report.json"), "w"), ensure_ascii=False)
             except Exception:
                 pass
+            if subs_later:
+                sub_state.pop(jid, None)
+                start_subs(jid, src)
             job.update(pct=100, msg="완료", done=True, out=times.get("out_path", out), report=rep)
         except Exception as e:
             traceback.print_exc()
@@ -1027,6 +1043,18 @@ def start():
             return jsonify(error="영상 파일을 선택해 주세요"), 400
         src = os.path.join(d, os.path.basename(f.filename) or "input.mp4")
         f.save(src)
+    if request.form.get("mode") == "subs":              # 자막만: 블러 없이 자막 작업만 (검수 화면 대신 자막 화면으로)
+        try:
+            info = media.probe(src)
+            json.dump({"src": src, "W": info["W"], "H": info["H"], "fps": info["fps"],
+                       "n": int(round(info.get("duration", 0) * info["fps"])) or int(cv2.VideoCapture(src).get(cv2.CAP_PROP_FRAME_COUNT)),
+                       "out": "", "params": {}, "mode": "subs"}, open(os.path.join(d, "review.json"), "w", encoding="utf-8"), ensure_ascii=False)
+        except Exception as e:
+            return jsonify(error="영상을 읽지 못했어요: " + str(e)[:200]), 400
+        state[jid] = {"pct": 100, "msg": "자막만 만들기", "done": True, "name": os.path.basename(src), "added": time.time(),
+                      "main": True, "mode": "subs"}
+        start_subs(jid, src)
+        return jsonify(job=jid)
     state[jid] = {"pct": 0, "msg": "앞 작업이 끝나길 기다리는 중", "done": False, "name": os.path.basename(src),
                   "added": time.time(), "main": True, "subs_on": request.form.get("subs") == "1"}
     threading.Thread(target=run_job, args=(jid, src, request.form), daemon=True).start()
@@ -1050,7 +1078,8 @@ def queue_list():
     for jid, j in state.items():
         if j.get("main"):
             out.append({"jid": jid, "name": j.get("name"), "pct": j.get("pct", 0), "msg": j.get("msg", ""), "done": j.get("done"),
-                        "error": j.get("error"), "added": j.get("added"), "report": j.get("report"), "subs": sub_state.get(jid)})
+                        "error": j.get("error"), "added": j.get("added"), "report": j.get("report"), "subs": sub_state.get(jid),
+                        "mode": j.get("mode", "blur")})
     out.sort(key=lambda x: x["added"])
     return jsonify(out)
 
@@ -1230,7 +1259,7 @@ def jobs_list():
                 sp = os.path.join(d, "subs.json")
                 out.append({"jid": jid, "name": os.path.basename(r["src"]), "t": os.path.getmtime(rp),
                             "sec": round(r["n"] / r["fps"], 1), "edited": os.path.exists(os.path.join(d, "edits.json")),
-                            "subs": os.path.exists(sp)})
+                            "subs": os.path.exists(sp), "mode": r.get("mode", "blur")})
             except Exception:
                 pass
     out.sort(key=lambda x: -x["t"])
@@ -1258,9 +1287,11 @@ def review_data(jid):
         return jsonify(error="없는 작업"), 404
     r = json.load(open(os.path.join(d, "review.json"), encoding="utf-8"))
     ep = os.path.join(d, "edits.json")
-    return jsonify(meta={k: r[k] for k in ("W", "H", "fps", "n")} | {"params": r.get("params", {}), "name": os.path.basename(r["src"])},
-                   segments=json.load(open(os.path.join(d, "segments.json"))),
-                   plan=json.load(open(os.path.join(d, "blur_plan.json"))),
+    sg, bp = os.path.join(d, "segments.json"), os.path.join(d, "blur_plan.json")
+    return jsonify(meta={k: r[k] for k in ("W", "H", "fps", "n")} | {"params": r.get("params", {}), "name": os.path.basename(r["src"]),
+                                                                    "mode": r.get("mode", "blur")},
+                   segments=json.load(open(sg)) if os.path.exists(sg) else {},
+                   plan=json.load(open(bp)) if os.path.exists(bp) else [],
                    edits=json.load(open(ep)) if os.path.exists(ep) else {"segs": {}, "added": []})
 
 

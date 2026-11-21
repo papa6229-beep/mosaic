@@ -413,7 +413,7 @@ function pollSubs() {
 }
 
 // ---------- 시작 ----------
-fetch(`/review/${JID}/data`).then(r => r.json()).then(d => { $("name").textContent = d.meta.name; document.title = "자막 편집 — " + d.meta.name; });
+fetch(`/review/${JID}/data`).then(r => r.json()).then(d => { $("name").textContent = d.meta.name; if (d.meta.mode === "subs") $("toBlur").style.display = "none"; document.title = "자막 편집 — " + d.meta.name; });
 const waitVideo = () => fetch(`/review/${JID}/video-status`).then(r => r.json()).then(s => {
   if (s.ready) { V.src = `/review/${JID}/video` + (s.audio === "ok" ? "?av=1" : ""); if (s.audio === "pending") setTimeout(waitAudio, 3000); return; }
   if (s.pct < 0) return msg("미리보기 영상을 만들지 못했어요", "bad");
