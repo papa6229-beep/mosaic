@@ -487,6 +487,22 @@ def _low_priority():
         pass
 
 
+def _is_mem_err(e):
+    t = str(e)
+    return "MemoryError" in t or "Unable to allocate" in t or "out of memory" in t.lower()
+
+
+def _mem_workers(K, W, H):
+    """남은 메모리(RAM)에 맞춰 동시에 할 수를 줄임 (4K는 일꾼 하나가 프레임 몇 장씩 들고 계산해서 메모리를 많이 씀)"""
+    try:
+        import psutil
+        avail = psutil.virtual_memory().available
+    except Exception:
+        return K
+    per = W * H * 3 * 40 + 300e6                         # 일꾼 하나에 필요한 대략의 메모리 (4K ≈ 1.3GB, FHD ≈ 0.55GB)
+    return max(1, min(K, int(avail * 0.7 / per)))
+
+
 def _cpu_workers(n):
     """동시에 쓸 CPU 수: 작업 중에도 컴퓨터를 쓸 수 있게 둘은 항상 비워 둠 (최대 8개)"""
     cores = os.cpu_count() or 2
@@ -675,19 +691,27 @@ def render(src, boxes_json, dst, job, n, times=None):
             ex = [ed.get(str(i), {"must": [], "faces": []}) for i in range(n)]
         except Exception:
             ex = None
-    K = _cpu_workers(n)
+    K = _mem_workers(_cpu_workers(n), W, H)
     params = {k: getattr(cover2, k) for k in ("SCALE", "BLUR_FRAC", "FEATHER_W", "HAIR", "HAIR_REACH")}
     d = os.path.dirname(dst)
-    bounds = [round(n * k / K) for k in range(K + 1)]
-    wb = lambda k: max(0, bounds[k] - WARMUP)
 
     # 1단계: 훑기 (덮을 곳 모으기)
     t0 = time.time()
-    scans = [os.path.join(d, f"scan{k:02d}.pkl") for k in range(K)]
     t0v = media.probe(src)
     table = _load_table(os.path.dirname(boxes_json))
-    _run_parallel(job, K, n, lambda k: (src, bounds[k], bounds[k + 1] - bounds[k], W, H, fps, t0v, table, per[wb(k):bounds[k + 1]], (ex[wb(k):bounds[k + 1]] if ex else None), params, scans[k]),
-                  _scan_worker, "1/3 덮을 곳 훑는 중", 50, 75)
+    while True:
+        bounds = [round(n * k / K) for k in range(K + 1)]
+        wb = lambda k: max(0, bounds[k] - WARMUP)
+        scans = [os.path.join(d, f"scan{k:02d}.pkl") for k in range(K)]
+        try:
+            _run_parallel(job, K, n, lambda k: (src, bounds[k], bounds[k + 1] - bounds[k], W, H, fps, t0v, table, per[wb(k):bounds[k + 1]], (ex[wb(k):bounds[k + 1]] if ex else None), params, scans[k]),
+                          _scan_worker, "1/3 덮을 곳 훑는 중", 50, 75)
+            break
+        except RuntimeError as e:
+            if not _is_mem_err(e) or K <= 1:
+                raise
+            K = max(1, K // 2)                             # 메모리가 모자라면 동시에 하는 수를 반으로 줄여 이 단계만 다시
+            job["msg"] = f"메모리가 모자라서 CPU {K}개로 줄여 다시 훑는 중"
     info = []
     for sp in scans:
         info += pickle.load(open(sp, "rb"))
@@ -774,10 +798,15 @@ def paint_save(src, ells, polys, dst, job, n, W, H, fps, params, p0=77, p1=99, t
         os.remove(man_p)                                 # 만드는 도중에 멈추면 다음에 다 다시 확인하게
     except Exception:
         pass
+    for k in dirty:                                    # 다시 만들 조각의 예전 파일은 지움 (중간에 멈췄다 다시 할 때 헷갈리지 않게)
+        try:
+            os.remove(paths[k])
+        except FileNotFoundError:
+            pass
     times["parts"] = len(bounds)
     times["reused"] = len(bounds) - len(dirty)
     total = sum(bounds[k][1] for k in dirty)
-    K = max(1, min(_cpu_workers(total), len(dirty), 6 if genc else 99))   # 그래픽카드 압축은 동시에 쓸 수 있는 개수가 정해져 있어서 6개까지
+    K = max(1, min(_mem_workers(_cpu_workers(total), W, H), len(dirty), 6 if genc else 99))   # 그래픽카드 압축은 동시에 쓸 수 있는 개수가 정해져 있어서 6개까지
     KP = K
     groups, acc, w = [[] for _ in range(K)], 0, 0      # 다시 만들 조각을 일꾼마다 비슷한 양으로 (순서대로 이어지게)
     for k in dirty:
@@ -802,8 +831,26 @@ def paint_save(src, ells, polys, dst, job, n, W, H, fps, params, p0=77, p1=99, t
         return out
     if dirty:
         label = "블러 그리고 저장 중" + (f" (고친 곳만 다시: {len(dirty)}/{len(bounds)}조각)" if times["reused"] else f" (원본과 같은 형식: {desc})")
-        _run_parallel(job, K, total, lambda k: (src, runs_of(groups[k]), sum(bounds[i][1] for i in groups[k]), W, H, fps, params, mi),
-                      _paint_worker, label, p0, p1)
+        while dirty:
+            K = max(1, min(K, len(dirty)))
+            groups, acc, w = [[] for _ in range(K)], 0, 0
+            for k in dirty:
+                if acc >= total * (w + 1) / K and w < K - 1:
+                    w += 1
+                groups[w].append(k)
+                acc += bounds[k][1]
+            try:
+                _run_parallel(job, K, total, lambda k: (src, runs_of(groups[k]), sum(bounds[i][1] for i in groups[k]), W, H, fps, params, mi),
+                              _paint_worker, label, p0, p1)
+                break
+            except RuntimeError as e:
+                if not _is_mem_err(e) or K <= 1:
+                    raise
+                K = max(1, K // 2)                         # 메모리가 모자라면 반으로 줄여 다시 (다 만든 조각은 그대로 씀)
+                done_ = [k for k in dirty if os.path.exists(paths[k])]
+                dirty = [k for k in dirty if k not in done_]
+                total = sum(bounds[k][1] for k in dirty)
+                KP = K
     json.dump({str(k): h for k, h in enumerate(hs)}, open(man_p, "w"))
     times["paint"] = round(time.time() - t0, 1)
     t0 = time.time()
