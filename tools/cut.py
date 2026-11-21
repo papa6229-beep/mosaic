@@ -1,5 +1,5 @@
-"""영상 앞부분만 원본 형식 그대로 잘라 냄 (다시 압축하지 않음 → 화질 그대로, 몇 분이면 끝)
-사용: 30분자르기.bat 위에 영상 파일을 끌어다 놓기"""
+"""영상 일부를 원본 형식 그대로 잘라 냄 (다시 압축하지 않음 → 화질 그대로, 몇 분이면 끝)
+사용: 30분자르기.bat (앞 30분) / 구간자르기.bat (시작 시간·길이를 물어봄) 위에 영상 파일을 끌어다 놓기"""
 import os, sys, subprocess, time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -51,12 +51,30 @@ def main():
             print("그 경로에서 파일을 못 찾았어요:", line)
     import media
     base, ext = os.path.splitext(src)
-    dst = f"{base}_앞{int(minutes)}분{ext}"
+    start = 0.0
+    if os.environ.get("CUT_ASK"):                        # 구간자르기: 시작 시간과 길이를 물어봄
+        while True:
+            t_in = input("어디서부터 자를까요? (예: 25:00 = 25분, 1:05:30 = 1시간 5분 30초) > ").strip()
+            try:
+                start = sum(float(x) * 60 ** k for k, x in enumerate(reversed(t_in.split(":"))))
+                break
+            except ValueError:
+                print("시간을 25:00 처럼 적어 주세요.")
+        m_in = input(f"몇 분 자를까요? (그냥 엔터 = {int(minutes)}분) > ").strip()
+        if m_in:
+            try:
+                minutes = float(m_in)
+            except ValueError:
+                pass
+        dst = f"{base}_{int(start // 60)}분부터{int(minutes)}분{ext}"
+    else:
+        dst = f"{base}_앞{int(minutes)}분{ext}"
     info = media.probe(src)
     print(f"원본: {os.path.basename(src)}  ({info.get('codec')} {info.get('pix_fmt')}, 소리 트랙 {info.get('audio', 0)}개)")
-    print(f"앞 {int(minutes)}분을 원본 형식 그대로 잘라서 저장하는 중... (다시 압축하지 않아요)")
+    print(f"{int(start // 60)}분 {int(start % 60)}초부터 {int(minutes)}분을 원본 형식 그대로 잘라서 저장하는 중... (다시 압축하지 않아요)")
     t = time.time()
-    cmd = [media.ffmpeg_exe(), "-y", "-hide_banner", "-loglevel", "error", "-stats", "-i", src, "-t", str(minutes * 60),
+    cmd = [media.ffmpeg_exe(), "-y", "-hide_banner", "-loglevel", "error", "-stats",
+           *(["-ss", str(start)] if start else []), "-i", src, "-t", str(minutes * 60),
            "-map", "0:v:0", "-map", "0:a?", "-c", "copy"]
     if info.get("timecode"):
         cmd += ["-timecode", info["timecode"]]
