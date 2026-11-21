@@ -439,6 +439,8 @@ def _low_priority():
         cv2.setNumThreads(1)
     except Exception:
         pass
+    if os.environ.get("MOSAIC_FULL") == "1":          # 밤샘 모드: 보통 우선순위로 CPU를 다 씀
+        return
     try:
         import psutil
         pr = psutil.Process()
@@ -453,6 +455,8 @@ def _low_priority():
 def _cpu_workers(n):
     """동시에 쓸 CPU 수: 작업 중에도 컴퓨터를 쓸 수 있게 둘은 항상 비워 둠 (최대 8개)"""
     cores = os.cpu_count() or 2
+    if os.environ.get("MOSAIC_FULL") == "1":          # 밤샘 모드: 비워 두는 CPU 없이 (최대 16개)
+        return max(1, min(cores, 16, n // 60))
     return max(1, min(cores - 2, 8, n // 60))
 
 
