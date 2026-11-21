@@ -162,6 +162,56 @@ def _encoder_pix_fmts(enc):
     return _enc_cache[enc]
 
 
+def _ff():
+    try:
+        import imageio_ffmpeg
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        return "ffmpeg"
+
+
+def hw_decode_ok(src, info):
+    """그래픽카드로 영상을 풀어도 CPU로 푼 것과 픽셀이 완전히 같은지 앞부분 몇 장으로 확인 (같을 때만 그래픽카드로 풂).
+    그래픽카드가 못 푸는 형식이면 False"""
+    if os.environ.get("MOSAIC_HWDEC") == "0":
+        return False
+    import hashlib
+    pf = info.get("pix_fmt") or "yuv420p"
+
+    def grab(hw):
+        try:
+            r = subprocess.run([_ff(), "-hide_banner", "-loglevel", "error", *(["-hwaccel", "cuda"] if hw else []), "-i", src,
+                                "-map", "0:v:0", "-frames:v", "12", "-f", "rawvideo", "-pix_fmt", pf, "-"],
+                               capture_output=True, timeout=120)
+            return hashlib.md5(r.stdout).hexdigest() if r.returncode == 0 and r.stdout else None
+        except Exception:
+            return None
+    a = grab(False)
+    return a is not None and a == grab(True)
+
+
+def gpu_encode_args(info, fmt):
+    """그래픽카드 압축(NVENC) 인자: 원본이 H.264/H.265 · 8비트 4:2:0 · 프로그레시브일 때만, 원본과 같은 비트레이트로. 안 되면 None"""
+    codec = (info.get("codec") or "").lower()
+    if os.environ.get("MOSAIC_HWENC") == "0" or codec not in ("h264", "hevc") or fmt not in ("yuv420p", "nv12") \
+            or info.get("field") in ("tt", "bb", "tb", "bt"):
+        return None
+    enc = "h264_nvenc" if codec == "h264" else "hevc_nvenc"
+    br = info.get("bitrate")
+    gop, bf = info.get("gop", 15), info.get("bframes", 2)
+    a = ["-c:v", enc, "-pix_fmt", "yuv420p", "-preset", "p5", "-tune", "hq", "-rc", "vbr", "-spatial-aq", "1",
+         "-g", str(gop), "-bf", str(min(bf, 3))]
+    a += (["-b:v", str(br), "-maxrate", str(int(br * 1.2)), "-bufsize", str(int(br * 2))] if br else ["-cq", "16", "-b:v", "0"])
+    try:                                                  # 이 크기로 실제로 압축이 되는지 짧게 시험
+        r = subprocess.run([_ff(), "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
+                            f"color=gray:s={info['W']}x{info['H']}:r=30:d=0.5", *a, "-f", "null", "-"], capture_output=True, timeout=60)
+        if r.returncode != 0:
+            return None
+    except Exception:
+        return None
+    return a
+
+
 def _has_encoder(enc):
     return _encoder_pix_fmts(enc) is not None or enc in ("mpeg2video", "libx264", "dnxhd", "prores_ks")
 

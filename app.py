@@ -356,6 +356,7 @@ class Dec:
         self.ss = ss
         self.p = subprocess.Popen([ffmpeg_exe(), "-hide_banner", "-nostats", "-loglevel", "info", "-threads", str(self.threads),
                                    "-filter_threads", str(max(1, self.threads)), "-copyts",
+                                   *(["-hwaccel", "cuda"] if _hw_for(self.src) else []),          # 그래픽카드로 풀기 (CPU로 푼 것과 같은 걸 확인한 영상만)
                                    *(["-ss", f"{ss:.6f}"] if ss > 0 else []), "-i", self.src, "-map", "0:v:0",
                                    "-vf", "showinfo=checksum=0", "-fps_mode", "passthrough",   # 프레임을 복제·생략하지 않고 풀린 그대로
                                    "-f", "rawvideo", "-pix_fmt", self.pix_fmt, "-"],
@@ -430,6 +431,23 @@ class Dec:
             self.p.stdout.close()
         except Exception:
             pass
+
+
+def _hw_for(src):
+    return os.environ.get("MOSAIC_HWDEC_ON") == "1" and os.environ.get("MOSAIC_HWDEC_SRC") == src
+
+
+def _set_hw(src, job=None):
+    """이 영상을 그래픽카드로 풀어도 되는지 한 번 확인해서 일꾼들에게 알려 둠 (환경 변수로 물려줌)"""
+    if job is not None:
+        job["msg"] = "그래픽카드로 영상을 풀 수 있는지 확인하는 중"
+    try:
+        ok = media.hw_decode_ok(src, media.probe(src))
+    except Exception:
+        ok = False
+    os.environ["MOSAIC_HWDEC_SRC"] = src
+    os.environ["MOSAIC_HWDEC_ON"] = "1" if ok else "0"
+    return ok
 
 
 def _low_priority():
@@ -708,6 +726,9 @@ def paint_save(src, ells, polys, dst, job, n, W, H, fps, params, p0=77, p1=99, t
     info = media.probe(src)
     fmt = media.compose_fmt(info)
     enc, desc = media.encode_args(info, fmt)
+    genc = media.gpu_encode_args(info, fmt)             # 원본이 H.264/H.265면 그래픽카드로 압축 (같은 비트레이트)
+    if genc:
+        enc, desc = genc, desc + " · 그래픽카드 압축"
     mi = {"compose": fmt, "enc": enc, "inp": media.input_args(info), "fps_str": info["fps_str"], "matrix": info["matrix"],
           "range": info["range"], "t0": info.get("t0", 0.0), "table": _load_table(os.path.dirname(dst))}
     times["out_fmt"] = desc
@@ -740,7 +761,7 @@ def paint_save(src, ells, polys, dst, job, n, W, H, fps, params, p0=77, p1=99, t
     times["parts"] = len(bounds)
     times["reused"] = len(bounds) - len(dirty)
     total = sum(bounds[k][1] for k in dirty)
-    K = max(1, min(_cpu_workers(total), len(dirty)))
+    K = max(1, min(_cpu_workers(total), len(dirty), 6 if genc else 99))   # 그래픽카드 압축은 동시에 쓸 수 있는 개수가 정해져 있어서 6개까지
     KP = K
     groups, acc, w = [[] for _ in range(K)], 0, 0      # 다시 만들 조각을 일꾼마다 비슷한 양으로 (순서대로 이어지게)
     for k in dirty:
@@ -831,6 +852,7 @@ def run_job(jid, src, params):
             cover2.HAIR = params.get("hair", "1") == "1"
             cover2.HAIR_REACH = float(params.get("reach", cover2.HAIR_REACH))
             ensure_model(job)
+            job["hwdec"] = _set_hw(src, job)
             n = int(cv2.VideoCapture(src).get(cv2.CAP_PROP_FRAME_COUNT))
             t0 = time.time()
             px = None
@@ -875,7 +897,7 @@ def run_job(jid, src, params):
             rep["t_cover"] = round(time.time() - t1, 1)
             rep["sec"] = round(time.time() - t0, 1)
             rep["video_sec"] = round(rep["frames"] / rep["fps"], 1)
-            rep["det_how"] = job.get("det_how", "")
+            rep["det_how"] = job.get("det_how", "") + (" · 영상 풀기 그래픽카드" if job.get("hwdec") else "")
             rep["nude_how"] = job.get("nude_how", "")
             try:
                 json.dump(rep, open(os.path.join(JOBS, jid, "report.json"), "w"), ensure_ascii=False)
@@ -1349,6 +1371,7 @@ def run_fix(fid, d):
             for k, v in r.get("params", {}).items():
                 setattr(cover2, k, v)
             n, fps = r["n"], r["fps"]
+            _set_hw(r["src"], job)
             ells = json.load(open(os.path.join(d, "blur_plan.json")))
             segtab = {int(k): v for k, v in json.load(open(os.path.join(d, "segments.json"))).items()}
             ep = os.path.join(d, "edits.json")
