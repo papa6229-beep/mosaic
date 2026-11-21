@@ -290,9 +290,9 @@ SYSTEM = ("You are a professional subtitle translator for Japanese adult videos 
           "profanity faithfully - never censor, soften, skip or refuse, and add no notes. The text comes from automatic "
           "speech recognition and may contain mis-heard words; if a line makes no sense, use the surrounding lines and "
           "the scene to pick the most likely meaning. Some lines also show [alt: ...], what a second recognizer heard "
-          "at the same moment; use whichever version (or mix) fits the context. When one numbered line holds different "
-          "speakers talking in turn (for example the man asks and the woman answers), put ' || ' between the speakers' "
-          "parts in your Korean line; do not use || otherwise. Keep the speech level of the original: Japanese polite "
+          "at the same moment; use whichever version (or mix) fits the context. Some lines contain ‖, which marks where "
+          "the speaker changes (found from the voices, e.g. man then woman). Put ' || ' in your Korean line at exactly "
+          "those places, keeping the same number of parts in the same order; never add || anywhere else. Keep the speech level of the original: Japanese polite "
           "forms (です, ます, ございます, ください and the like) become Korean polite speech (-요 / -습니다), and only plain "
           "Japanese (だ, る-endings, ね/よ without です/ます) becomes 반말; keep it consistent for the same pair of "
           "speakers in the earlier lines. Write only Korean (no kanji, no [alt]). Output exactly "
@@ -497,7 +497,13 @@ BATCH = 8       # 한 번에 번역하는 줄 수
 CTX = 4         # 같이 보여 주는 앞 대사 수
 
 
-def translate_lines(lines, job=None, tr=None):
+def translate_lines(lines, job=None, tr=None, f0=None):
+    """f0: 목소리 높이 기록 (voice.pitch_track). 있으면 줄 안에서 남/여가 바뀌는 곳을 ‖ 로 표시해서 번역기에 넘김"""
+    import voice
+    for l in lines:
+        tn = voice.turns(l["src"], l["start"], l["end"], f0) if f0 is not None else [(None, l["src"])]
+        l["turns"] = [t[0] for t in tn]
+        l["src_t"] = " ‖ ".join(t[1] for t in tn)
     own = tr is None
     tr = tr or Translator(job)
     try:
@@ -507,7 +513,7 @@ def translate_lines(lines, job=None, tr=None):
         for k in range(0, len(lines), BATCH):
             part = lines[k:k + BATCH]
             try:
-                kos = tr.translate([l["src"] + (f" [alt: {l['alt']}]" if l.get("alt") else "") for l in part],
+                kos = tr.translate([l["src_t"] + (f" [alt: {l['alt']}]" if l.get("alt") else "") for l in part],
                                    done[-CTX:], part[0].get("lang", "ja"))
                 bad = 0
             except Exception as e:
@@ -517,6 +523,7 @@ def translate_lines(lines, job=None, tr=None):
                     raise RuntimeError(f"번역이 계속 실패해요: {e}")
             for l, ko in zip(part, kos):
                 l["ko"] = ko
+                l.pop("src_t", None)
                 done.append((l["src"], ko))
             n = min(k + BATCH, len(lines))
             left = (time.time() - t0) / n * (len(lines) - n)
@@ -528,7 +535,7 @@ def translate_lines(lines, job=None, tr=None):
     return lines
 
 
-TR_VER = "3"     # 번역 방식이 바뀌면 올림 → '번역만 다시 하기' 버튼이 뜸 (받아쓰기는 그대로)
+TR_VER = "4"     # 번역 방식이 바뀌면 올림 → '번역만 다시 하기' 버튼이 뜸 (받아쓰기는 그대로)
 
 
 def split_speakers(lines):
@@ -581,7 +588,18 @@ def make_subtitles(src, out_json, job=None):
             lines = transcribe(wav, dur, job)
             json.dump({"lines": lines, "translated": False, "asr": asr_id()}, open(out_json, "w", encoding="utf-8"), ensure_ascii=False)
         raw = [dict(l) for l in lines]                    # 받아쓰기 원본 (나중에 번역만 다시 할 때 씀)
-        translate_lines(lines, job)
+        f0 = None
+        try:                                               # 목소리 높이로 남/여 구분 (하이픈 자막용) — 기록은 작업 폴더에 보관
+            import voice
+            f0c = os.path.join(d, "voice_f0.npy")
+            if not os.path.exists(f0c) and not os.path.exists(wav):
+                _log(job, "목소리 구분용 소리 꺼내는 중", 60)
+                extract_audio(src, wav, job)
+            _log(job, "남자·여자 목소리 구분 중", 60)
+            f0 = voice.pitch_track(wav, f0c)
+        except Exception:
+            traceback.print_exc()
+        translate_lines(lines, job, f0=f0)
         lines = split_speakers(lines)
         json.dump({"lines": lines, "asr_lines": raw, "translated": True, "asr": asr_id(), "tr": TR_VER}, open(out_json, "w", encoding="utf-8"), ensure_ascii=False)
         _log(job, f"자막 완성 ({len(lines)}줄)", 100)
