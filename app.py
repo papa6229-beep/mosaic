@@ -818,7 +818,11 @@ def run_job(jid, src, params):
                             f"이 프로그램이 쓰는 중 {torch.cuda.memory_reserved() / 1e9:.1f}GB · 진행 {job.get('pct', 0)}%]")
             except Exception:
                 pass
-            job.update(error=str(e)[:300] + info, done=True, msg="오류")
+            es = str(e).strip()
+            if "Traceback" in es:                   # 일꾼이 보낸 긴 기록이면 실제 오류가 적힌 끝부분을 보여 줌
+                ls = [l for l in es.splitlines() if l.strip()]
+                es = " / ".join(ls[-3:])
+            job.update(error=es[-400:] + info, done=True, msg="오류")
 
 
 # ---------------- 화면 ----------------
