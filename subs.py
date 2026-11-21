@@ -250,7 +250,14 @@ def transcribe(wav, dur, job=None):
     if p.returncode == 3:
         raise RuntimeError("그래픽카드를 쓸 수 없어요. nvidia.com/drivers 에서 최신 드라이버(580 이상)를 설치하고 다시 켜 주세요")
     if p.returncode != 0:
-        raise RuntimeError("받아쓰기 실패: " + " / ".join(tail[-4:])[-400:])
+        why = ""
+        try:                                       # WhisperJAV 가 남긴 실행 기록에서 실패 이유를 꺼내 화면에 보여 줌
+            man = json.load(open(os.path.join(out, "whisperjav_run.json"), encoding="utf-8"))
+            why = " / ".join(str(f.get("error") or f.get("detail") or "") for f in man.get("files", []))
+        except Exception:
+            pass
+        errs = [t for t in tail if "ERROR" in t or "Error" in t or "error:" in t]
+        raise RuntimeError("받아쓰기 실패: " + (why or " / ".join((errs or tail)[-3:]))[-500:])
     def find(suffix):
         return next((os.path.join(out, f) for f in os.listdir(out) if f.endswith(suffix)), None)
     main = _read_srt(find(".merged.whisperjav.srt")) or _read_srt(find(".pass1.srt"))
