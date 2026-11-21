@@ -5,12 +5,12 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>블러 검수·수정</title>
 <style>
-  :root{--bg:#1c1917;--panel:#292524;--line:#44403c;--ink:#fafaf9;--sub:#a8a29e;--acc:#f59e0b;--sel:#38bdf8;--bad:#f87171;--ok:#4ade80}
+  :root{--bg:#1c1917;--panel:#292524;--line:#44403c;--ink:#fafaf9;--sub:#cbc5be;--acc:#f59e0b;--sel:#38bdf8;--bad:#f87171;--ok:#4ade80}
   *{box-sizing:border-box}
-  body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 "Pretendard","Malgun Gothic",system-ui,sans-serif;user-select:none}
+  body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 "Pretendard","Malgun Gothic",system-ui,sans-serif;user-select:none}
   header{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--line);flex-wrap:wrap}
-  header h1{font-size:16px;margin:0}
-  header .name{color:var(--sub);font-size:13px;flex:1;min-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  header h1{font-size:18px;margin:0}
+  header .name{color:var(--sub);font-size:15px;flex:1;min-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   button{background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:7px 12px;font:inherit;cursor:pointer}
   button:hover{border-color:var(--sub)}
   button.on{background:var(--acc);color:#1c1917;border-color:var(--acc)}
@@ -33,24 +33,24 @@
   #hsbT:hover,#hsbT.on{background:var(--acc)}
   #tl{cursor:pointer}
   .side{background:var(--panel);border-radius:8px;padding:12px;align-self:start}
-  .side h2{font-size:14px;margin:0 0 8px}
+  .side h2{font-size:16px;margin:0 0 8px}
   .side .row{display:flex;gap:6px;align-items:center;margin:6px 0;flex-wrap:wrap}
-  .side label{color:var(--sub);font-size:12px;min-width:44px}
+  .side label{color:var(--sub);font-size:14px;min-width:44px}
   .side input[type=number]{width:84px;background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:4px 6px;font:inherit}
   .side input[type=range]{flex:1;accent-color:var(--acc)}
-  .muted{color:var(--sub);font-size:12px}
-  .keys{font-size:12px;color:var(--sub);margin-top:10px}
+  .muted{color:var(--sub);font-size:14px}
+  .keys{font-size:14px;color:var(--sub);margin-top:10px}
   .kg{margin-bottom:12px}
-  .kt{font-size:11px;font-weight:700;color:var(--acc);letter-spacing:.02em;margin-bottom:5px;padding-bottom:3px;border-bottom:1px solid rgba(255,255,255,.08)}
+  .kt{font-size:13px;font-weight:700;color:var(--acc);letter-spacing:.02em;margin-bottom:5px;padding-bottom:3px;border-bottom:1px solid rgba(255,255,255,.08)}
   .kr{display:grid;grid-template-columns:118px 1fr;gap:8px;align-items:center;padding:2px 0}
   .kk{display:flex;flex-wrap:wrap;gap:3px;align-items:center}
-  .kk i{font-style:normal;color:var(--sub);font-size:11px}
-  kbd{font:600 11px/1 inherit;font-family:inherit;color:var(--ink);background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.14);border-bottom-width:2px;border-radius:4px;padding:3px 5px;white-space:nowrap}
-  #msg{font-size:13px;color:var(--sub)}
+  .kk i{font-style:normal;color:var(--sub);font-size:13px}
+  kbd{font:600 13px/1 inherit;font-family:inherit;color:var(--ink);background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.14);border-bottom-width:2px;border-radius:4px;padding:3px 5px;white-space:nowrap}
+  #msg{font-size:15px;color:var(--sub)}
   #msg.ok{color:var(--ok)} #msg.bad{color:var(--bad)}
   a.dl{display:inline-block;background:var(--ok);color:#1c1917;font-weight:700;padding:7px 12px;border-radius:8px;text-decoration:none}
   .marks{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
-  .marks .mk{border-color:#ef4444;color:#fca5a5;padding:4px 8px;font-size:12px}
+  .marks .mk{border-color:#ef4444;color:#fca5a5;padding:4px 8px;font-size:14px}
   hr{border:0;border-top:1px solid var(--line);margin:12px 0}
 </style>
 </head>
@@ -483,7 +483,7 @@ function drawTL() {
   // 자세히 보기
   tctx.setTransform(dpr, 0, 0, dpr, 0, 0); tctx.clearRect(0, 0, w, h);
   const tx = f => (f - tlStart) / tlSpan * w;
-  tctx.fillStyle = "#57534e"; tctx.font = "10px sans-serif";
+  tctx.fillStyle = "#57534e"; tctx.font = "12px sans-serif";
   const step = niceStep(tlSpan / M.fps / 8);
   for (let t = Math.ceil(tlStart / M.fps / step) * step; t * M.fps < tlStart + tlSpan; t += step) {
     const x = tx(t * M.fps); tctx.fillRect(x, 0, 1, h); tctx.fillStyle = "#a8a29e"; tctx.fillText(fmt(Math.round(t * M.fps)), x + 3, 10); tctx.fillStyle = "#57534e";
