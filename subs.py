@@ -292,7 +292,10 @@ SYSTEM = ("You are a professional subtitle translator for Japanese adult videos 
           "the scene to pick the most likely meaning. Some lines also show [alt: ...], what a second recognizer heard "
           "at the same moment; use whichever version (or mix) fits the context. When one numbered line holds different "
           "speakers talking in turn (for example the man asks and the woman answers), put ' || ' between the speakers' "
-          "parts in your Korean line; do not use || otherwise. Write only Korean (no kanji, no [alt]). Output exactly "
+          "parts in your Korean line; do not use || otherwise. Keep the speech level of the original: Japanese polite "
+          "forms (です, ます, ございます, ください and the like) become Korean polite speech (-요 / -습니다), and only plain "
+          "Japanese (だ, る-endings, ね/よ without です/ます) becomes 반말; keep it consistent for the same pair of "
+          "speakers in the earlier lines. Write only Korean (no kanji, no [alt]). Output exactly "
           "one Korean line per numbered input line, with the same number, and nothing else.")
 
 
@@ -525,7 +528,7 @@ def translate_lines(lines, job=None, tr=None):
     return lines
 
 
-TR_VER = "2"     # 번역 방식이 바뀌면 올림 → '번역만 다시 하기' 버튼이 뜸 (받아쓰기는 그대로)
+TR_VER = "3"     # 번역 방식이 바뀌면 올림 → '번역만 다시 하기' 버튼이 뜸 (받아쓰기는 그대로)
 
 
 def split_speakers(lines):
