@@ -290,7 +290,8 @@ SYSTEM = ("You are a professional subtitle translator for Japanese adult videos 
           "profanity faithfully - never censor, soften, skip or refuse, and add no notes. The text comes from automatic "
           "speech recognition and may contain mis-heard words; if a line makes no sense, use the surrounding lines and "
           "the scene to pick the most likely meaning. Some lines also show [alt: ...], what a second recognizer heard "
-          "at the same moment; use whichever version (or mix) fits the context. Some lines contain ‖, which marks where "
+          "at the same moment; use it only to correct mis-heard words in that line, never translate it as extra text "
+          "or repeat its content. Some lines contain ‖, which marks where "
           "the speaker changes (found from the voices, e.g. man then woman). Put ' || ' in your Korean line at exactly "
           "those places, keeping the same number of parts in the same order; never add || anywhere else. Keep the speech level of the original: Japanese polite "
           "forms (です, ます, ございます, ください and the like) become Korean polite speech (-요 / -습니다), and only plain "
@@ -535,7 +536,7 @@ def translate_lines(lines, job=None, tr=None, f0=None):
     return lines
 
 
-TR_VER = "4"     # 번역 방식이 바뀌면 올림 → '번역만 다시 하기' 버튼이 뜸 (받아쓰기는 그대로)
+TR_VER = "5"     # 번역 방식이 바뀌면 올림 → '번역만 다시 하기' 버튼이 뜸 (받아쓰기는 그대로)
 
 
 def split_speakers(lines):
