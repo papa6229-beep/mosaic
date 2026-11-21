@@ -31,15 +31,23 @@ import queue, platform
 from fractions import Fraction
 
 
-def frames(src, depth=16, table=None):
+def det_size(W, H):
+    """위치 찾기용 크기: 탐지 모델은 어차피 640(노출은 320)으로 줄여서 보므로, 4K 같은 큰 영상은 절반으로 줄여 풀어서 넘김 (탐지 결과는 같고 훨씬 빠름)"""
+    if W <= 2200:
+        return W, H
+    return W // 4 * 2, H // 4 * 2
+
+
+def frames(src, depth=16, table=None, size=None):
     """영상 프레임을 다른 일과 동시에 미리 읽어 둠 (읽는 시간만큼 빨라짐).
     그리기 단계와 똑같이 ffmpeg로 풀고, 프레임마다 시간을 table에 기록 (다른 단계에서 프레임 번호를 정확히 맞추는 데 씀)"""
     info = media.probe(src)
-    W, H = info["W"], info["H"]
+    W, H = size or (info["W"], info["H"])
+    vf = f"scale={W}:{H}:flags=area" if (W, H) != (info["W"], info["H"]) else None
     q = queue.Queue(maxsize=depth)
 
     def reader():
-        d = Dec(src, 0, 10 ** 9, W, H, info["fps"], seek=False, threads=max(2, min(8, (os.cpu_count() or 4) // 2)), mi=info)   # 혼자 읽으니까 CPU를 넉넉히
+        d = Dec(src, 0, 10 ** 9, W, H, info["fps"], seek=False, threads=max(2, min(8, (os.cpu_count() or 4) // 2)), mi=info, vf=vf)   # 혼자 읽으니까 CPU를 넉넉히
         while True:
             got = d.read()
             if got is None:
@@ -274,7 +282,12 @@ def detect_all(src, job, n, proxy=None, table=None):
             nude = None
     last_e = {"must": [], "faces": []}
     t0 = time.time()
-    it = frames(src, table=table)
+    inf_ = media.probe(src)
+    Wd, Hd = det_size(inf_["W"], inf_["H"])
+    k_ = inf_["W"] / Wd                                  # 줄여서 찾은 위치를 원래 크기로 되돌리는 배율
+    sb = (lambda b: [v * k_ for v in b[:4]] + list(b[4:])) if k_ != 1 else (lambda b: b)
+    sp = (lambda p: [[round(x * k_), round(y * k_)] for x, y in p] if p else p) if k_ != 1 else (lambda p: p)
+    it = frames(src, table=table, size=(Wd, Hd))
     while True:
         f = next(it, None)
         if f is not None:
@@ -283,12 +296,14 @@ def detect_all(src, job, n, proxy=None, table=None):
                 proxy.put(f)
         if batch and (len(batch) == 8 or f is None):
             for k, (b, allb) in enumerate(detect(batch)):
-                boxes[str(i + k)] = b
-                all_boxes[str(i + k)] = allb
+                boxes[str(i + k)] = sb(b) if b else b
+                all_boxes[str(i + k)] = [sb(a[:5]) + [sp(a[5]) if len(a) > 5 else None] for a in allb] if k_ != 1 else allb
             if nude is not None:
                 try:
                     sel = [k for k in range(len(batch)) if (i + k) % NUDE_EVERY == 0]
                     res = dict(zip(sel, nude.detect([batch[k] for k in sel]))) if sel else {}
+                    if k_ != 1:
+                        res = {kk: {"must": [sb(b) for b in e["must"]], "faces": [(c, sb(b)) for c, b in e["faces"]]} for kk, e in res.items()}
                     for k in range(len(batch)):
                         if k in res:
                             last_e = res[k]
@@ -330,8 +345,9 @@ class Dec:
     시간으로 건너뛰면 영상 형식에 따라 1~2프레임 어긋날 수 있어서, 1초 앞에서부터 풀고 각 프레임의 시간을 보고 번호를 맞춤.
     table(위치 찾기 단계에서 기록한 프레임별 시간)이 있으면 그걸로 번호를 찾음 (시간이 고르지 않은 영상도 정확)"""
 
-    def __init__(self, src, start, count, W, H, fps, pix_fmt="bgr24", fsz=None, t0=0.0, table=None, seek=True, threads=2, mi=None):
+    def __init__(self, src, start, count, W, H, fps, pix_fmt="bgr24", fsz=None, t0=0.0, table=None, seek=True, threads=2, mi=None, vf=None):
         self.src, self.start, self.end, self.fps, self.t0 = src, start, start + count, fps, t0
+        self.vf = vf
         self.pix_fmt, self.fsz = pix_fmt, fsz or W * H * 3
         self.W, self.H, self.conv = W, H, None
         # BGR이 필요할 때: ffmpeg에서 BGR로 바꿔 넘기면 한 장이 6MB라 윈도우에서 넘기는 통로가 막힘 →
@@ -358,7 +374,7 @@ class Dec:
                                    "-filter_threads", str(max(1, self.threads)), "-copyts",
                                    *(["-hwaccel", "cuda"] if _hw_for(self.src) else []),          # 그래픽카드로 풀기 (CPU로 푼 것과 같은 걸 확인한 영상만)
                                    *(["-ss", f"{ss:.6f}"] if ss > 0 else []), "-i", self.src, "-map", "0:v:0",
-                                   "-vf", "showinfo=checksum=0", "-fps_mode", "passthrough",   # 프레임을 복제·생략하지 않고 풀린 그대로
+                                   "-vf", (self.vf + "," if self.vf else "") + "showinfo=checksum=0", "-fps_mode", "passthrough",   # 프레임을 복제·생략하지 않고 풀린 그대로
                                    "-f", "rawvideo", "-pix_fmt", self.pix_fmt, "-"],
                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=self.fsz * 4)
         self.tq = queue.Queue()
@@ -860,8 +876,8 @@ def run_job(jid, src, params):
                 try:
                     mi0 = media.probe(src)
                     c_ = cv2.VideoCapture(src)
-                    px = ProxyWriter(os.path.join(JOBS, jid, "proxy.mp4"), int(c_.get(cv2.CAP_PROP_FRAME_WIDTH)),
-                                     int(c_.get(cv2.CAP_PROP_FRAME_HEIGHT)), mi0["fps_str"])
+                    px = ProxyWriter(os.path.join(JOBS, jid, "proxy.mp4"), *det_size(int(c_.get(cv2.CAP_PROP_FRAME_WIDTH)),
+                                     int(c_.get(cv2.CAP_PROP_FRAME_HEIGHT))), mi0["fps_str"])
                     c_.release()
                 except Exception:
                     traceback.print_exc()
