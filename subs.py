@@ -225,10 +225,18 @@ def transcribe(wav, dur, job=None):
     out = os.path.join(os.path.dirname(wav), "wj")
     shutil.rmtree(out, ignore_errors=True)
     os.makedirs(out, exist_ok=True)
-    cmd = [py, "-m", "whisperjav.main", wav, *WJ_ARGS, "--output-dir", out]
+    # 생성기는 임시 폴더를 자기 폴더(tmp)로 바꿔 두는데, 그 경로에 한글·띄어쓰기가 있으면 WhisperJAV 가 실패함
+    # → WhisperJAV 에는 윈도우 기본 임시 폴더(영문 경로)를 쓰게 하고, CPU 를 1개만 쓰게 하는 설정도 빼서 넘김
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS")}
+    sys_tmp = os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), "Temp")
+    if os.name == "nt" and os.path.isdir(sys_tmp):
+        env["TEMP"] = env["TMP"] = sys_tmp
+    log = os.path.join(out, "whisperjav_log.txt")
+    cmd = [py, "-m", "whisperjav.main", wav, *WJ_ARGS, "--output-dir", out, "--log-file", log]
     _log(job, "말 받아 적기 준비 중 (처음엔 받아쓰기 모델을 받느라 오래 걸려요)", 2)
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="ignore",
-                         env={**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"},
+                         env={**env, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"},
                          creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     pas, tail, t0 = 1, [], time.time()
     for line in p.stdout:

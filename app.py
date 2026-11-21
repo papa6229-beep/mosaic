@@ -872,6 +872,18 @@ sub_state = {}
 sub_lock = threading.Lock()
 
 
+def _free_gpu():
+    global _model
+    _model = None
+    try:
+        import gc, torch
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+
 def start_subs(jid, src):
     """자막 만들기를 뒤에서 시작 (한 번에 하나씩). 진행 상황은 sub_state[jid]"""
     st = sub_state.get(jid)
@@ -884,6 +896,7 @@ def start_subs(jid, src):
         with sub_lock:
             try:
                 import subs
+                _free_gpu()                     # 탐지 모델이 차지한 그래픽카드 메모리를 비워서 받아쓰기 모델이 들어갈 자리 확보
                 subs.make_subtitles(src, os.path.join(JOBS, jid, "subs.json"), st)
             except Exception as e:
                 st.update(sub_done=True, sub_error=st.get("sub_error") or str(e)[:300])
