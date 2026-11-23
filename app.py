@@ -1374,8 +1374,9 @@ def review_subs(jid):
     if data is not None:
         import subs
         data["current"] = data.get("asr") == subs.asr_id()     # 지금 받아쓰기 방식으로 만든 자막인지
-        data["tr_current"] = data.get("tr") == subs.tr_id()    # 지금 번역 방식·번역 모델로 번역한 자막인지
+        data["tr_current"] = data.get("tr") == subs.tr_id() and data.get("post", subs.POST_VER) == subs.POST_VER   # 지금 번역·정리 방식인지
         data.pop("asr_lines", None)
+        data.pop("tr_lines", None)
     return jsonify(subs=data, state=sub_state.get(jid))
 
 

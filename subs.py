@@ -636,7 +636,7 @@ def fix_japanese(lines, tr, job=None):
     return lines
 
 
-def translate_lines(lines, job=None, tr=None, f0=None, prof=None):
+def translate_lines(lines, job=None, tr=None, f0=None, prof=None, skip_fix=False):
     """f0: 목소리 높이 기록 (voice.pitch_track). 있으면 줄 안에서 남/여가 바뀌는 곳을 ‖ 로 표시해서 번역기에 넘김"""
     import voice
     import profiles
@@ -644,7 +644,7 @@ def translate_lines(lines, job=None, tr=None, f0=None, prof=None):
     own = tr is None
     tr = tr or Translator(job)
     try:
-        if lines and lines[0].get("lang", "ja") == "ja":
+        if lines and lines[0].get("lang", "ja") == "ja" and not skip_fix:
             fix_japanese(lines, tr, job)
         for l in lines:
             src = clean_ja(l["src"])
@@ -681,7 +681,9 @@ def translate_lines(lines, job=None, tr=None, f0=None, prof=None):
     return lines
 
 
-TR_VER = "9"     # 번역 방식이 바뀌면 올림 → '번역만 다시 하기' 버튼이 뜸 (받아쓰기는 그대로)
+TR_VER = "9"
+POST_VER = "1"   # 번역 뒤 정리(기호 지우기·나누기 등)만 바뀌면 올림 → 번역 모델을 다시 돌리지 않고 몇 초 만에 다시 정리
+FIX_VER = "1"    # 일본어 다듬기 방식이 바뀌면 올림 (그대로면 번역 다시 할 때 다듬은 일본어를 다시 씀)     # 번역 방식이 바뀌면 올림 → '번역만 다시 하기' 버튼이 뜸 (받아쓰기는 그대로)
 
 
 def split_speakers(lines):
@@ -780,6 +782,20 @@ def make_subtitles(src, out_json, job=None, profile=None, retranslate=False):
                 old = json.load(open(out_json, encoding="utf-8"))
             except Exception:
                 old = None
+        if (old and not retranslate and old.get("asr") == asr_id() and old.get("tr") == tr_id()
+                and old.get("post") != POST_VER and old.get("tr_lines")):
+            lines = [dict(l) for l in old["tr_lines"]]          # 번역은 그대로, 정리만 다시 (몇 초)
+            for l in lines:
+                l["ko"] = clean_ko(profiles.apply_replace(l.get("ko") or "", prof))
+            lines = resegment(split_speakers(lines))
+            old.update(lines=lines, post=POST_VER)
+            old.pop("lines_orig", None)
+            json.dump(old, open(out_json, "w", encoding="utf-8"), ensure_ascii=False)
+            _log(job, f"자막 다시 정리 끝 ({len(lines)}줄)", 100)
+            if job is not None:
+                job["sub_done"] = True
+            return lines
+        skip_fix = False
         rebuilt = None
         if old and old.get("asr") in ("wj1.10.2/3",) and old.get("asr") != asr_id():    # 받아쓰기 결과 파일은 그대로 있고 합치는 방식만 바뀜 → 다시 받아쓰지 않음
             rebuilt = lines_from_wj(os.path.join(d, "wj"))
@@ -790,6 +806,12 @@ def make_subtitles(src, out_json, job=None, profile=None, retranslate=False):
         elif (old and old.get("asr") == asr_id() and (old.get("asr_lines") or old.get("lines"))
                 and (retranslate or not old.get("translated") or old.get("tr") != tr_id())):
             lines = [dict(l) for l in (old.get("asr_lines") or old["lines"])]   # 받아쓰기는 그대로 → 번역만 다시
+            if old.get("tr_lines") and old.get("fix") == FIX_VER and len(old["tr_lines"]) == len(lines):
+                for l, t in zip(lines, old["tr_lines"]):       # 다듬어 둔 일본어 다시 씀 (다듬기 단계 건너뜀)
+                    l["src"] = t.get("src", l["src"])
+                    if t.get("src_asr"):
+                        l["src_asr"] = t["src_asr"]
+                skip_fix = True
             for l in lines:
                 l.pop("ko", None)
             _log(job, f"받아 적은 {len(lines)}줄로 번역만 다시 해요 (컨셉: {prof.get('name', '')})", 60)
@@ -813,9 +835,11 @@ def make_subtitles(src, out_json, job=None, profile=None, retranslate=False):
             f0 = voice.pitch_track(wav, f0c)
         except Exception:
             traceback.print_exc()
-        translate_lines(lines, job, f0=f0, prof=prof)
-        lines = resegment(split_speakers(lines))
-        json.dump({"lines": lines, "asr_lines": raw, "translated": True, "asr": asr_id(), "tr": tr_id(),
+        translate_lines(lines, job, f0=f0, prof=prof, skip_fix=skip_fix)
+        tr_lines = [{k: v for k, v in l.items() if k not in ("src_t",)} for l in lines]
+        lines = resegment(split_speakers([dict(l) for l in lines]))
+        json.dump({"lines": lines, "asr_lines": raw, "tr_lines": tr_lines, "translated": True, "asr": asr_id(), "tr": tr_id(),
+                   "post": POST_VER, "fix": FIX_VER,
                    "profile": prof.get("id"), "profile_name": prof.get("name"), "pver": profiles.version(prof)},
                   open(out_json, "w", encoding="utf-8"), ensure_ascii=False)
         _log(job, f"자막 완성 ({len(lines)}줄)", 100)

@@ -29,6 +29,19 @@ def record(jid, job_dir, orig, lines):
     os.makedirs(TM_DIR, exist_ok=True)
     json.dump(tmp, open(os.path.join(TM_DIR, jid + ".json"), "w", encoding="utf-8"), ensure_ascii=False)
     wav = os.path.join(job_dir, "audio16k.wav")
+    if asr and not os.path.exists(wav):                   # 소리 파일이 없으면 원본에서 꺼냄 (16kHz 한 채널)
+        try:
+            import subprocess
+            src = json.load(open(os.path.join(job_dir, "review.json"), encoding="utf-8"))["src"]
+            try:
+                import imageio_ffmpeg
+                ff = imageio_ffmpeg.get_ffmpeg_exe()
+            except Exception:
+                ff = "ffmpeg"
+            subprocess.run([ff, "-y", "-loglevel", "error", "-i", src, "-vn", "-ac", "1", "-ar", "16000", "-sample_fmt", "s16", wav],
+                           timeout=1800)
+        except Exception:
+            pass
     if asr and os.path.exists(wav):
         cd = os.path.join(ASR_DIR, "clips")
         os.makedirs(cd, exist_ok=True)
