@@ -25,20 +25,21 @@ JA_CONTEXT = ("アダルトビデオの会話。よく出る言葉: 気持ちい
               "もっと、奥、中に出して、おっぱい、乳首、おちんちん、まんこ、クリ、お尻、濡れてる、硬い、大きい、気持ちいいところ、"
               "禁欲、男優さん、感触、生、ベッド、パンツ、キス、フェラ、潮吹き、敏感、くすぐったい、エッチ、可愛い、綺麗")
 PASS1_MODEL = "jaykwok/Qwen3-ASR-1.7B-JA-Anime-Galgame"
+# 말소리 찾기: WhisperSeg (일본어 ASMR 약 500시간으로 훈련 — 속삭이는 목소리용, WhisperJAV 제공). 두 받아쓰기 모두
 VAD_TH = 0.25      # 말소리로 인정하는 기준 (낮을수록 속삭임까지 잡음). WhisperJAV 게시판 #425 JAV 시험 값
 WJ_ARGS = ["--ensemble", "--language", "japanese",
            # 1차: 애니·미연시 목소리로 다시 훈련한 Qwen3-ASR (숨소리·속삭임 섞인 목소리를 일반 모델보다 잘 듣게) + 작은 소리도 말로 인정 (기본보다 낮은 기준)
            "--pass1-pipeline", "qwen", "--pass1-qwen-params", json.dumps({"model_id": PASS1_MODEL, "vad_threshold": VAD_TH}),
            "--pass1-sensitivity", "aggressive",
-           "--pass1-scene-detector", "semantic", "--pass1-speech-segmenter", "firered-vad",
+           "--pass1-scene-detector", "semantic", "--pass1-speech-segmenter", "whisperseg",
            "--pass2-pipeline", "qwen", "--pass2-qwen-params", json.dumps({"generator_backend": "anime-whisper", "vad_threshold": VAD_TH}),
            "--pass2-sensitivity", "aggressive",
-           "--pass2-scene-detector", "semantic", "--pass2-speech-segmenter", "ten",
+           "--pass2-scene-detector", "semantic", "--pass2-speech-segmenter", "whisperseg",
            "--merge-strategy", "pass1_primary"]
 TR_REPO = "HauhauCS/Qwen3.5-9B-Uncensored-HauhauCS-Aggressive"   # 번역: 검열 해제된 Qwen3.5 9B
 TR_FILE = "Qwen3.5-9B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf"
 TR_MB = 5300
-ASR_VER = "wj1.10.2/5"   # 받아쓰기 방식이 바뀌면 올림 → 예전 방식으로 만든 자막은 '다시 만들기' 버튼이 뜸
+ASR_VER = "wj1.10.2/6"   # 받아쓰기 방식이 바뀌면 올림 → 예전 방식으로 만든 자막은 '다시 만들기' 버튼이 뜸
 
 
 def asr_id():
