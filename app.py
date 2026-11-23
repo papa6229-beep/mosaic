@@ -1301,7 +1301,7 @@ def review_subs_line_tr(jid):
         sub_lock.release()
 
 
-def start_subs(jid, src, profile=None, retranslate=False):
+def start_subs(jid, src, profile=None, retranslate=False, fresh=False):
     """자막 만들기를 뒤에서 시작 (한 번에 하나씩). 진행 상황은 sub_state[jid]"""
     st = sub_state.get(jid)
     if st and not st.get("sub_done"):
@@ -1317,7 +1317,7 @@ def start_subs(jid, src, profile=None, retranslate=False):
                 if not any(not v.get("sub_done") for k, v in sub_state.items() if k != jid):
                     _kill_leftovers()           # 앞에서 멈춘 자막 작업이 남긴 프로그램이 메모리를 잡고 있으면 정리
                 _free_gpu()                     # 탐지 모델이 차지한 그래픽카드 메모리를 비워서 받아쓰기 모델이 들어갈 자리 확보
-                subs.make_subtitles(src, os.path.join(JOBS, jid, "subs.json"), st, profile, retranslate)
+                subs.make_subtitles(src, os.path.join(JOBS, jid, "subs.json"), st, profile, retranslate, fresh)
             except Exception as e:
                 st.update(sub_done=True, sub_error=st.get("sub_error") or str(e)[:300])
     threading.Thread(target=run, daemon=True).start()
@@ -1411,7 +1411,7 @@ def review_subs_make(jid):
         return jsonify(error="없는 작업"), 404
     r = json.load(open(os.path.join(d, "review.json"), encoding="utf-8"))
     b = request.get_json(silent=True) or {}
-    return jsonify(state=start_subs(jid, r["src"], b.get("profile"), bool(b.get("retranslate"))))
+    return jsonify(state=start_subs(jid, r["src"], b.get("profile"), bool(b.get("retranslate")), bool(b.get("fresh"))))
 
 
 # ---------------- 처음 준비 (설치 후 한 번: 쓸 것만 미리 받아 두기) ----------------

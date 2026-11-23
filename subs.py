@@ -967,7 +967,7 @@ def resegment(lines):
 
 
 # ---------------- 전체 ----------------
-def make_subtitles(src, out_json, job=None, profile=None, retranslate=False):
+def make_subtitles(src, out_json, job=None, profile=None, retranslate=False, fresh=False):
     """영상 → subs.json. job 에 sub_msg / sub_pct / sub_done / sub_error 를 기록.
     profile: 자막 컨셉 이름(없으면 기본). retranslate: 받아쓰기는 그대로 두고 번역만 다시 (다른 컨셉으로 바꿀 때)"""
     import profiles
@@ -976,7 +976,12 @@ def make_subtitles(src, out_json, job=None, profile=None, retranslate=False):
     wav = os.path.join(d, "audio16k.wav")
     try:
         old = None
-        if os.path.exists(out_json):
+        if fresh:                                  # 처음부터: 저장된 받아쓰기·번역 결과를 하나도 안 씀
+            for x in ("wj", "wj_re"):
+                shutil.rmtree(os.path.join(d, x), ignore_errors=True)
+            if os.path.exists(out_json):           # 예전 자막은 화면에서 치우고 한 벌만 남겨 둠
+                os.replace(out_json, out_json[:-5] + ".prev.json")
+        if os.path.exists(out_json) and not fresh:
             try:
                 old = json.load(open(out_json, encoding="utf-8"))
             except Exception:
