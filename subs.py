@@ -367,6 +367,32 @@ def _messages(batch, ctx, src, extra=""):
     return [{"role": "system", "content": SYSTEM.format(s=s) + extra}, {"role": "user", "content": u}]
 
 
+def clean_ja(t):
+    """번역에 넘기기 전 일본어 정리: 2차 받아쓰기가 붙이는 말줄임표(…)·문장부호만 있는 조각 정리"""
+    t = re.sub(r"[.．・]{2,}|…+", "…", t or "")
+    t = re.sub(r"^[\s…、。,，.!！?？]+", "", t)
+    t = re.sub(r"(…\s*[、。])+", "…", t)
+    t = re.sub(r"[\s…、]+$", "", t)
+    return t.strip()
+
+
+def clean_ko(t):
+    """번역 결과 정리: 일본어 문장부호·쓸데없는 기호 지우기, 줄 앞뒤 말줄임표 지우기 (방송본부 자막처럼). 화자 표시 ' || ' 는 남김"""
+    t = (t or "").replace("‖", "||")
+    t = re.sub(r"[\u3000-\u303f\uff61-\uff65]", " ", t)                      # 、。「」 같은 일본어 부호
+    t = re.sub(r"(?<!\|)\|(?!\|)", " ", t)                                    # 혼자 있는 | 는 지움
+    parts = []
+    for p in t.split("||"):
+        p = re.sub(r"\.{2,}|…+", "…", p)
+        p = re.sub(r"^[\s…,.!?~-]+", "", p)
+        p = re.sub(r"[\s…,~]+$", "", p).strip()
+        p = re.sub(r"\s*…\s*", " ", p).strip()                                 # 가운데 말줄임표는 띄어쓰기로
+        p = re.sub(r"\s{2,}", " ", p)
+        if re.search(r"[가-힣A-Za-z0-9]", p):
+            parts.append(p)
+    return " || ".join(parts)
+
+
 def _parse(out, n):
     out = re.sub(r"<think>.*?</think>", "", out, flags=re.S)
     got = {}
@@ -375,7 +401,7 @@ def _parse(out, n):
         if m and 1 <= int(m.group(1)) <= n:
             t = re.sub(r"\[alt:[^\]]*\]?", "", m.group(2))            # 2차 받아쓰기 표시가 따라 나오면 지움
             t = re.sub(r"[\u3040-\u30ff\u3400-\u9fff]+", "", t)      # 한자·가나가 섞여 나오면 지움 (예: 正真的한)
-            got[int(m.group(1)) - 1] = re.sub(r"\s{2,}", " ", t).strip()
+            got[int(m.group(1)) - 1] = clean_ko(t)
     return got
 
 
@@ -617,7 +643,9 @@ def translate_lines(lines, job=None, tr=None, f0=None, prof=None):
         if lines and lines[0].get("lang", "ja") == "ja":
             fix_japanese(lines, tr, job)
         for l in lines:
-            tn = voice.turns(l["src"], l["start"], l["end"], f0) if f0 is not None else [(None, l["src"])]
+            src = clean_ja(l["src"])
+            tn = voice.turns(src, l["start"], l["end"], f0) if f0 is not None else [(None, src)]
+            tn = [x for x in tn if re.search(r"[\u3040-\u30ff\u3400-\u9fffA-Za-z0-9]", x[1])] or [(None, src)]   # 부호만 남은 조각은 버림
             l["turns"] = [t[0] for t in tn]
             l["src_t"] = " ‖ ".join(t[1] for t in tn)
         t0 = time.time()
@@ -649,7 +677,7 @@ def translate_lines(lines, job=None, tr=None, f0=None, prof=None):
     return lines
 
 
-TR_VER = "6"     # 번역 방식이 바뀌면 올림 → '번역만 다시 하기' 버튼이 뜸 (받아쓰기는 그대로)
+TR_VER = "7"     # 번역 방식이 바뀌면 올림 → '번역만 다시 하기' 버튼이 뜸 (받아쓰기는 그대로)
 
 
 def split_speakers(lines):

@@ -1286,8 +1286,10 @@ def review_subs_line_tr(jid):
         prof = profiles.get(b.get("profile"))
         ctx = [(c[0], c[1]) for c in (b.get("ctx") or [])][-subs.CTX:]
         import tm
-        ko = line_tr["tr"].translate([src], ctx, "ja", profiles.prompt_part(prof) + tm.prompt_for([src]))[0]
-        ko = profiles.apply_replace(ko, prof).strip().rstrip(".")
+        ko = line_tr["tr"].translate([subs.clean_ja(src)], ctx, "ja", profiles.prompt_part(prof) + tm.prompt_for([src]))[0]
+        parts = [x.strip() for x in subs.clean_ko(profiles.apply_replace(ko, prof)).split("||") if x.strip()]
+        ko = ("- " + parts[0] + "\n- " + parts[1]) if len(parts) == 2 else " ".join(parts)
+        ko = ko.rstrip(".")
         if "\n" not in ko and len(ko) > subs.MAXL:
             ko = "\n".join(subs._wrap2(ko))
         line_tr["last"] = time.time()
