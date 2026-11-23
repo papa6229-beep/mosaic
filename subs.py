@@ -538,7 +538,7 @@ class Translator:
         import models
         gpu = ["-ngl", "999"] if models.tr_model().get("gpu_all", False) else []   # 큰 모델: llama.cpp가 그래픽카드·메모리에 알아서 나눠 올림 (--fit)
         self.p = subprocess.Popen([exe, "-m", gguf, "--port", str(LLAMA_PORT), "--host", "127.0.0.1", *gpu,
-                                   "-c", "8192"], stdout=self.log, stderr=self.log, creationflags=flags)
+                                   "-c", "8192", "--reasoning-budget", "0"], stdout=self.log, stderr=self.log, creationflags=flags)
         t0 = time.time()
         while time.time() - t0 < 300:
             if self.p.poll() is not None:
@@ -561,15 +561,24 @@ class Translator:
         body = json.dumps({"messages": messages, "max_tokens": max_tokens, "temperature": 0.3, "top_p": 0.8, "top_k": 20,
                            "min_p": 0, "chat_template_kwargs": {"enable_thinking": False}}).encode("utf-8")
         req = urllib.request.Request(self.url + "/v1/chat/completions", data=body, headers={"Content-Type": "application/json"})
+        t0 = time.time()
         with urllib.request.urlopen(req, timeout=300) as r:
-            return json.load(r)["choices"][0]["message"].get("content") or ""
+            d = json.load(r)
+        self.calls = getattr(self, "calls", 0) + 1
+        self.toks = getattr(self, "toks", 0) + int((d.get("usage") or {}).get("completion_tokens") or 0)
+        self.secs = getattr(self, "secs", 0.0) + (time.time() - t0)
+        return d["choices"][0]["message"].get("content") or ""
+
+    def speed(self):
+        """지금까지 번역 모델 속도 (글자 조각/초, 부른 횟수) — 느릴 때 원인 보려고"""
+        return (getattr(self, "toks", 0) / max(0.1, getattr(self, "secs", 0.0)), getattr(self, "calls", 0))
 
     def translate(self, batch, ctx, src="ja", extra=""):
         """여러 줄을 한 번에 (앞 대사를 같이 보여 줘서 흐름에 맞게) → 줄마다 한국어. 번호가 빠진 줄은 한 줄씩 다시"""
         got = _parse(self.chat(_messages(batch, ctx, src, extra), 80 * len(batch) + 64), len(batch))
         res = []
         for i, t in enumerate(batch):
-            if not got.get(i):
+            if i not in got:                  # 번호 자체가 빠진 줄만 다시 (일부러 비운 줄 — 신음 등 — 은 그대로)
                 one = _parse(self.chat(_messages([t], (ctx + list(zip(batch[:i], res)))[-CTX:], src, extra), 120), 1)
                 got[i] = one.get(0, "")
             res.append(got[i])
@@ -673,7 +682,8 @@ def translate_lines(lines, job=None, tr=None, f0=None, prof=None, skip_fix=False
                 done.append((l["src"], ko))
             n = min(k + BATCH, len(lines))
             left = (time.time() - t0) / n * (len(lines) - n)
-            _log(job, f"한국어로 번역 중 {n}/{len(lines)}줄 · 남은 시간 약 {int(left // 60)}분 {int(left % 60)}초",
+            sp_, nc_ = tr.speed()
+            _log(job, f"한국어로 번역 중 {n}/{len(lines)}줄 · 남은 시간 약 {int(left // 60)}분 {int(left % 60)}초 · 번역 모델 초당 {sp_:.0f}토큰, {nc_}번 호출",
                  75 + int(n * 24 / max(len(lines), 1)))
     finally:
         if own:
