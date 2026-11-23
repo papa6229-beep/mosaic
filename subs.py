@@ -894,13 +894,25 @@ def translate_lines(lines, job=None, tr=None, f0=None, prof=None, skip_fix=False
             _log(job, f"한국어로 번역 중 {n}/{len(lines)}줄 · 남은 시간 약 {int(left // 60)}분 {int(left % 60)}초 · 번역 모델 초당 {sp_:.0f}토큰, {nc_}번 호출"
                  + (f", 생각함 {th_}번" if th_ else ", 생각 안 함") + (f" · {tr.where}" if getattr(tr, "where", "") else ""),
                  75 + int(n * 24 / max(len(lines), 1)))
+        alts = [i for i, l in enumerate(lines) if l.get("alt")]     # 다르게 들은 말도 미리 번역해 둠 → 화면의 '이 말로 바꾸기'가 바로 바뀜
+        for k in range(0, len(alts), BATCH):
+            ids = alts[k:k + BATCH]
+            _log(job, f"다르게 들은 말도 미리 번역 중 {min(k + BATCH, len(alts))}/{len(alts)}줄 (검수 때 바로 바꿔 쓰게)", 99)
+            try:
+                ctx = [(lines[j]["src"], lines[j].get("ko", "")) for j in range(max(0, ids[0] - CTX), ids[0])]
+                kos = tr.translate([clean_ja(lines[i]["alt"]) for i in ids], ctx, lines[ids[0]].get("lang", "ja"), extra)
+                for i, ko in zip(ids, kos):
+                    ko = ko.replace("||", " ").strip()
+                    lines[i]["alt_ko"] = profiles.apply_replace(ko, prof) if prof else ko
+            except Exception as e:
+                print("다르게 들은 말 번역 실패 (검수 때 버튼으로 번역):", e)
     finally:
         if own:
             tr.close()
     return lines
 
 
-TR_VER = "11"
+TR_VER = "12"    # 12: 다르게 들은 말도 미리 번역(alt_ko)
 POST_VER = "2"   # 번역 뒤 정리(기호 지우기·나누기 등)만 바뀌면 올림 → 번역 모델을 다시 돌리지 않고 몇 초 만에 다시 정리
 FIX_VER = "1"
 FIX_SEPARATE = False   # 일본어 다듬기를 따로 한 번 더 돌리지 않음 (번역 모델을 두 번 부르느라 2배 걸렸음)    # 일본어 다듬기 방식이 바뀌면 올림 (그대로면 번역 다시 할 때 다듬은 일본어를 다시 씀)     # 번역 방식이 바뀌면 올림 → '번역만 다시 하기' 버튼이 뜸 (받아쓰기는 그대로)
