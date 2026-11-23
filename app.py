@@ -1211,6 +1211,37 @@ def _kill_leftovers():
     return n
 
 
+# ---------- 자막 화면 소리 그림: 말소리 대역(300~4000Hz) 크기를 0.05초마다 + 자막 없는데 소리 있는 곳 ----------
+@app.get("/review/<jid>/wave")
+def review_wave(jid):
+    import numpy as np, wave as wv
+    d = _jdir(jid)
+    if not d:
+        return jsonify(error="없는 작업"), 404
+    cp = os.path.join(d, "wave.json")
+    if os.path.exists(cp):
+        return Response(open(cp, encoding="utf-8").read(), mimetype="application/json")
+    wav = os.path.join(d, "audio16k.wav")
+    if not os.path.exists(wav):
+        import subs
+        r = json.load(open(os.path.join(d, "review.json"), encoding="utf-8"))
+        subs.extract_audio(r["src"], wav)
+    with wv.open(wav) as w:
+        sr = w.getframerate()
+        x = np.frombuffer(w.readframes(w.getnframes()), np.int16).astype(np.float32) / 32768
+    hop = sr // 20                                             # 0.05초
+    n = len(x) // hop
+    fr = x[:n * hop].reshape(n, hop) * np.hanning(hop)
+    sp = np.abs(np.fft.rfft(fr, axis=1)) ** 2
+    f = np.fft.rfftfreq(hop, 1 / sr)
+    e = 10 * np.log10(sp[:, (f >= 300) & (f <= 4000)].sum(1) + 1e-10)
+    floor = float(np.percentile(e, 20))
+    v = np.clip((e - floor) / 40, 0, 1)                        # 바닥 소음 0, +40dB 1
+    out = {"hop": 0.05, "v": [int(round(t * 100)) for t in v], "th": 0.3}   # th: 이 이상이면 '소리 있음' (바닥보다 12dB)
+    json.dump(out, open(cp, "w"))
+    return jsonify(out)
+
+
 # ---------- 한 줄만 번역 (자막 화면에서 '다른 받아쓰기로 바꾸기') — 번역 모델을 띄워 두고 5분 쉬면 내림 ----------
 line_tr = {"tr": None, "last": 0.0}
 

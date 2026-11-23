@@ -40,7 +40,9 @@
   .ctl{display:flex;align-items:center;gap:6px;margin-top:8px;flex-wrap:wrap}
   .tc{font-variant-numeric:tabular-nums;color:var(--sub);margin-left:6px}
   .tc b{color:var(--ink)}
-  #tlc{display:block;width:100%;height:46px;margin-top:8px;background:var(--panel);border-radius:8px;cursor:pointer}
+  #tlc{display:block;width:100%;height:170px;margin-top:6px;background:var(--panel);border-radius:8px;cursor:pointer}
+  .tlbar{display:flex;align-items:center;gap:8px;margin-top:8px;font-size:14px;color:var(--sub);flex-wrap:wrap}
+  .tlbar .gapc{color:#f87171;font-weight:600}
   .box{background:var(--panel);border-radius:8px;padding:10px 12px;margin-top:8px}
   .box h2{font-size:15px;margin:0 0 6px;color:var(--acc)}
   .muted{color:var(--sub);font-size:14px}
@@ -108,7 +110,9 @@
       <select id="speed"><option value="0.5">0.5배</option><option value="0.75">0.75배</option><option value="1" selected>1배</option><option value="1.5">1.5배</option><option value="2">2배</option></select>
       <span class="tc"><b id="tc">0:00:00.0</b></span>
     </div>
-    <canvas id="tlc" title="자막이 있는 곳 (누르면 그 위치로)"></canvas>
+    <div class="tlbar"><span>소리·자막</span><button id="zOut" title="더 넓게 보기 (휠)">－</button><button id="zIn" title="더 자세히 보기 (휠)">＋</button><span id="zSpan"></span>
+      <span style="flex:1"></span><span class="gapc" id="gapN"></span><button id="bGap" title="소리는 있는데 자막이 없는 다음 곳으로 (G)">다음 빈 곳 ▶ (G)</button></div>
+    <canvas id="tlc" title="위: 전체 · 아래: 지금 위치 앞뒤 (소리 크기 + 자막). 빨간 곳 = 소리는 있는데 자막이 없는 곳. 누르면 그 위치로, 휠로 넓게/자세히"></canvas>
 
     <div class="box" id="makeBox" style="display:none">
       <h2>자막 만들기</h2>
@@ -433,29 +437,78 @@ $("bLang").onclick = () => { showKo = !showKo; $("bLang").textContent = "화면:
 $("bUndo").onclick = undo;
 
 // ---------- 아래 막대 (자막 위치 한눈에) ----------
+// ---------- 소리·자막 타임라인 ----------
+let WV = null, SPAN = 20, GAPS = [], gapKey = "";
+fetch(`/review/${JID}/wave`).then(r => r.json()).then(d => { if (d.v) { WV = d; drawTL(); } }).catch(() => {});
+function calcGaps() {        // 소리는 있는데 자막이 없는 곳 (0.4초 이상)
+  const key = L.length + ":" + L.reduce((a, l) => a + l.start + l.end, 0);
+  if (!WV || key === gapKey) return; gapKey = key;
+  const hop = WV.hop, th = WV.th * 100, cov = new Uint8Array(WV.v.length);
+  L.forEach(l => { for (let k = Math.max(0, Math.floor((l.start - 0.3) / hop)); k < Math.min(cov.length, Math.ceil((l.end + 0.3) / hop)); k++) cov[k] = 1; });
+  GAPS = []; let st = -1, gap = 0;
+  for (let k = 0; k <= WV.v.length; k++) {
+    const on = k < WV.v.length && WV.v[k] >= th && !cov[k];
+    if (on) { if (st < 0) st = k; gap = 0; }
+    else if (st >= 0 && ++gap > 6) { const e = k - gap + 1; if ((e - st) * hop >= 0.4) GAPS.push([st * hop, e * hop]); st = -1; gap = 0; }
+  }
+  $("gapN").textContent = GAPS.length ? `빈 곳 ${GAPS.length}군데` : "";
+}
 function drawTL() {
   const c = $("tlc"), w = c.clientWidth, h = c.clientHeight, dpr = devicePixelRatio || 1;
-  if (c.width !== w * dpr) { c.width = w * dpr; c.height = h * dpr; }
+  if (c.width !== w * dpr || c.height !== h * dpr) { c.width = w * dpr; c.height = h * dpr; }
   const x = c.getContext("2d"); x.setTransform(dpr, 0, 0, dpr, 0, 0); x.clearRect(0, 0, w, h);
   const D = V.duration || (L.length ? L[L.length - 1].end : 1);
-  // 지금 위치 앞뒤 30초를 크게, 위쪽 얇은 줄은 전체
-  const t = V.currentTime, span = 30, a = Math.max(0, Math.min(t - span / 2, D - span)), sx = s => (s - a) / span * w;
-  x.fillStyle = "#57534e"; x.fillRect(0, 6, w, 2);
-  L.forEach((l, i) => { x.fillStyle = i === sel ? "#38bdf8" : "#a8a29e"; x.fillRect(l.start / D * w, 4, Math.max(1, (l.end - l.start) / D * w), 6); });
-  x.fillStyle = "#f59e0b"; x.fillRect(t / D * w - 1, 0, 2, 12);
+  calcGaps();
+  const OV = 22, top = OV + 6;
+  // 위: 전체
+  x.fillStyle = "#3a3633"; x.fillRect(0, 9, w, 4);
+  GAPS.forEach(g => { x.fillStyle = "#ef4444"; x.fillRect(g[0] / D * w, 3, Math.max(2, (g[1] - g[0]) / D * w), 16); });
+  L.forEach((l, i) => { x.fillStyle = i === sel ? "#38bdf8" : "#a8a29e"; x.fillRect(l.start / D * w, 6, Math.max(1, (l.end - l.start) / D * w), 10); });
+  const t = V.currentTime, span = SPAN, a = Math.max(0, Math.min(t - span / 2, D - span)), sx = s => (s - a) / span * w;
+  x.strokeStyle = "#f59e0b"; x.lineWidth = 1; x.strokeRect(a / D * w, 1, Math.max(3, span / D * w), OV - 2);
+  // 아래: 지금 위치 앞뒤 — 소리 크기
+  const H2 = h - top, mid = top + H2 * 0.62;
+  if (WV) {
+    const hop = WV.hop, k0 = Math.max(0, Math.floor(a / hop)), k1 = Math.min(WV.v.length, Math.ceil((a + span) / hop)), bw = Math.max(1, w / ((k1 - k0) || 1));
+    for (let k = k0; k < k1; k++) {
+      const v = WV.v[k] / 100, hh = v * H2 * 0.58;
+      x.fillStyle = v >= WV.th ? "#a8a29e" : "#57534e";
+      x.fillRect(sx(k * hop), mid - hh, bw, hh * 1.6);
+    }
+    x.fillStyle = "rgba(255,255,255,.12)"; x.fillRect(0, mid - WV.th * H2 * 0.58, w, 1);
+  }
+  GAPS.forEach(g => { if (g[1] < a || g[0] > a + span) return; x.fillStyle = "rgba(239,68,68,.28)"; x.fillRect(sx(g[0]), top, sx(g[1]) - sx(g[0]), H2); });
+  // 자막 칸
   L.forEach((l, i) => {
     if (l.end < a || l.start > a + span) return;
-    x.fillStyle = i === sel ? "#0369a1" : "#44403c"; x.fillRect(sx(l.start), 16, Math.max(2, sx(l.end) - sx(l.start)), h - 18);
-    x.fillStyle = "#fafaf9"; x.font = "11px sans-serif"; x.save(); x.beginPath(); x.rect(sx(l.start), 16, sx(l.end) - sx(l.start), h - 18); x.clip();
-    x.fillText(l.ko || l.src || "", sx(l.start) + 3, 33); x.restore();
+    const y = top + 4, hh = 30;
+    x.fillStyle = i === sel ? "rgba(3,105,161,.92)" : "rgba(68,64,60,.88)"; x.fillRect(sx(l.start), y, Math.max(2, sx(l.end) - sx(l.start)), hh);
+    x.fillStyle = "#fafaf9"; x.font = "14px sans-serif"; x.save(); x.beginPath(); x.rect(sx(l.start), y, sx(l.end) - sx(l.start), hh); x.clip();
+    x.fillText((l.ko || l.src || "").replace(/\n/g, " "), sx(l.start) + 4, y + 20); x.restore();
   });
-  x.fillStyle = "#f59e0b"; x.fillRect(sx(t) - 1, 14, 2, h - 14);
-  c._map = { a, span, D, w };
+  // 시간 눈금
+  x.fillStyle = "#948d85"; x.font = "12px sans-serif";
+  const step = span <= 10 ? 1 : span <= 30 ? 5 : span <= 90 ? 10 : 30;
+  for (let s2 = Math.ceil(a / step) * step; s2 < a + span; s2 += step) { x.fillRect(sx(s2), h - 6, 1, 6); x.fillText(fmt(s2).replace(/\.\d$/, ""), sx(s2) + 3, h - 6); }
+  x.fillStyle = "#f59e0b"; x.fillRect(t / D * w - 1, 0, 2, OV); x.fillRect(sx(t) - 1, top, 2, H2);
+  $("zSpan").textContent = `앞뒤 ${span}초`;
+  c._map = { a, span, D, w, OV };
 }
+function zoom(f) { SPAN = Math.max(5, Math.min(180, Math.round(SPAN * f))); drawTL(); }
+$("zIn").onclick = () => zoom(0.66); $("zOut").onclick = () => zoom(1.5);
+$("tlc").addEventListener("wheel", e => { e.preventDefault(); zoom(e.deltaY > 0 ? 1.25 : 0.8); }, { passive: false });
+function nextGap() {
+  calcGaps();
+  const g = GAPS.find(g => g[0] > V.currentTime + 0.2) || GAPS[0];
+  if (!g) { msg("소리는 있는데 자막이 없는 곳이 없어요", "ok"); return; }
+  V.pause(); V.currentTime = Math.max(0, g[0] - 0.3); tick();
+  msg(`빈 곳 ${GAPS.indexOf(g) + 1}/${GAPS.length} — 들어 보고 대사면 '+ 지금 위치에 줄 추가'`, "ok");
+}
+$("bGap").onclick = nextGap;
 $("tlc").addEventListener("mousedown", e => {
   const m = $("tlc")._map; if (!m) return;
   const r = $("tlc").getBoundingClientRect(), px = e.clientX - r.left;
-  const t = e.clientY - r.top < 14 ? px / m.w * m.D : m.a + px / m.w * m.span;
+  const t = e.clientY - r.top < m.OV ? px / m.w * m.D : m.a + px / m.w * m.span;
   const i = idxAt(t); if (i >= 0) setSel(i, false);
   V.currentTime = Math.max(0, t); tick();
 });
@@ -476,6 +529,7 @@ document.addEventListener("keydown", e => {
     if (sel >= 0) i += k === "ArrowUp" ? -1 : 1;
     setSel(Math.max(0, Math.min(L.length - 1, i)), true);
   }
+  else if (k === "g" || k === "G") nextGap();
   else if ((k === "[" || k === "]") && sel >= 0) { snap(); setTime(sel, k === "[" ? "start" : "end", V.currentTime); }
   else if (k === "Enter" && sel >= 0) { e.preventDefault(); const r = rowEl(sel); if (r) r.querySelector("textarea").focus(); }
   else if ((k === "r" || k === "R") && sel >= 0) { setSel(sel, true); V.play(); }
