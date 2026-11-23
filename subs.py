@@ -35,7 +35,7 @@ WJ_ARGS = ["--ensemble", "--language", "japanese",
 TR_REPO = "HauhauCS/Qwen3.5-9B-Uncensored-HauhauCS-Aggressive"   # 번역: 검열 해제된 Qwen3.5 9B
 TR_FILE = "Qwen3.5-9B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf"
 TR_MB = 5300
-ASR_VER = "wj1.10.2/3"   # 받아쓰기 방식이 바뀌면 올림 → 예전 방식으로 만든 자막은 '다시 만들기' 버튼이 뜸
+ASR_VER = "wj1.10.2/4"   # 받아쓰기 방식이 바뀌면 올림 → 예전 방식으로 만든 자막은 '다시 만들기' 버튼이 뜸
 
 
 def asr_id():
@@ -285,15 +285,32 @@ def transcribe(wav, dur, job=None, words=None):
             pass
         errs = [t for t in tail if "ERROR" in t or "Error" in t or "error:" in t]
         raise RuntimeError("받아쓰기 실패: " + (why or " / ".join((errs or tail)[-3:]))[-500:])
-    def find(suffix):
-        return next((os.path.join(out, f) for f in os.listdir(out) if f.endswith(suffix)), None)
-    main = _read_srt(find(".merged.whisperjav.srt")) or _read_srt(find(".pass1.srt"))
-    other = _read_srt(find(".pass2.srt"))
+    main = lines_from_wj(out)
     if not main:
         raise RuntimeError("받아쓰기 결과가 비어 있어요 (말소리를 못 찾았거나 결과 파일이 없음): " + " / ".join(tail[-3:])[-300:])
+    return main
+
+
+def _overlaps(a, b):
+    return min(a["end"], b["end"]) - max(a["start"], b["start"]) > 0.3 * min(a["end"] - a["start"], b["end"] - b["start"])
+
+
+def lines_from_wj(out):
+    """받아쓰기 결과 파일 두 개(1차 Qwen3-ASR, 2차 anime-whisper)로 자막 줄 만들기.
+    2차를 기본으로 씀(실제 영상에서 2차가 더 정확했음, 2026-11-23). 2차가 비운 곳은 1차로 채워 대사를 놓치지 않고,
+    같은 곳을 1차가 다르게 들었으면 'alt'로 붙임"""
+    if not os.path.isdir(out):
+        return []
+    def find(suffix):
+        return next((os.path.join(out, f) for f in os.listdir(out) if f.endswith(suffix)), None)
+    p1 = _read_srt(find(".pass1.srt")) or _read_srt(find(".merged.whisperjav.srt"))
+    p2 = _read_srt(find(".pass2.srt"))
+    main = [dict(l) for l in p2] + [dict(l) for l in p1 if not any(_overlaps(l, m) for m in p2)]
+    main.sort(key=lambda l: l["start"])
     for l in main:
         l["lang"] = "ja"
-    return _attach_alt(main, other)
+        l.pop("alt", None)
+    return _attach_alt(main, p1)
 
 
 # ---------------- 번역 ----------------
@@ -702,7 +719,14 @@ def make_subtitles(src, out_json, job=None, profile=None, retranslate=False):
                 old = json.load(open(out_json, encoding="utf-8"))
             except Exception:
                 old = None
-        if (old and old.get("asr") == asr_id() and (old.get("asr_lines") or old.get("lines"))
+        rebuilt = None
+        if old and old.get("asr") in ("wj1.10.2/3",) and old.get("asr") != asr_id():    # 받아쓰기 결과 파일은 그대로 있고 합치는 방식만 바뀜 → 다시 받아쓰지 않음
+            rebuilt = lines_from_wj(os.path.join(d, "wj"))
+        if rebuilt:
+            lines = rebuilt
+            _log(job, f"받아쓴 결과({len(lines)}줄)를 2차 기준으로 다시 맞추고 번역해요 (받아쓰기는 다시 안 함)", 60)
+            json.dump({"lines": lines, "translated": False, "asr": asr_id()}, open(out_json, "w", encoding="utf-8"), ensure_ascii=False)
+        elif (old and old.get("asr") == asr_id() and (old.get("asr_lines") or old.get("lines"))
                 and (retranslate or not old.get("translated") or old.get("tr") != TR_VER)):
             lines = [dict(l) for l in (old.get("asr_lines") or old["lines"])]   # 받아쓰기는 그대로 → 번역만 다시
             for l in lines:
