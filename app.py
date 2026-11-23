@@ -928,6 +928,9 @@ def run_job(jid, src, params):
     if run_lock.locked():
         job["msg"] = "앞 작업이 끝나길 기다리는 중"
     with run_lock:
+        while any(not v.get("sub_done") for k, v in list(sub_state.items()) if k != jid):   # 앞 영상의 자막까지 끝난 뒤에 (하나씩 차례로 — 밤새 돌려도 메모리 안 모자라게)
+            job["msg"] = "앞 영상의 자막이 끝나길 기다리는 중"
+            time.sleep(3)
         job["msg"] = "시작하는 중"
         os.environ["MOSAIC_FULL"] = "1" if night["on"] else "0"
         try:
@@ -1042,20 +1045,38 @@ def index():
     return Response(open(os.path.join(BASE, "index.html"), encoding="utf-8").read(), mimetype="text/html")
 
 
+VIDEO_EXT = (".mp4", ".mxf", ".mov", ".mkv", ".avi", ".m4v", ".ts", ".mts", ".m2ts", ".wmv")
+
+
 @app.post("/start")
 def start():
+    path = (request.form.get("path") or "").strip().strip('"')
+    if path and os.path.isdir(path):                  # 폴더를 넣으면 안의 영상 전부를 이름 순서대로 줄 세움
+        vs = sorted(f for f in os.listdir(path) if f.lower().endswith(VIDEO_EXT) and os.path.isfile(os.path.join(path, f)))
+        if not vs:
+            return jsonify(error="그 폴더에 영상 파일이 없어요: " + path), 400
+        try:
+            return jsonify(jobs=[_start_one(os.path.join(path, f)) for f in vs])
+        except ValueError as e:
+            return jsonify(error=str(e)), 400
+    if path and not os.path.exists(path):
+        return jsonify(error="그 경로에 파일이 없어요: " + path), 400
+    try:
+        return jsonify(job=_start_one(path or None))
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
+
+
+def _start_one(path):
     jid = uuid.uuid4().hex[:8]
     d = os.path.join(JOBS, jid)
     os.makedirs(d)
-    path = (request.form.get("path") or "").strip().strip('"')
     if path:
-        if not os.path.exists(path):
-            return jsonify(error="그 경로에 파일이 없어요: " + path), 400
         src = path
     else:
         f = request.files.get("file")
         if not f:
-            return jsonify(error="영상 파일을 선택해 주세요"), 400
+            raise ValueError("영상 파일을 선택해 주세요")
         src = os.path.join(d, os.path.basename(f.filename) or "input.mp4")
         f.save(src)
     if request.form.get("mode") == "subs":              # 자막만: 블러 없이 자막 작업만 (검수 화면 대신 자막 화면으로)
@@ -1065,15 +1086,15 @@ def start():
                        "n": int(round(info.get("duration", 0) * info["fps"])) or int(cv2.VideoCapture(src).get(cv2.CAP_PROP_FRAME_COUNT)),
                        "out": "", "params": {}, "mode": "subs"}, open(os.path.join(d, "review.json"), "w", encoding="utf-8"), ensure_ascii=False)
         except Exception as e:
-            return jsonify(error="영상을 읽지 못했어요: " + str(e)[:200]), 400
+            raise ValueError("영상을 읽지 못했어요: " + str(e)[:200])
         state[jid] = {"pct": 100, "msg": "자막만 만들기", "done": True, "name": os.path.basename(src), "added": time.time(),
                       "main": True, "mode": "subs"}
         start_subs(jid, src, request.form.get("profile"))
-        return jsonify(job=jid)
+        return jid
     state[jid] = {"pct": 0, "msg": "앞 작업이 끝나길 기다리는 중", "done": False, "name": os.path.basename(src),
                   "added": time.time(), "main": True, "subs_on": request.form.get("subs") == "1"}
-    threading.Thread(target=run_job, args=(jid, src, request.form), daemon=True).start()
-    return jsonify(job=jid)
+    threading.Thread(target=run_job, args=(jid, src, request.form.to_dict()), daemon=True).start()
+    return jid
 
 
 night = {"on": False}     # 밤샘 모드: 켜 두면 다음 단계부터 CPU를 전부, 보통 우선순위로 씀 (컴퓨터를 안 쓸 때)

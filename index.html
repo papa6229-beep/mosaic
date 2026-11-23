@@ -151,8 +151,9 @@
     </div>
     <input id="file" type="file" accept="video/*,.mxf,.MXF" multiple class="hide">
     <div id="picked"></div>
-    <details class="pathbox"><summary>파일 경로로 넣기 — 큰 파일은 이쪽이 빨라요 (복사하지 않고 바로 읽음)</summary>
-      <textarea id="path" rows="2" placeholder="D:\영상\원본.mxf&#10;한 줄에 하나씩 여러 개 넣어도 돼요"></textarea>
+    <details class="pathbox" open><summary>파일 경로·폴더로 넣기 — 여러 개를 걸어 두면 하나 끝나면 다음 것을 알아서 이어서 해요</summary>
+      <textarea id="path" rows="3" placeholder="D:\영상\원본1.mxf&#10;D:\영상\원본2.mxf   ← 한 줄에 하나씩&#10;D:\영상\오늘할것   ← 폴더를 넣으면 안의 영상 전부"></textarea>
+      <small class="muted" style="display:block;margin-top:4px">탐색기에서 파일 여러 개를 고르고 Shift+오른쪽 클릭 → '경로로 복사' 한 뒤 여기에 붙여 넣으면 돼요. 복사하지 않고 원본을 바로 읽어서 큰 파일도 빨라요.</small>
     </details>
 
     <div class="opts">
