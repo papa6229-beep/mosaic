@@ -8,3 +8,6 @@ __pycache__/
 tools/llama/
 settings/
 cache/
+python/
+tools/whisperjav/
+tools/llama-cuda/

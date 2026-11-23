@@ -1124,68 +1124,6 @@ def _free_gpu():
         pass
 
 
-# 예전에 C드라이브 사용자 폴더(.cache)에 받아 둔 것 중 생성기가 쓰는 모델 → 생성기 폴더로 옮김 / 이제 안 쓰는 시험용 모델은 목록만
-USED_HF = ("models--Qwen--Qwen3-ASR-1.7B", "models--jaykwok--Qwen3-ASR-1.7B-JA-Anime-Galgame", "models--Qwen--Qwen3-ForcedAligner-0.6B",
-           "models--litagin--anime-whisper")
-OLD_HF_HINTS = ("faster-whisper", "kotoba-whisper", "anime-whisper-ct2", "translategemma", "anime-whisper-faster")
-cache_state = {"moving": "", "old": [], "moved": [], "checked": False}
-
-
-def _home_hub():
-    return os.path.join(os.path.expanduser("~"), ".cache", "huggingface", "hub")
-
-
-def _dir_gb(d):
-    t = 0
-    for r, _, fs in os.walk(d):
-        for f in fs:
-            try:
-                t += os.path.getsize(os.path.join(r, f))
-            except Exception:
-                pass
-    return round(t / 1e9, 1)
-
-
-def _move_caches():
-    src = _home_hub()
-    dst = os.path.join(CACHE, "huggingface", "hub")
-    if not os.path.isdir(src) or os.path.abspath(src) == os.path.abspath(dst):
-        return
-    with sub_lock:                               # 옮기는 동안 자막 작업은 기다림
-        for name in USED_HF:
-            a, b = os.path.join(src, name), os.path.join(dst, name)
-            if os.path.isdir(a) and not os.path.exists(b):
-                try:
-                    cache_state["moving"] = name.split("--")[-1]
-                    gb = _dir_gb(a)
-                    os.makedirs(dst, exist_ok=True)
-                    shutil.move(a, b)
-                    cache_state["moved"].append({"name": name.split("--")[-1], "gb": gb})
-                    print(f"  {name} 를 C드라이브에서 생성기 폴더로 옮겼어요")
-                except Exception as e:
-                    print("  모델 옮기기 실패:", e)
-        cache_state["moving"] = ""
-        cache_state["checked"] = True
-    try:
-        cache_state["old"] = [{"name": n, "gb": _dir_gb(os.path.join(src, n))} for n in sorted(os.listdir(src))
-                              if any(h in n.lower() for h in OLD_HF_HINTS)]
-    except Exception:
-        cache_state["old"] = []
-
-
-@app.route("/cache-old", methods=["GET", "POST"])
-def cache_old():
-    """C드라이브에 남은 예전 시험용 모델(지금은 안 씀): 목록 보기 / 누르면 지우기"""
-    if request.method == "POST":
-        src = _home_hub()
-        for o in list(cache_state["old"]):
-            p = os.path.join(src, o["name"])
-            if os.path.isdir(p) and o["name"] not in USED_HF:
-                shutil.rmtree(p, ignore_errors=True)
-        cache_state["old"] = [o for o in cache_state["old"] if os.path.isdir(os.path.join(src, o["name"]))]
-    return jsonify(cache_state)
-
-
 def _kill_leftovers():
     """생성기 창을 닫아도 남아서 메모리를 잡고 있는 자막 프로그램(받아쓰기·번역 모델)을 끔"""
     try:
@@ -1491,6 +1429,18 @@ def run_setup(what):
         st["running"] = False
 
 
+INSTALL_P = os.path.join(BASE, "settings", "install.json")
+
+
+def install_mode():
+    """설치할 때 고른 것: both / blur / subs (설치본이 아니면 None = 다 보임)"""
+    try:
+        m = json.load(open(INSTALL_P, encoding="utf-8")).get("mode")
+        return m if m in ("both", "blur", "subs") else None
+    except Exception:
+        return None
+
+
 @app.route("/setup", methods=["GET", "POST"])
 def setup():
     if request.method == "POST":
@@ -1501,7 +1451,7 @@ def setup():
             json.dump(d, open(SETUP_P, "w", encoding="utf-8"))
         elif what in ("blur", "subs", "both") and not setup_state["running"]:
             threading.Thread(target=run_setup, args=(what,), daemon=True).start()
-    return jsonify(done=_setup_done(), state=setup_state)
+    return jsonify(done=_setup_done(), state=setup_state, install=install_mode())
 
 
 # ---------------- 자막 컨셉 (팀 기준: 단어 사전·바꿔 쓰기·말투 메모·받아쓰기 힌트·SRT 예시) ----------------
@@ -1895,7 +1845,9 @@ if __name__ == "__main__":
         time.sleep(1.5)
     except Exception:
         pass
-    threading.Thread(target=_move_caches, daemon=True).start()
+    m = install_mode()
+    if m and not setup_state["running"] and not _setup_done().get(m if m != "both" else "subs"):
+        threading.Thread(target=run_setup, args=(m,), daemon=True).start()     # 설치 때 고른 것을 처음 켤 때 알아서 받아 둠
     try:   # 창을 닫아도 남아 있던 자막 프로그램(받아쓰기·번역)이 메모리를 잡고 있으면 끄기
         k = _kill_leftovers()
         if k:

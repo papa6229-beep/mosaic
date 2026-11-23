@@ -2,6 +2,7 @@
 chcp 65001 >nul
 cd /d "%~dp0"
 title Mosaic Generator
+if exist python\python.exe goto portable
 set REPO=https://github.com/papa6229-beep/mosaic
 
 rem ---- Git: auto install if missing ----
@@ -30,3 +31,19 @@ echo Update check failed - running current version.
 
 :run
 call run.bat
+exit /b 0
+
+rem ---- Installed version: portable Python in this folder, updates without Git ----
+:portable
+set PYTHONUTF8=1
+set PIP_NO_CACHE_DIR=1
+set TEMP=%~dp0tmp
+set TMP=%~dp0tmp
+if not exist tmp mkdir tmp
+echo Checking for updates ...
+python\python.exe tools\update.py update
+echo Starting ... browser will open.
+start "" http://127.0.0.1:7860
+python\python.exe app.py
+if errorlevel 1 pause
+exit /b 0
