@@ -244,6 +244,9 @@ def _wj_args(words=None):
     a = list(WJ_ARGS)
     i = a.index("--pass1-qwen-params") + 1
     a[i] = json.dumps({"model_id": models.asr_model_id(), "vad_threshold": VAD_TH})
+    if models.pass2() == "v2":                    # 2차를 Whisper large-v2 로 (배경음 큰 장면에 강함)
+        i0, i1 = a.index("--pass2-pipeline"), a.index("--merge-strategy")
+        a[i0:i1] = ["--pass2-pipeline", "balanced", "--pass2-model", "large-v2", "--pass2-sensitivity", "aggressive"]
     if models.enhancer() != "none":
         a += ["--pass1-speech-enhancer", models.enhancer(), "--pass2-speech-enhancer", models.enhancer()]
     if False and words:     # 꺼 둠: 힌트 글을 주면 조용한 구간·신음 구간에서 힌트 목록을 그대로 받아 적는 문제가 있었음 (2026-11-23 실제 영상)

@@ -60,8 +60,9 @@
     <h2>자막 모델 <span class="help" style="margin:0;font-weight:400;font-size:14px">— 팀 전체 설정 · 고른 모델은 다음 자막 작업 때 처음 한 번 자동으로 받아요</span></h2>
     <div class="mrow"><label>번역 모델</label><select id="mTr"></select></div>
     <div class="mrow hide" id="mFileRow"><label>GGUF 파일 위치</label><input type="text" id="mFile" placeholder="예: D:\모델\내모델-Q4_K_M.gguf"></div>
-    <div class="mrow"><label>받아쓰기 모델</label><select id="mAsr"></select></div>
+    <div class="mrow"><label>1차 받아쓰기</label><select id="mAsr"></select></div>
     <div class="mrow hide" id="mAsrRow"><label>모델 이름·폴더</label><input type="text" id="mAsrC" placeholder="허깅페이스 이름(예: 아이디/모델) 또는 훈련한 모델 폴더 위치"></div>
+    <div class="mrow"><label>2차 받아쓰기</label><select id="mP2"></select></div>
     <div class="mrow"><label>목소리만 걸러내기</label><select id="mEnh"></select></div>
     <p class="help" id="mNote" style="margin:10px 0 0"></p>
     <h3 style="margin-top:18px">모은 훈련 자료 <span class="help" style="margin:0;font-weight:400">자막 화면에서 고친 줄이 저절로 모여요</span></h3>
@@ -167,6 +168,7 @@ function loadModels() {
     MC = d.cfg;
     $("mTr").innerHTML = d.tr.map(m => `<option value="${m.id}">${esc(m.label)}${m.have ? " · 받아 둠" : ""}</option>`).join("");
     $("mAsr").innerHTML = d.asr.map(m => `<option value="${m.id}">${esc(m.label)}</option>`).join("");
+    $("mP2").innerHTML = d.p2.map(m => `<option value="${m.id}">${esc(m.label)}</option>`).join(""); $("mP2").value = MC.pass2 || "anime";
     $("mEnh").innerHTML = d.enh.map(m => `<option value="${m.id}">${esc(m.label)}</option>`).join("");
     $("mTr").value = MC.tr; $("mAsr").value = MC.asr; $("mEnh").value = MC.enhancer; $("mFile").value = MC.tr_file || ""; $("mAsrC").value = MC.asr_custom || "";
     showRows();
@@ -183,10 +185,10 @@ function showRows() {
 function saveModels() {
   showRows(); clearTimeout(mT);
   mT = setTimeout(() => fetch("/models", { method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ tr: $("mTr").value, tr_file: $("mFile").value.trim().replace(/^"|"$/g, ""), asr: $("mAsr").value, asr_custom: $("mAsrC").value.trim(), enhancer: $("mEnh").value }) })
+    body: JSON.stringify({ tr: $("mTr").value, tr_file: $("mFile").value.trim().replace(/^"|"$/g, ""), asr: $("mAsr").value, asr_custom: $("mAsrC").value.trim(), pass2: $("mP2").value, enhancer: $("mEnh").value }) })
     .then(() => { $("saved").textContent = "모델 설정 저장됨"; }), 400);
 }
-["mTr", "mAsr", "mEnh"].forEach(id => $(id).onchange = saveModels);
+["mTr", "mAsr", "mP2", "mEnh"].forEach(id => $(id).onchange = saveModels);
 ["mFile", "mAsrC"].forEach(id => $(id).oninput = saveModels);
 loadModels();
 loadList().then(loadOne);

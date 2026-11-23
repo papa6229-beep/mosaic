@@ -1508,7 +1508,7 @@ def models_cfg():
     if request.method == "POST":
         models.save(request.get_json(silent=True) or {})
     trs = [dict(m, have=bool(m.get("file") and os.path.exists(os.path.join(subs.TR_DIR, m["file"])))) for m in models.TR_MODELS]
-    return jsonify(cfg=models.load(), tr=trs, asr=models.ASR_MODELS, enh=models.ENHANCERS, train=tm.stats())
+    return jsonify(cfg=models.load(), tr=trs, asr=models.ASR_MODELS, p2=models.PASS2, enh=models.ENHANCERS, train=tm.stats())
 
 
 @app.get("/profiles")

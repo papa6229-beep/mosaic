@@ -23,12 +23,16 @@ ASR_MODELS = [
     {"id": "neosophie", "label": "Qwen3-ASR 1.7B JA (neosophie) — 이름·고유명사에 강함", "model_id": "neosophie/Qwen3-ASR-1.7B-JA"},
     {"id": "custom", "label": "직접 고른 모델 (허깅페이스 이름이나 우리 자료로 훈련한 모델 폴더)"},
 ]
+PASS2 = [
+    {"id": "anime", "label": "anime-whisper — 조용한 장면·속삭임에 강함 (지금, 기본으로 씀)"},
+    {"id": "v2", "label": "Whisper large-v2 — 배경음·잡음 큰 장면에 강함"},
+]
 ENHANCERS = [
     {"id": "none", "label": "끄기 (지금)"},
     {"id": "mel-band-roformer", "label": "목소리만 걸러내기 — Mel-Band RoFormer (시험)"},
     {"id": "htdemucs", "label": "목소리만 걸러내기 — Demucs (시험)"},
 ]
-DEFAULT = {"tr": "q9", "tr_file": "", "asr": "galgame", "asr_custom": "", "enhancer": "none"}
+DEFAULT = {"tr": "q9", "tr_file": "", "asr": "galgame", "asr_custom": "", "pass2": "anime", "enhancer": "none"}
 
 
 def load():
@@ -75,5 +79,10 @@ def tr_key():
     return m["id"] + (":" + os.path.basename(m.get("path", "")) if m["id"] == "file" else "")
 
 
+def pass2():
+    v = load().get("pass2", "anime")
+    return v if any(x["id"] == v for x in PASS2) else "anime"
+
+
 def asr_key():
-    return asr_model_id() + "|" + enhancer()
+    return asr_model_id() + "|" + enhancer() + ("" if pass2() == "anime" else "|p2=" + pass2())
