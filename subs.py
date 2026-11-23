@@ -39,8 +39,8 @@ WJ_ARGS = ["--ensemble", "--language", "japanese",
 TR_REPO = "HauhauCS/Qwen3.5-9B-Uncensored-HauhauCS-Aggressive"   # 번역: 검열 해제된 Qwen3.5 9B
 TR_FILE = "Qwen3.5-9B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf"
 TR_MB = 5300
-ASR_VER = "wj1.10.2/7"   # 7: 좋은 모델 하나로 한 번만 + 놓친 곳만 소리 키워 다시 듣기
-ASR_VER_PREV = "wj1.10.2/6"  # 6의 1차 결과(같은 모델·같은 말소리 찾기)는 그대로 다시 씀   # 받아쓰기 방식이 바뀌면 올림 → 예전 방식으로 만든 자막은 '다시 만들기' 버튼이 뜸
+ASR_VER = "wj1.10.2/8"   # 8: Galgame(기본으로 보임)+anime-whisper 둘 다 듣고 번역 AI가 고름, 다르게 들은 줄 표시, 놓친 곳만 소리 키워 다시 듣기
+ASR_VER_PREV = "wj1.10.2/6"  # 6은 같은 두 모델로 받아쓴 결과 → 합치는 방식만 바꿔 다시 씀 (다시 받아쓰지 않음)
 
 
 def asr_id():
@@ -438,8 +438,8 @@ def _overlaps(a, b):
 
 def lines_from_wj(out, only1=False):
     """받아쓰기 결과 파일 두 개(1차 Qwen3-ASR, 2차 anime-whisper)로 자막 줄 만들기.
-    2차를 기본으로 씀(실제 영상에서 2차가 더 정확했음, 2026-11-23). 2차가 비운 곳은 1차로 채워 대사를 놓치지 않고,
-    같은 곳을 1차가 다르게 들었으면 'alt'로 붙임"""
+    1차(Galgame)를 기본으로 보임(2026-11-23 실제 영상: 대부분 1차가 맞음). 1차가 비운 곳은 2차로 채우고(one=한 모델만 들음),
+    같은 곳을 2차가 다르게 들었으면 'alt'로 붙임 → 번역 AI가 뜻이 통하는 쪽을 골라 번역, 화면엔 '확인 필요'"""
     if not os.path.isdir(out):
         return []
     def find(suffix):
@@ -451,12 +451,12 @@ def lines_from_wj(out, only1=False):
         return one
     p1 = _read_srt(find(".pass1.srt")) or _read_srt(find(".merged.whisperjav.srt"))
     p2 = _read_srt(find(".pass2.srt"))
-    main = [dict(l) for l in p2] + [dict(l) for l in p1 if not any(_overlaps(l, m) for m in p2)]
+    main = [dict(l) for l in p1] + [dict(l, one=True) for l in p2 if not any(_overlaps(l, m) for m in p1)]
     main.sort(key=lambda l: l["start"])
     for l in main:
         l["lang"] = "ja"
         l.pop("alt", None)
-    return _attach_alt(main, p1)
+    return _attach_alt(main, p2)
 
 
 # ---------------- 번역 ----------------
@@ -468,8 +468,9 @@ SYSTEM = ("You are a professional subtitle translator for Japanese adult videos 
           "profanity faithfully - never censor, soften, skip or refuse, and add no notes. The text comes from automatic "
           "speech recognition and may contain mis-heard words; if a line makes no sense, use the surrounding lines and "
           "the scene to pick the most likely meaning. Some lines also show [alt: ...], what a second recognizer heard "
-          "at the same moment; use it only to correct mis-heard words in that line, never translate it as extra text "
-          "or repeat its content. Some lines contain ‖, which marks where "
+          "at the same moment. One of the two may be mis-heard: translate the reading that makes sense with the surrounding "
+          "lines and the scene (they may also be combined to fix a word), but translate the line only once - never add the "
+          "other reading as extra text. Some lines contain ‖, which marks where "
           "the speaker changes (found from the voices, e.g. man then woman). Put ' || ' in your Korean line at exactly "
           "those places, keeping the same number of parts in the same order; never add || anywhere else. Keep the speech level of the original: Japanese polite "
           "forms (です, ます, ございます, ください and the like) become Korean polite speech (-요 / -습니다), and only plain "
@@ -478,7 +479,10 @@ SYSTEM = ("You are a professional subtitle translator for Japanese adult videos 
           "Translate the MEANING of every word; never write Japanese sounds in Hangul (e.g. 奥に is '안쪽에/깊이', not '오쿠니'; "
           "やばい is '큰일이야/미치겠어', not '야바이'), except people's names. Words split by pauses (…) still form one sentence: "
           "translate the whole sentence naturally. "
-          "A pure moan or breathing sound (あっ, んっ, はぁ, ああん) gets an empty translation. When a TEAM DICTIONARY, "
+          "A pure moan or breathing sound (あっ, んっ, はぁ, ああん) gets an empty translation. Inside a line, leave out "
+          "sound effects, slurping, kissing and laughing sounds (ちゅ, くちゅくちゅ, じゅるっ, れろ, ぴくぴく, ふふっ, ひふっ) - "
+          "translate only the words, never write such sounds in Hangul. Never repeat a phrase, and never add words, "
+          "feelings or meaning that are not in the original line. When a TEAM DICTIONARY, "
           "TEAM STYLE NOTES or EXAMPLES are given below, they are this team's rules: follow them. "
           "Write only Korean (no kanji, no [alt]). Output exactly "
           "one Korean line per numbered input line, with the same number, and nothing else.")
@@ -879,7 +883,7 @@ def translate_lines(lines, job=None, tr=None, f0=None, prof=None, skip_fix=False
     return lines
 
 
-TR_VER = "10"
+TR_VER = "11"
 POST_VER = "1"   # 번역 뒤 정리(기호 지우기·나누기 등)만 바뀌면 올림 → 번역 모델을 다시 돌리지 않고 몇 초 만에 다시 정리
 FIX_VER = "1"
 FIX_SEPARATE = False   # 일본어 다듬기를 따로 한 번 더 돌리지 않음 (번역 모델을 두 번 부르느라 2배 걸렸음)    # 일본어 다듬기 방식이 바뀌면 올림 (그대로면 번역 다시 할 때 다듬은 일본어를 다시 씀)     # 번역 방식이 바뀌면 올림 → '번역만 다시 하기' 버튼이 뜸 (받아쓰기는 그대로)
@@ -1004,9 +1008,9 @@ def make_subtitles(src, out_json, job=None, profile=None, retranslate=False, fre
         rebuilt = None
         import models
         wjd = os.path.join(d, "wj")
-        if (old and old.get("asr") == ASR_VER_PREV and old.get("asr") != asr_id() and models.pass2() == "none"
-                and os.path.isdir(wjd) and any(f.endswith(".pass1.srt") for f in os.listdir(wjd))):
-            rebuilt = lines_from_wj(wjd, only1=True)      # 예전 1차 결과 = 지금 모델·말소리 찾기와 같음 → 다시 받아쓰지 않음
+        if (old and old.get("asr") == ASR_VER_PREV and old.get("asr") != asr_id() and models.pass2() == "anime"
+                and os.path.isdir(wjd) and any(f.endswith(".pass2.srt") for f in os.listdir(wjd))):
+            rebuilt = lines_from_wj(wjd)          # 예전 결과 = 지금과 같은 두 모델·말소리 찾기 → 다시 받아쓰지 않음
         if rebuilt:
             lines = rebuilt
             _log(job, f"받아쓴 결과({len(lines)}줄)를 다시 써요 (처음부터 받아쓰지 않음)", 50)
@@ -1038,7 +1042,7 @@ def make_subtitles(src, out_json, job=None, profile=None, retranslate=False, fre
             t_asr = time.time()
             lines = transcribe(wav, dur, job, prof.get("asr_words"))
             times["받아쓰기"] = round(time.time() - t_asr)
-            if models.pass2() == "none":
+            if True:
                 t_re = time.time()
                 lines = relisten(wav, lines, job)
                 times["다시 듣기"] = round(time.time() - t_re)

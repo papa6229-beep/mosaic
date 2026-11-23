@@ -111,7 +111,7 @@
       <span class="tc"><b id="tc">0:00:00.0</b></span>
     </div>
     <div class="tlbar"><span>소리·자막</span><button id="zOut" title="더 넓게 보기 (휠)">－</button><button id="zIn" title="더 자세히 보기 (휠)">＋</button><span id="zSpan"></span>
-      <span style="flex:1"></span><span class="gapc" id="gapN"></span><button id="bGap" title="소리는 있는데 자막이 없는 다음 곳으로 (G)">다음 빈 곳 ▶ (G)</button></div>
+      <span style="flex:1"></span><span class="gapc" id="gapN"></span><button id="bGap" title="소리는 있는데 자막이 없는 다음 곳으로 (G)">다음 빈 곳 ▶ (G)</button><button id="bChk" title="'확인 필요' 표시가 붙은 다음 줄로 (C)">다음 확인 필요 ▶ (C)</button></div>
     <canvas id="tlc" title="위: 전체 · 아래: 지금 위치 앞뒤 (소리 크기 + 자막). 빨간 곳 = 소리는 있는데 자막이 없는 곳. 누르면 그 위치로, 휠로 넓게/자세히"></canvas>
 
     <div class="box" id="makeBox" style="display:none">
@@ -291,8 +291,7 @@ function rowHTML(l, i) {
       <button class="sm danger" data-a="d" title="이 줄 삭제 (Del)">✕</button>
     </div>
     <div class="src" contenteditable="plaintext-only" spellcheck="false" title="원문 (${l.lang === "en" ? "영어" : "일본어"})">${esc(l.src)}</div>
-    ${l.alt ? `<div class="muted" style="font-size:11px;margin:0 0 2px 3px" title="다른 받아쓰기(Qwen3-ASR)가 같은 곳을 다르게 들은 말 — 번역 전에 흐름에 맞는 쪽으로 다듬었어요">다른 받아쓰기: ${esc(l.alt)}
-      <button class="sm" data-a="alt" style="margin-left:6px;padding:1px 8px;font-size:12px" title="이 줄을 '다른 받아쓰기'로 바꾸고 한국어도 그걸로 다시 번역해요">이 말로 바꾸기</button></div>` : ""}
+    ${l.alt || l.re || l.one ? `<div style="font-size:12px;margin:0 0 3px 3px;color:#ffb347" title="이 줄은 잘 들어 보고 확인해 주세요">⚠ 확인 필요 · ${l.alt ? "다르게 들은 말: " + esc(l.alt) : l.re ? "작은 소리라 키워서 다시 들어 찾은 말" : "한 받아쓰기만 들은 말"}</div>` : ""}
     <textarea rows="${Math.max(1, (l.ko || "").split("\n").length)}" placeholder="한국어 자막">${esc(l.ko)}</textarea>
   </div>`;
 }
@@ -505,6 +504,14 @@ function nextGap() {
   msg(`빈 곳 ${GAPS.indexOf(g) + 1}/${GAPS.length} — 들어 보고 대사면 '+ 지금 위치에 줄 추가'`, "ok");
 }
 $("bGap").onclick = nextGap;
+function nextCheck() {
+  const ck = L.map((l, i) => i).filter(i => L[i].alt || L[i].re || L[i].one);
+  const i = ck.find(i => L[i].start > V.currentTime + 0.2) ?? ck[0];
+  if (i === undefined) { msg("확인 필요한 줄이 없어요", "ok"); return; }
+  V.pause(); V.currentTime = Math.max(0, L[i].start - 0.2); tick();
+  msg(`확인 필요 ${ck.indexOf(i) + 1}/${ck.length} — ${i + 1}번 줄`, "ok");
+}
+$("bChk").onclick = nextCheck;
 $("tlc").addEventListener("mousedown", e => {
   const m = $("tlc")._map; if (!m) return;
   const r = $("tlc").getBoundingClientRect(), px = e.clientX - r.left;
@@ -530,6 +537,7 @@ document.addEventListener("keydown", e => {
     setSel(Math.max(0, Math.min(L.length - 1, i)), true);
   }
   else if (k === "g" || k === "G") nextGap();
+  else if (k === "c" || k === "C") nextCheck();
   else if ((k === "[" || k === "]") && sel >= 0) { snap(); setTime(sel, k === "[" ? "start" : "end", V.currentTime); }
   else if (k === "Enter" && sel >= 0) { e.preventDefault(); const r = rowEl(sel); if (r) r.querySelector("textarea").focus(); }
   else if ((k === "r" || k === "R") && sel >= 0) { setSel(sel, true); V.play(); }
