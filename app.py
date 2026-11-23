@@ -1210,6 +1210,62 @@ def _kill_leftovers():
     return n
 
 
+# ---------- 한 줄만 번역 (자막 화면에서 '다른 받아쓰기로 바꾸기') — 번역 모델을 띄워 두고 5분 쉬면 내림 ----------
+line_tr = {"tr": None, "last": 0.0}
+
+
+def _close_line_tr():
+    t = line_tr.get("tr")
+    line_tr["tr"] = None
+    if t is not None:
+        try:
+            t.close()
+        except Exception:
+            pass
+
+
+def _line_tr_idle():
+    while True:
+        time.sleep(30)
+        if line_tr["tr"] is not None and time.time() - line_tr["last"] > 300 and sub_lock.acquire(blocking=False):
+            try:
+                _close_line_tr()
+            finally:
+                sub_lock.release()
+
+
+threading.Thread(target=_line_tr_idle, daemon=True).start()
+
+
+@app.post("/review/<jid>/subs/line-tr")
+def review_subs_line_tr(jid):
+    import subs, profiles
+    b = request.get_json(silent=True) or {}
+    src = (b.get("src") or "").strip()
+    if not src:
+        return jsonify(ko="")
+    if not sub_lock.acquire(timeout=1):
+        return jsonify(error="자막을 만드는 중이라 끝난 뒤에 바꿀 수 있어요"), 409
+    try:
+        if line_tr["tr"] is None:
+            _free_gpu()
+            line_tr["tr"] = subs.Translator(None)
+        line_tr["last"] = time.time()
+        prof = profiles.get(b.get("profile"))
+        ctx = [(c[0], c[1]) for c in (b.get("ctx") or [])][-subs.CTX:]
+        ko = line_tr["tr"].translate([src], ctx, "ja", profiles.prompt_part(prof))[0]
+        ko = profiles.apply_replace(ko, prof).strip().rstrip(".")
+        if "\n" not in ko and len(ko) > subs.MAXL:
+            ko = "\n".join(subs._wrap2(ko))
+        line_tr["last"] = time.time()
+        return jsonify(ko=ko)
+    except Exception as e:
+        _close_line_tr()
+        return jsonify(error="번역 실패: " + str(e)[:200]), 500
+    finally:
+        sub_lock.release()
+
+
 def start_subs(jid, src, profile=None, retranslate=False):
     """자막 만들기를 뒤에서 시작 (한 번에 하나씩). 진행 상황은 sub_state[jid]"""
     st = sub_state.get(jid)
@@ -1222,6 +1278,7 @@ def start_subs(jid, src, profile=None, retranslate=False):
         with sub_lock:
             try:
                 import subs
+                _close_line_tr()                # 한 줄 번역용으로 띄워 둔 번역 모델은 내림 (같은 자리 씀)
                 if not any(not v.get("sub_done") for k, v in sub_state.items() if k != jid):
                     _kill_leftovers()           # 앞에서 멈춘 자막 작업이 남긴 프로그램이 메모리를 잡고 있으면 정리
                 _free_gpu()                     # 탐지 모델이 차지한 그래픽카드 메모리를 비워서 받아쓰기 모델이 들어갈 자리 확보
