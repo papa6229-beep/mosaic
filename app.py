@@ -1127,7 +1127,7 @@ def _free_gpu():
 # 예전에 C드라이브 사용자 폴더(.cache)에 받아 둔 것 중 생성기가 쓰는 모델 → 생성기 폴더로 옮김 / 이제 안 쓰는 시험용 모델은 목록만
 USED_HF = ("models--Qwen--Qwen3-ASR-1.7B", "models--Qwen--Qwen3-ForcedAligner-0.6B", "models--litagin--anime-whisper")
 OLD_HF_HINTS = ("faster-whisper", "kotoba-whisper", "anime-whisper-ct2", "translategemma", "anime-whisper-faster")
-cache_state = {"moving": "", "old": []}
+cache_state = {"moving": "", "old": [], "moved": [], "checked": False}
 
 
 def _home_hub():
@@ -1156,12 +1156,15 @@ def _move_caches():
             if os.path.isdir(a) and not os.path.exists(b):
                 try:
                     cache_state["moving"] = name.split("--")[-1]
+                    gb = _dir_gb(a)
                     os.makedirs(dst, exist_ok=True)
                     shutil.move(a, b)
+                    cache_state["moved"].append({"name": name.split("--")[-1], "gb": gb})
                     print(f"  {name} 를 C드라이브에서 생성기 폴더로 옮겼어요")
                 except Exception as e:
                     print("  모델 옮기기 실패:", e)
         cache_state["moving"] = ""
+        cache_state["checked"] = True
     try:
         cache_state["old"] = [{"name": n, "gb": _dir_gb(os.path.join(src, n))} for n in sorted(os.listdir(src))
                               if any(h in n.lower() for h in OLD_HF_HINTS)]

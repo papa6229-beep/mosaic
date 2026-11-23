@@ -373,12 +373,21 @@ function cdPoll() {
     const gb = c.old.reduce((a, o) => a + o.gb, 0);
     $("cdrive").classList.toggle("hide", skip || !c.old.length);
     $("cdMsg").textContent = `예전에 자막 방식을 시험하느라 C드라이브에 받아 둔 받아쓰기 모델 ${c.old.length}개(${gb.toFixed(1)}GB)가 남아 있어요. 지금은 안 쓰는 것들이라 지워도 돼요.`;
-    if (c.moving) { $("cdrive").classList.remove("hide"); $("cdMsg").textContent = `쓰는 모델(${c.moving})을 C드라이브에서 생성기 폴더로 옮기는 중…`; setTimeout(cdPoll, 2000); }
+    const mv = c.moved.reduce((a, o) => a + o.gb, 0);
+    if (c.moved.length && !c.moving) {
+      $("cdrive").classList.remove("hide");
+      $("cdMsg").textContent = `받아쓰기 모델 ${c.moved.length}개(${mv.toFixed(1)}GB)를 C드라이브에서 생성기 폴더로 다 옮겼어요.` +
+        (c.old.length && !skip ? ` 그리고 예전 시험용 모델 ${c.old.length}개(${gb.toFixed(1)}GB)가 C드라이브에 남아 있어요 — 지금은 안 쓰니 지워도 돼요.` : "");
+      $("cdDel").classList.toggle("hide", !c.old.length);
+    }
+    if (c.moving) { $("cdrive").classList.remove("hide"); $("cdDel").classList.add("hide"); $("cdMsg").textContent = `쓰는 받아쓰기 모델(${c.moving})을 C드라이브에서 생성기 폴더로 옮기는 중… (몇 분 걸려요)`; setTimeout(cdPoll, 2000); }
+    else if (!c.checked) setTimeout(cdPoll, 2000);
   }).catch(() => {});
 }
 $("cdDel").onclick = () => { if (!confirm("C드라이브에 남은 예전 시험용 받아쓰기 모델을 지울까요? (지금 생성기는 안 쓰는 것들이에요)")) return;
   $("cdMsg").textContent = "지우는 중…"; post("/cache-old").then(cdPoll); };
 $("cdLater").onclick = () => { try { localStorage.setItem("cdSkip", "1"); } catch (e) {} $("cdrive").classList.add("hide"); };
+$("cdLater").textContent = "닫기";
 setTimeout(cdPoll, 1500);
 setMode(mode); loadJobs(); pollQ();
 </script>
