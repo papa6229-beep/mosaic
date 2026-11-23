@@ -1119,6 +1119,31 @@ def _free_gpu():
         pass
 
 
+def _kill_leftovers():
+    """생성기 창을 닫아도 남아서 메모리를 잡고 있는 자막 프로그램(받아쓰기·번역 모델)을 끔"""
+    try:
+        import psutil
+    except Exception:
+        return 0
+    n = 0
+    me = os.getpid()
+    for p in psutil.process_iter(["pid", "name", "cmdline"]):
+        try:
+            if p.info["pid"] == me:
+                continue
+            cmd = " ".join(p.info.get("cmdline") or [])
+            name = (p.info.get("name") or "").lower()
+            if ("whisperjav.main" in cmd or "whisperjav" in cmd.lower() and "pass_worker" in cmd) or \
+                    (name.startswith("llama-server") and "8771" in cmd):
+                for c in p.children(recursive=True):
+                    c.kill()
+                p.kill()
+                n += 1
+        except Exception:
+            pass
+    return n
+
+
 def start_subs(jid, src, profile=None, retranslate=False):
     """자막 만들기를 뒤에서 시작 (한 번에 하나씩). 진행 상황은 sub_state[jid]"""
     st = sub_state.get(jid)
@@ -1131,6 +1156,8 @@ def start_subs(jid, src, profile=None, retranslate=False):
         with sub_lock:
             try:
                 import subs
+                if not any(not v.get("sub_done") for k, v in sub_state.items() if k != jid):
+                    _kill_leftovers()           # 앞에서 멈춘 자막 작업이 남긴 프로그램이 메모리를 잡고 있으면 정리
                 _free_gpu()                     # 탐지 모델이 차지한 그래픽카드 메모리를 비워서 받아쓰기 모델이 들어갈 자리 확보
                 subs.make_subtitles(src, os.path.join(JOBS, jid, "subs.json"), st, profile, retranslate)
             except Exception as e:
@@ -1686,6 +1713,12 @@ if __name__ == "__main__":
     try:   # 예전에 켜 둔 생성기가 남아 있으면 끄기
         urllib.request.urlopen(f"http://127.0.0.1:{port}/quit", timeout=2).read()
         time.sleep(1.5)
+    except Exception:
+        pass
+    try:   # 창을 닫아도 남아 있던 자막 프로그램(받아쓰기·번역)이 메모리를 잡고 있으면 끄기
+        k = _kill_leftovers()
+        if k:
+            print(f"  남아 있던 자막 프로그램 {k}개를 정리했어요")
     except Exception:
         pass
     print(f"\n  모자이크 생성기:  http://127.0.0.1:{port}\n")
