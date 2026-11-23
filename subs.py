@@ -19,8 +19,14 @@ MODELS = os.path.join(ROOT, "models")
 WJ_VER = "1.10.2"
 WJ_URL = f"https://github.com/meizhong986/WhisperJAV/releases/download/v{WJ_VER}/WhisperJAV-{WJ_VER}-Windows-x86_64.exe"
 WJ_DIR = os.path.join(ROOT, "tools", "whisperjav")       # 우리 폴더 안에 조용히 설치
+# 받아쓰기 힌트: 이 말들 쪽으로 더 잘 알아듣게 (Qwen3-ASR context). AV에 자주 나오는 말 + 전에 잘못 들었던 말
+JA_CONTEXT = ("アダルトビデオの会話。よく出る言葉: 気持ちいい、気持ちよすぎる、イク、イッちゃう、イキそう、見ちゃう、見ちゃおうかな、"
+              "見てもいいですか、恥ずかしい、我慢できない、ダメ、すごい、すごく、大丈夫、触って、舐めて、入れて、動いて、"
+              "もっと、奥、中に出して、おっぱい、乳首、おちんちん、まんこ、クリ、お尻、濡れてる、硬い、大きい、気持ちいいところ、"
+              "禁欲、男優さん、感触、生、ベッド、パンツ、キス、フェラ、潮吹き、敏感、くすぐったい、エッチ、可愛い、綺麗")
 WJ_ARGS = ["--ensemble", "--language", "japanese",
-           "--pass1-pipeline", "qwen", "--pass1-sensitivity", "aggressive",
+           "--pass1-pipeline", "qwen", "--pass1-qwen-params", json.dumps({"context": JA_CONTEXT}, ensure_ascii=False),
+           "--pass1-sensitivity", "aggressive",
            "--pass1-scene-detector", "semantic", "--pass1-speech-segmenter", "firered-vad",
            "--pass2-pipeline", "qwen", "--pass2-qwen-params", '{"generator_backend": "anime-whisper"}',
            "--pass2-sensitivity", "aggressive",
@@ -29,7 +35,7 @@ WJ_ARGS = ["--ensemble", "--language", "japanese",
 TR_REPO = "HauhauCS/Qwen3.5-9B-Uncensored-HauhauCS-Aggressive"   # 번역: 검열 해제된 Qwen3.5 9B
 TR_FILE = "Qwen3.5-9B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf"
 TR_MB = 5300
-ASR_VER = "wj1.10.2/1"   # 받아쓰기 방식이 바뀌면 올림 → 예전 방식으로 만든 자막은 '다시 만들기' 버튼이 뜸
+ASR_VER = "wj1.10.2/2"   # 받아쓰기 방식이 바뀌면 올림 → 예전 방식으로 만든 자막은 '다시 만들기' 버튼이 뜸
 
 
 def asr_id():
@@ -296,7 +302,14 @@ SYSTEM = ("You are a professional subtitle translator for Japanese adult videos 
           "those places, keeping the same number of parts in the same order; never add || anywhere else. Keep the speech level of the original: Japanese polite "
           "forms (です, ます, ございます, ください and the like) become Korean polite speech (-요 / -습니다), and only plain "
           "Japanese (だ, る-endings, ね/よ without です/ます) becomes 반말; keep it consistent for the same pair of "
-          "speakers in the earlier lines. Write only Korean (no kanji, no [alt]). Output exactly "
+          "speakers in the earlier lines. "
+          "STYLE (match the Korean broadcaster's subtitles): short, plain, mild wording. Use these fixed renderings: "
+          "イク/イッちゃう → 가요 / 가버려요 / 갈 것 같아요; 気持ちいい → 기분 좋아(요); すごい → 굉장해(요) / 엄청나(요) / 대단해(요); "
+          "ダメ → 안 돼(요) / 더는 안 돼(요); 我慢できない → 못 참겠어(요); 恥ずかしい → 부끄러워(요); うっとり → 황홀해요. "
+          "Call genitals '거기' unless the line clearly needs a specific word. No internet slang (대박, 미친, ㅋㅋ), no 오빠/언니 "
+          "unless said, no swear words unless clearly said. No period at the end of a line; keep '?' for questions; '…' only for "
+          "trailing off. A pure moan or breathing sound (あっ, んっ, はぁ, ああん) gets an empty translation. "
+          "Write only Korean (no kanji, no [alt]). Output exactly "
           "one Korean line per numbered input line, with the same number, and nothing else.")
 
 
@@ -498,23 +511,71 @@ BATCH = 8       # 한 번에 번역하는 줄 수
 CTX = 4         # 같이 보여 주는 앞 대사 수
 
 
+FIX_SYSTEM = ("You proofread Japanese speech-recognition output from a Japanese adult video, before it is translated. "
+              "Each numbered line is what the main recognizer heard; some also show [alt: ...], what a second recognizer heard "
+              "at the same moment. Write the Japanese that was most likely actually said: fix mis-heard words using the alt "
+              "text, the earlier lines and common sense (e.g. じゃあみちゃんかな → じゃあ見ちゃうかな, 検疫 → 禁欲 when the scene is "
+              "about abstaining, 大友さん → 男優さん). If a line already makes sense, copy it unchanged. Never translate, never "
+              "add words that were not said, never merge or drop lines, and keep moans as they are. Output exactly one "
+              "Japanese line per numbered input line, with the same number, and nothing else.")
+
+
+def _parse_ja(out, n):
+    out = re.sub(r"<think>.*?</think>", "", out, flags=re.S)
+    got = {}
+    for line in out.splitlines():
+        m = re.match(r"\s*(\d+)\s*[.)．:：]\s*(.*)", line)
+        if m and 1 <= int(m.group(1)) <= n:
+            got[int(m.group(1)) - 1] = re.sub(r"\[alt:[^\]]*\]?", "", m.group(2)).strip()
+    return got
+
+
+def fix_japanese(lines, tr, job=None):
+    """번역 전에 받아 적은 일본어를 앞뒤 대사와 2차 받아쓰기로 바로잡음. 처음 받아 적은 말은 src_asr 에 남김"""
+    t0 = time.time()
+    done = []
+    for k in range(0, len(lines), BATCH):
+        part = lines[k:k + BATCH]
+        u = ""
+        if done:
+            u += "Earlier lines (already corrected, context only):\n" + "\n".join("- " + x for x in done[-CTX:]) + "\n\n"
+        u += "Correct:\n" + "\n".join(f"{i + 1}. {l['src']}" + (f" [alt: {l['alt']}]" if l.get("alt") else "") for i, l in enumerate(part))
+        try:
+            got = _parse_ja(tr.chat([{"role": "system", "content": FIX_SYSTEM}, {"role": "user", "content": u}], 80 * len(part) + 64), len(part))
+        except Exception:
+            got = {}
+        for i, l in enumerate(part):
+            new = got.get(i, "")
+            if new and new != l["src"] and len(new) <= len(l["src"]) * 2 + 10:      # 엉뚱하게 길어지면 안 씀
+                l["src_asr"] = l["src"]
+                l["src"] = new
+            done.append(l["src"])
+        n = min(k + BATCH, len(lines))
+        left = (time.time() - t0) / n * (len(lines) - n)
+        _log(job, f"받아 적은 일본어 다듬는 중 {n}/{len(lines)}줄 · 남은 시간 약 {int(left // 60)}분 {int(left % 60)}초",
+             60 + int(n * 15 / max(len(lines), 1)))
+    return lines
+
+
 def translate_lines(lines, job=None, tr=None, f0=None):
     """f0: 목소리 높이 기록 (voice.pitch_track). 있으면 줄 안에서 남/여가 바뀌는 곳을 ‖ 로 표시해서 번역기에 넘김"""
     import voice
-    for l in lines:
-        tn = voice.turns(l["src"], l["start"], l["end"], f0) if f0 is not None else [(None, l["src"])]
-        l["turns"] = [t[0] for t in tn]
-        l["src_t"] = " ‖ ".join(t[1] for t in tn)
     own = tr is None
     tr = tr or Translator(job)
     try:
+        if lines and lines[0].get("lang", "ja") == "ja":
+            fix_japanese(lines, tr, job)
+        for l in lines:
+            tn = voice.turns(l["src"], l["start"], l["end"], f0) if f0 is not None else [(None, l["src"])]
+            l["turns"] = [t[0] for t in tn]
+            l["src_t"] = " ‖ ".join(t[1] for t in tn)
         t0 = time.time()
         bad = 0
         done = []
         for k in range(0, len(lines), BATCH):
             part = lines[k:k + BATCH]
             try:
-                kos = tr.translate([l["src_t"] + (f" [alt: {l['alt']}]" if l.get("alt") else "") for l in part],
+                kos = tr.translate([l["src_t"] for l in part],                     # (2차 받아쓰기는 위에서 일본어 다듬을 때 이미 씀)
                                    done[-CTX:], part[0].get("lang", "ja"))
                 bad = 0
             except Exception as e:
@@ -529,14 +590,14 @@ def translate_lines(lines, job=None, tr=None, f0=None):
             n = min(k + BATCH, len(lines))
             left = (time.time() - t0) / n * (len(lines) - n)
             _log(job, f"한국어로 번역 중 {n}/{len(lines)}줄 · 남은 시간 약 {int(left // 60)}분 {int(left % 60)}초",
-                 60 + int(n * 39 / max(len(lines), 1)))
+                 75 + int(n * 24 / max(len(lines), 1)))
     finally:
         if own:
             tr.close()
     return lines
 
 
-TR_VER = "5"     # 번역 방식이 바뀌면 올림 → '번역만 다시 하기' 버튼이 뜸 (받아쓰기는 그대로)
+TR_VER = "6"     # 번역 방식이 바뀌면 올림 → '번역만 다시 하기' 버튼이 뜸 (받아쓰기는 그대로)
 
 
 def split_speakers(lines):
@@ -555,6 +616,63 @@ def split_speakers(lines):
         for k, g in enumerate(groups):
             e = l["end"] if k == len(groups) - 1 else round(t + dur * size[k] / sum(size), 3)
             n = dict(l, start=round(t, 3), end=e, ko=("- " + g[0] + "\n- " + g[1]) if len(g) == 2 else g[0])
+            if k:
+                n.pop("alt", None)
+            out.append(n)
+            t = e
+    return out
+
+
+MAXL = 16      # 한 줄 최대 글자 수 (방송본부 자막: 보통 8자, 길어도 14자 안팎)
+_MOAN = re.compile(r"[\sあぁいぃうぅえぇおぉんっッーゝ〜~はハぁふフひヒ…、。！？!?]+")
+
+
+def _wrap2(t):
+    """한 줄이 길면 가운데에 가까운 띄어쓰기에서 두 줄로"""
+    if len(t) <= MAXL or " " not in t:
+        return [t]
+    sp = [i for i, ch in enumerate(t) if ch == " "]
+    cm = [i for i in sp if t[i - 1] in ",?" and max(i, len(t) - i) <= MAXL + 4]   # 쉼표·물음표 뒤에서 끊을 수 있으면 거기서
+    i = min(cm or sp, key=lambda x: abs(x - len(t) / 2))
+    return [t[:i].strip(), t[i + 1:].strip()]
+
+
+def _chunks(t):
+    """두 줄에 안 들어가는 긴 말을 자막 여러 개로: 쉼표·띄어쓰기에서 끊어 한 자막에 두 줄(약 MAXL*2자)씩"""
+    words, out, cur = t.split(" "), [], ""
+    for j, w in enumerate(words):
+        if cur and cur[-1] in ",?" and len(cur) >= MAXL:          # 쉼표·물음표에서 자막을 나눌 수 있으면 나눔
+            out.append(cur)
+            cur = ""
+        if cur and len(cur) + 1 + len(w) > MAXL * 2 - 2:
+            out.append(cur)
+            cur = w
+        else:
+            cur = (cur + " " + w).strip()
+    if cur:
+        out.append(cur)
+    return out
+
+
+def resegment(lines):
+    """방송본부 자막처럼: 순수한 신음만 있는 줄은 빼고, 한 줄은 짧게(MAXL자), 한 자막은 두 줄까지 — 넘치면 시간을 글자 수만큼 나눠 여러 자막으로.
+    두 사람 대사(- 가 / - 나)는 그대로"""
+    out = []
+    for l in lines:
+        ko = (l.get("ko") or "").strip().rstrip(".")
+        if not ko and _MOAN.fullmatch(l.get("src") or ""):
+            continue                                    # 신음·숨소리만 → 자막 안 씀 (방송본부 방식)
+        if "\n" in ko or not ko:
+            out.append(dict(l, ko=ko))
+            continue
+        parts = _chunks(ko) if len(ko) > MAXL * 2 else [ko]
+        if len(parts) == 1:
+            out.append(dict(l, ko="\n".join(_wrap2(ko))))
+            continue
+        t, dur, tot = l["start"], l["end"] - l["start"], sum(len(p) for p in parts)
+        for k, p in enumerate(parts):
+            e = l["end"] if k == len(parts) - 1 else round(t + dur * len(p) / tot, 3)
+            n = dict(l, start=round(t, 3), end=e, ko="\n".join(_wrap2(p)))
             if k:
                 n.pop("alt", None)
             out.append(n)
@@ -601,7 +719,7 @@ def make_subtitles(src, out_json, job=None):
         except Exception:
             traceback.print_exc()
         translate_lines(lines, job, f0=f0)
-        lines = split_speakers(lines)
+        lines = resegment(split_speakers(lines))
         json.dump({"lines": lines, "asr_lines": raw, "translated": True, "asr": asr_id(), "tr": TR_VER}, open(out_json, "w", encoding="utf-8"), ensure_ascii=False)
         _log(job, f"자막 완성 ({len(lines)}줄)", 100)
         if job is not None:
