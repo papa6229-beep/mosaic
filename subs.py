@@ -351,6 +351,9 @@ SYSTEM = ("You are a professional subtitle translator for Japanese adult videos 
           "forms (です, ます, ございます, ください and the like) become Korean polite speech (-요 / -습니다), and only plain "
           "Japanese (だ, る-endings, ね/よ without です/ます) becomes 반말; keep it consistent for the same pair of "
           "speakers in the earlier lines. Keep lines short like real subtitles. "
+          "Translate the MEANING of every word; never write Japanese sounds in Hangul (e.g. 奥に is '안쪽에/깊이', not '오쿠니'; "
+          "やばい is '큰일이야/미치겠어', not '야바이'), except people's names. Words split by pauses (…) still form one sentence: "
+          "translate the whole sentence naturally. "
           "A pure moan or breathing sound (あっ, んっ, はぁ, ああん) gets an empty translation. When a TEAM DICTIONARY, "
           "TEAM STYLE NOTES or EXAMPLES are given below, they are this team's rules: follow them. "
           "Write only Korean (no kanji, no [alt]). Output exactly "
@@ -677,7 +680,7 @@ def translate_lines(lines, job=None, tr=None, f0=None, prof=None):
     return lines
 
 
-TR_VER = "7"     # 번역 방식이 바뀌면 올림 → '번역만 다시 하기' 버튼이 뜸 (받아쓰기는 그대로)
+TR_VER = "8"     # 번역 방식이 바뀌면 올림 → '번역만 다시 하기' 버튼이 뜸 (받아쓰기는 그대로)
 
 
 def split_speakers(lines):

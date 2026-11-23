@@ -91,7 +91,7 @@ def prompt_part(prof):
         s += "\nTEAM DICTIONARY (always use these Korean renderings): " + "; ".join(f"{a} → {b}" for a, b in g) + "."
     if (prof.get("memo") or "").strip():
         s += "\nTEAM STYLE NOTES (follow them): " + prof["memo"].strip().replace("\n", " / ")
-    ex = prof.get("examples", [])[:40]
+    ex = prof.get("examples", [])[:20]          # 너무 많으면 작은 번역 모델이 예시에 끌려서 원문을 덜 봄
     if ex:
         s += "\nEXAMPLES of this team's real Korean subtitles (match this tone, length and wording; do not copy them): " + " | ".join(ex)
     return s
