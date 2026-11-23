@@ -59,6 +59,7 @@ def tr_id():
 OLD_TR_FILES = ["translategemma-4b-it-Q8_0.gguf"]   # 예전 번역 모델 (새 모델 받으면 지움)
 TR_DIR = os.path.join(MODELS, "translate")
 LLAMA_DIR = os.path.join(ROOT, "tools", "llama")
+LLAMA_CUDA_DIR = os.path.join(ROOT, "tools", "llama-cuda")      # 엔비디아용 (있으면 이걸 먼저 씀)
 LLAMA_PORT = 8771
 
 MAX_SEC = 6.0        # 자막 한 줄이 화면에 머무는 최대 시간
@@ -427,7 +428,7 @@ def _download(url, dst, job, label):
 
 
 def _llama_urls(want):
-    """llama.cpp 윈도우용(Vulkan) 압축 파일 주소 후보들. 판은 매일 '미리 보기(Pre-release)'로 올라옴
+    """llama.cpp 압축 파일 주소 후보들 → [(실행 도구, CUDA 실행 파일 묶음)]. 판은 매일 '미리 보기(Pre-release)'로 올라옴
     1) 깃허브 목록(API)에서 파일 이름으로 찾고  2) 그게 막히면(횟수 제한 등) 새 판 소식(releases.atom)의 판 번호로 주소를 만듦"""
     ua = {"User-Agent": "mosaic-generator"}
     urls = []
@@ -436,8 +437,13 @@ def _llama_urls(want):
             "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=10",
             headers={**ua, "Accept": "application/vnd.github+json"}), timeout=60))
         if isinstance(rels, list):
-            urls += [a["browser_download_url"] for r in rels if not r.get("draft")
-                     for a in r.get("assets", []) if a["name"].endswith(want)]
+            for r in rels:
+                if r.get("draft"):
+                    continue
+                al = {a["name"]: a["browser_download_url"] for a in r.get("assets", [])}
+                main = [u for n, u in al.items() if n.startswith("llama-") and n.endswith(want)]
+                if main:
+                    urls.append((main[0], al.get("cudart-llama-" + want)))
     except Exception as e:
         print("llama 목록(API) 실패:", e)
     if not urls:
@@ -445,7 +451,8 @@ def _llama_urls(want):
             atom = urllib.request.urlopen(urllib.request.Request(
                 "https://github.com/ggml-org/llama.cpp/releases.atom", headers=ua), timeout=60).read().decode("utf-8", "ignore")
             for tag in re.findall(r"/releases/tag/(b\d+)", atom):
-                u = f"https://github.com/ggml-org/llama.cpp/releases/download/{tag}/llama-{tag}-{want}"
+                b = f"https://github.com/ggml-org/llama.cpp/releases/download/{tag}/"
+                u = (b + f"llama-{tag}-{want}", b + f"cudart-llama-{want}")
                 if u not in urls:
                     urls.append(u)
         except Exception as e:
@@ -478,48 +485,67 @@ def ensure_translator(job=None):
                     pass
         except Exception:
             _download(f"https://huggingface.co/{TR_REPO_}/resolve/main/{TR_FILE_}", gguf, job, "번역 모델")
-    exe = os.path.join(LLAMA_DIR, "llama-server.exe" if os.name == "nt" else "llama-server")
-    if not os.path.exists(exe):
-        os.makedirs(LLAMA_DIR, exist_ok=True)
-        _log(job, "번역 실행 도구 받는 중 (처음 한 번만)")
-        want = "bin-win-vulkan-x64.zip" if os.name == "nt" else "bin-ubuntu-vulkan-x64.tar.gz"
-        urls = _llama_urls(want)
-        if not urls:
-            raise RuntimeError("번역 실행 도구(llama.cpp) 받을 곳을 찾지 못했어요 (인터넷 확인)")
-        z = os.path.join(LLAMA_DIR, "llama.zip")
-        err = None
-        for u in urls[:3]:                    # 갓 올라온 판은 파일이 아직 없을 수 있어서 몇 개 시도
-            try:
-                _download(u, z, job, "번역 실행 도구")
-                err = None
-                break
-            except Exception as e:
-                err = e
-        if err:
-            raise RuntimeError(f"번역 실행 도구를 받지 못했어요: {err}")
-        with zipfile.ZipFile(z) as zf:
-            zf.extractall(LLAMA_DIR)
-        os.remove(z)
-        found = None
-        for dp, _, fs in os.walk(LLAMA_DIR):                # 압축 안에 폴더가 하나 더 있을 수 있음
-            if os.path.basename(exe) in fs:
-                found = os.path.join(dp, os.path.basename(exe))
-                break
-        if not found:
-            raise RuntimeError("번역 실행 도구 압축을 풀었는데 llama-server가 없어요")
-        exe = found
-        if os.name != "nt":
-            os.chmod(exe, 0o755)
-    else:
-        pass
+    exe = _find_server()
+    if os.name == "nt" and _has_nvidia() and not _find_server(LLAMA_CUDA_DIR):
+        try:                                   # 엔비디아 그래픽카드면 CUDA판 (Vulkan판은 지포스에서 CPU로 돌아 초당 몇 글자밖에 안 나옴)
+            exe = _get_llama(LLAMA_CUDA_DIR, "bin-win-cuda-12.4-x64.zip", job, cudart=True)
+        except Exception as e:
+            print("CUDA판 번역 도구 실패, Vulkan판 사용:", e)
+    if not exe:
+        exe = _get_llama(LLAMA_DIR, "bin-win-vulkan-x64.zip" if os.name == "nt" else "bin-ubuntu-vulkan-x64.tar.gz", job)
     return exe, gguf
 
 
-def _find_server():
+def _has_nvidia():
+    if shutil.which("nvidia-smi"):
+        return True
+    w = os.environ.get("WINDIR", r"C:\Windows")
+    return os.path.exists(os.path.join(w, "System32", "nvidia-smi.exe"))
+
+
+def _get_llama(dest, want, job, cudart=False):
+    """llama.cpp 실행 도구를 dest 폴더에 받아 풀기. cudart=True면 같은 판의 CUDA 실행 파일 묶음도 함께"""
+    os.makedirs(dest, exist_ok=True)
+    _log(job, "번역 실행 도구 받는 중 (처음 한 번만)")
+    pairs = _llama_urls(want)
+    if not pairs:
+        raise RuntimeError("번역 실행 도구(llama.cpp) 받을 곳을 찾지 못했어요 (인터넷 확인)")
+    z = os.path.join(dest, "llama.zip")
+    err = None
+    for main, extra in pairs[:3]:              # 갓 올라온 판은 파일이 아직 없을 수 있어서 몇 개 시도
+        try:
+            _download(main, z, job, "번역 실행 도구")
+            with zipfile.ZipFile(z) as zf:
+                zf.extractall(dest)
+            os.remove(z)
+            if cudart:
+                _download(extra, z, job, "그래픽카드 실행 파일")
+                found = _find_server(dest)
+                with zipfile.ZipFile(z) as zf:
+                    zf.extractall(os.path.dirname(found) if found else dest)
+                os.remove(z)
+            err = None
+            break
+        except Exception as e:
+            err = e
+    if err:
+        shutil.rmtree(dest, ignore_errors=True)
+        raise RuntimeError(f"번역 실행 도구를 받지 못했어요: {err}")
+    found = _find_server(dest)
+    if not found:
+        shutil.rmtree(dest, ignore_errors=True)
+        raise RuntimeError("번역 실행 도구 압축을 풀었는데 llama-server가 없어요")
+    if os.name != "nt":
+        os.chmod(found, 0o755)
+    return found
+
+
+def _find_server(*dirs):
     name = "llama-server.exe" if os.name == "nt" else "llama-server"
-    for dp, _, fs in os.walk(LLAMA_DIR):
-        if name in fs:
-            return os.path.join(dp, name)
+    for d in dirs or (LLAMA_CUDA_DIR, LLAMA_DIR):
+        for dp, _, fs in os.walk(d):
+            if name in fs:
+                return os.path.join(dp, name)
     return None
 
 
@@ -529,12 +555,23 @@ class Translator:
     def __init__(self, job=None, exe=None, gguf=None):
         if exe is None:
             exe, gguf = ensure_translator(job)
-            exe = _find_server() or exe
         self.url = f"http://127.0.0.1:{LLAMA_PORT}"
         _log(job, "번역 모델 띄우는 중")
+        try:
+            self._start(exe, gguf)
+        except RuntimeError:
+            vk = _find_server(LLAMA_DIR)
+            if not exe.startswith(LLAMA_CUDA_DIR) or not vk:
+                raise
+            print("CUDA판으로 못 띄움 → Vulkan판으로")          # 드라이버가 너무 옛날이면
+            self._start(vk, gguf)
+        self.where = self._where()
+        print("번역 모델 위치:", self.where)
+
+    def _start(self, exe, gguf):
         flags = 0x08000000 if os.name == "nt" else 0          # 윈도우에서 검은 창이 따로 안 뜨게
-        self.log = open(os.path.join(TR_DIR, "server.log"), "w", encoding="utf-8", errors="ignore") \
-            if os.path.isdir(TR_DIR) else subprocess.DEVNULL
+        logp = os.path.join(TR_DIR, "server.log")
+        self.log = open(logp, "w", encoding="utf-8", errors="ignore") if os.path.isdir(TR_DIR) else subprocess.DEVNULL
         import models
         gpu = ["-ngl", "999"] if models.tr_model().get("gpu_all", False) else []   # 큰 모델: llama.cpp가 그래픽카드·메모리에 알아서 나눠 올림 (--fit)
         self.p = subprocess.Popen([exe, "-m", gguf, "--port", str(LLAMA_PORT), "--host", "127.0.0.1", *gpu,
@@ -545,7 +582,7 @@ class Translator:
                 tail = ""
                 try:
                     self.log.close()
-                    tail = open(os.path.join(TR_DIR, "server.log"), encoding="utf-8", errors="ignore").read()[-300:]
+                    tail = open(logp, encoding="utf-8", errors="ignore").read()[-300:]
                 except Exception:
                     pass
                 raise RuntimeError("번역 모델을 못 띄웠어요: " + tail.replace("\n", " / "))
@@ -555,7 +592,21 @@ class Translator:
                         return
             except Exception:
                 time.sleep(1)
+        self.close()
         raise RuntimeError("번역 모델이 5분 안에 준비되지 않았어요")
+
+    def _where(self):
+        """server.log에서 모델이 그래픽카드에 몇 층 올라갔는지 → '그래픽카드 33/33층 (CUDA)' 같은 글"""
+        try:
+            s = open(os.path.join(TR_DIR, "server.log"), encoding="utf-8", errors="ignore").read()
+        except Exception:
+            return ""
+        m = re.findall(r"offloaded (\d+)/(\d+) layers to GPU", s)
+        dev = "CUDA" if "CUDA" in s else ("Vulkan" if "Vulkan" in s else "")
+        if m:
+            a, b = m[-1]
+            return f"그래픽카드 {a}/{b}층" + (f" ({dev})" if dev else "")
+        return "CPU" if not dev else dev
 
     def chat(self, messages, max_tokens):
         body = json.dumps({"messages": messages, "max_tokens": max_tokens, "temperature": 0.3, "top_p": 0.8, "top_k": 20,
@@ -687,7 +738,7 @@ def translate_lines(lines, job=None, tr=None, f0=None, prof=None, skip_fix=False
             left = (time.time() - t0) / n * (len(lines) - n)
             sp_, nc_, th_ = tr.speed()
             _log(job, f"한국어로 번역 중 {n}/{len(lines)}줄 · 남은 시간 약 {int(left // 60)}분 {int(left % 60)}초 · 번역 모델 초당 {sp_:.0f}토큰, {nc_}번 호출"
-                 + (f", 생각함 {th_}번" if th_ else ", 생각 안 함"),
+                 + (f", 생각함 {th_}번" if th_ else ", 생각 안 함") + (f" · {tr.where}" if getattr(tr, "where", "") else ""),
                  75 + int(n * 24 / max(len(lines), 1)))
     finally:
         if own:
