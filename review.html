@@ -98,6 +98,7 @@
   </div>
   <div class="side">
     <h2 id="selTitle">선택한 블러 없음</h2>
+    <div class="row"><button id="bSelAll" title="영상 전체의 블러를 모두 골라요. 아래 흐림 세기·가장자리 번짐 막대가 전부에 한 번에 적용돼요 (Ctrl+A)">영상 전체 블러 고르기 (Ctrl+A)</button></div>
     <div id="multiBox" style="display:none">
       <div class="muted">여러 개를 고른 상태예요. <b>Del</b> 삭제 · <b>Ctrl+휠</b>/아래 막대 흐림 세기 · <b>[ ]</b> 시작/끝 맞추기 · 안쪽 끌기 이동이 고른 블러 모두에 적용돼요.</div>
       <div class="row"><button id="bMerge" class="main" title="고른 블러를 하나로 합쳐요. 각자의 움직임은 그대로 이어져요 (G)">블러 합치기 (G)</button><button id="bDelM" class="danger">모두 삭제 (Del)</button></div>
@@ -586,6 +587,12 @@ function changed() {
   showMarks();
 }
 // ---------- 보면서 표시해 두기 (M) → 다 본 뒤 표시한 곳만 돌아가서 고치기 (J 다음 · H 이전) ----------
+function selAll() {                 // 영상 전체 블러 모두 고르기 → 흐림 세기·가장자리 번짐 막대가 전부에 적용
+  const bs = allBars();
+  selectOnly(null); bs.forEach(b => addSel(b[0]));
+  drawTL(); draw(); updSide();
+  msg(`블러 ${bs.length}개를 모두 골랐어요 — 흐림 세기·가장자리 번짐 막대를 움직이면 전부에 적용돼요 (Esc로 풀기)`, "ok");
+}
 function toggleMark() {
   snapshot(); ED.marks = ED.marks || [];
   const near = ED.marks.findIndex(m => Math.abs(m - cur) <= Math.round(M.fps / 2));
@@ -1038,6 +1045,7 @@ $("bDel").onclick = () => { if (sel == null) return; snapshot(); edOf(sel).del =
 $("bDelM").onclick = delSel;
 $("bMerge").onclick = mergeSel;
 function delSel() { if (!selSet.size) return; snapshot(); const n = selSet.size; for (const id of selIds()) edOf(id).del = true; selectOnly(null); changed(); msg(`${n}개 삭제했어요 (Ctrl+Z로 되돌리기)`, "ok"); }
+$("bSelAll").onclick = selAll;
 $("bWholeUp").onclick = () => wholeBtn(1.1); $("bWholeDn").onclick = () => wholeBtn(1 / 1.1);
 function wholeBtn(r) {
   const ids = selIds().filter(alive);
@@ -1075,6 +1083,7 @@ function jumpSeg(dir) {
 document.addEventListener("keydown", ev => {
   if (ev.target.tagName === "INPUT" || ev.target.tagName === "SELECT") return;
   const k = ev.key, K = (ev.code || "").startsWith("Key") ? ev.code.slice(3).toLowerCase() : (k.length === 1 ? k.toLowerCase() : k);   // 한글 입력 상태여도 동작
+  if ((ev.ctrlKey || ev.metaKey) && K === "a") { ev.preventDefault(); selAll(); return; }
   if (k === " ") { ev.preventDefault(); togglePlay(); }
   else if (k === "ArrowLeft") { ev.preventDefault(); V.pause(); setFrame(cur - (ev.shiftKey ? Math.round(M.fps) : 1)); }
   else if (k === "ArrowRight") { ev.preventDefault(); V.pause(); setFrame(cur + (ev.shiftKey ? Math.round(M.fps) : 1)); }
