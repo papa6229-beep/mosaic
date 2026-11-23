@@ -69,6 +69,7 @@
   .modes .t{flex:1;min-width:200px}
   .modes .t b{display:block;font-weight:600;font-size:16px}
   .modes .t small{color:var(--sub);font-size:14px}
+  .psel{font:inherit;font-size:15px;font-weight:600;color:var(--ink);background:var(--panel2);border:1px solid var(--line2);border-radius:10px;padding:8px 12px;min-width:200px}
   .seg{display:flex;background:var(--panel2);border:1px solid var(--line);border-radius:11px;padding:3px;gap:2px}
   .seg button{border:0;background:none;color:var(--sub);padding:8px 13px;border-radius:8px;cursor:pointer;font-weight:600;font-size:15px;white-space:nowrap}
   .seg button.on{background:var(--acc);color:#1b1206}
@@ -135,7 +136,8 @@
   <header>
     <div class="mark"><i></i></div>
     <div><h1>모자이크 생성기</h1><p>원본 모자이크 위에 더 크고 자연스러운 블러를 덮어요</p></div>
-    <div class="night" id="night" title="켜 두면 다음 단계부터 CPU를 전부 써서 더 빨리 끝나요. 그동안 컴퓨터가 느려지니 퇴근 후나 안 쓸 때 켜세요.">
+    <a href="/subtitle-style" class="night" style="margin-left:auto;text-decoration:none;color:inherit" title="자막 번역 기준(단어 사전·말투·실제 자막 예시)을 정해 두는 곳"><div><b>자막 스타일</b><small>단어 사전 · 말투 · SRT로 배우기</small></div></a>
+    <div class="night" id="night" style="margin-left:0" title="켜 두면 다음 단계부터 CPU를 전부 써서 더 빨리 끝나요. 그동안 컴퓨터가 느려지니 퇴근 후나 안 쓸 때 켜세요.">
       <div><b>밤샘 모드</b><small>컴퓨터를 안 쓸 때 최대 속도</small></div><div class="sw"></div>
     </div>
   </header>
@@ -157,6 +159,8 @@
       <div class="opt on blurOnly" id="o_hair"><div class="t"><b>밖으로 나온 털까지 같이 덮기</b><small>원본 모자이크 밖의 음모를 찾아서 함께 가려요</small></div><div class="sw"></div></div>
       <div class="modes"><div class="t"><b>무엇을 만들까요</b><small id="modeHelp"></small></div>
         <div class="seg" id="mode"><button data-m="both" class="on">블러 + 자막</button><button data-m="blur">블러만</button><button data-m="subs">자막만</button></div></div>
+      <div class="modes subsOnly"><div class="t"><b>자막 컨셉</b><small>번역 말투·단어 기준 · <a href="/subtitle-style" target="_blank" style="color:var(--acc2)">자막 스타일에서 만들고 고치기</a></small></div>
+        <select id="profile" class="psel"></select></div>
       <div class="range blurOnly">
         <div class="top"><b>털 찾는 범위</b><span id="reach_v"></span></div>
         <input id="reach" type="range" min="0.2" max="1" step="0.05" value="0.8">
@@ -195,7 +199,8 @@ const MODE_HELP = { both: "블러를 먼저 시작하고, 자막은 메모리가
 let mode = "both";
 try { mode = localStorage.getItem("mode") || "both"; } catch (e) {}
 function setMode(m) { mode = m; $("mode").querySelectorAll("button").forEach(b => b.classList.toggle("on", b.dataset.m === m)); $("modeHelp").textContent = MODE_HELP[m];
-  document.querySelectorAll(".blurOnly").forEach(el => el.classList.toggle("hide", m === "subs")); try { localStorage.setItem("mode", m); } catch (e) {} }
+  document.querySelectorAll(".blurOnly").forEach(el => el.classList.toggle("hide", m === "subs"));
+  document.querySelectorAll(".subsOnly").forEach(el => el.classList.toggle("hide", m === "blur")); try { localStorage.setItem("mode", m); } catch (e) {} }
 $("mode").querySelectorAll("button").forEach(b => b.onclick = () => setMode(b.dataset.m));
 ["scale", "blur", "feather", "reach"].forEach(k => { const s = () => $(k + "_v").textContent = $(k).value; $(k).oninput = s; s(); });
 fetch("/night").then(r => r.json()).then(d => $("night").classList.toggle("on", d.on)).catch(() => {});
@@ -224,6 +229,7 @@ function form() {
   fd.append("hair", $("o_hair").classList.contains("on") ? "1" : "0");
   fd.append("subs", mode === "both" ? "1" : "0");
   fd.append("mode", mode);
+  fd.append("profile", $("profile").value || "");
   return fd;
 }
 const uploads = {};      // 올리는 중인 파일 (화면 표시용)
@@ -328,6 +334,12 @@ function loadJobs() {
     });
   }).catch(() => {});
 }
+fetch("/profiles").then(r => r.json()).then(ps => {
+  let last = ""; try { last = localStorage.getItem("profile") || ""; } catch (e) {}
+  $("profile").innerHTML = ps.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join("");
+  if (ps.some(p => p.id === last)) $("profile").value = last;
+}).catch(() => {});
+$("profile").onchange = () => { try { localStorage.setItem("profile", $("profile").value); } catch (e) {} };
 setMode(mode); loadJobs(); pollQ();
 </script>
 </body>

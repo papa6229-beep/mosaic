@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>자막 스타일</title>
+<style>
+  :root{--bg:#0c0b0a;--panel:#151312;--panel2:#1c1a18;--line:#2a2725;--line2:#3a3633;--ink:#f5f2ee;--sub:#c2bbb3;--dim:#948d85;--acc:#e8a54b;--acc2:#f3c27a;--ok:#5fbf8a;--bad:#ef6b5f}
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--ink)}
+  body{font:16px/1.6 "Pretendard","Malgun Gothic",system-ui,sans-serif}
+  main{max-width:1480px;margin:0 auto;padding:32px 40px 80px}
+  header{display:flex;align-items:center;gap:14px;margin-bottom:24px}
+  header h1{font-size:26px;margin:0;letter-spacing:-.02em}
+  header p{margin:0;color:var(--sub);font-size:15px}
+  a.back{margin-left:auto;color:var(--ink);text-decoration:none;border:1px solid var(--line2);border-radius:10px;padding:9px 14px;font-weight:600}
+  .grid{display:grid;grid-template-columns:300px 1fr;gap:24px;align-items:start}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:20px}
+  .plist .it{display:flex;align-items:center;gap:8px;padding:12px 14px;border-radius:10px;cursor:pointer;border:1px solid transparent;font-weight:600}
+  .plist .it:hover{background:var(--panel2)}
+  .plist .it.on{border-color:var(--acc);background:rgba(232,165,75,.08)}
+  .plist .it small{color:var(--dim);font-weight:500;font-size:13px}
+  button,.btn{font:inherit;color:var(--ink);background:var(--panel2);border:1px solid var(--line2);border-radius:10px;padding:8px 14px;cursor:pointer;font-weight:600;font-size:15px}
+  button:hover{border-color:var(--sub)}
+  button.pri{background:var(--acc);border-color:var(--acc);color:#1b1206}
+  button.del{color:var(--bad)}
+  h2{font-size:18px;margin:0 0 4px}
+  h3{font-size:16px;margin:26px 0 4px;display:flex;align-items:center;gap:10px}
+  .help{color:var(--sub);font-size:14px;margin:0 0 10px}
+  input[type=text],textarea{width:100%;font:inherit;color:var(--ink);background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:9px 11px;outline:none}
+  input[type=text]:focus,textarea:focus{border-color:var(--acc)}
+  textarea{min-height:90px;resize:vertical}
+  table{width:100%;border-collapse:collapse}
+  td{padding:4px 4px}
+  td:last-child{width:44px}
+  .x{width:36px;height:36px;padding:0;color:var(--dim)}
+  .x:hover{color:var(--bad)}
+  .chips{display:flex;flex-wrap:wrap;gap:6px}
+  .chip{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:4px 6px 4px 10px;font-size:14px;display:flex;align-items:center;gap:4px}
+  .chip button{border:0;background:none;padding:0 4px;color:var(--dim);font-size:15px}
+  .stats{display:flex;flex-wrap:wrap;gap:8px 20px;color:var(--sub);font-size:14px;margin:8px 0}
+  .stats b{color:var(--ink)}
+  #saved{color:var(--ok);font-size:14px;margin-left:auto}
+  .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  .hide{display:none}
+  @media (max-width:900px){.grid{grid-template-columns:1fr}main{padding:24px 16px}}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div><h1>자막 스타일</h1><p>팀이 정해 두는 번역 기준 — 자막을 만들 때 고른 컨셉대로 번역해요</p></div>
+    <a class="back" href="/">← 첫 화면</a>
+  </header>
+  <div class="grid">
+    <div class="panel">
+      <div class="plist" id="plist"></div>
+      <div class="row" style="margin-top:12px"><button id="bNew">＋ 새 컨셉</button><button id="bCopy" title="지금 고른 컨셉을 복사해서 새로 만들어요">복사해서 새로</button></div>
+    </div>
+    <div class="panel" id="ed">
+      <div class="row"><h2 style="flex:1"><input type="text" id="pName" style="font-size:20px;font-weight:700"></h2><span id="saved"></span></div>
+
+      <h3>실제 자막(SRT) 올려서 배우기</h3>
+      <p class="help">팀이 실제로 만든 자막 파일을 올리면, 자주 쓰는 표현과 예시 문장을 뽑아서 번역할 때 이 말투를 따라 하게 해요. 여러 개를 한 번에 올려도 돼요.</p>
+      <div class="row"><input type="file" id="srt" accept=".srt" multiple class="hide"><button id="bSrt" class="pri">SRT 파일 올리기</button><span id="learnMsg" class="help" style="margin:0"></span></div>
+      <div class="stats" id="stats"></div>
+      <div class="chips" id="examples"></div>
+
+      <h3>단어 사전 <span class="help" style="margin:0;font-weight:400">일본어 → 이렇게 번역 (대부분 지켜요)</span></h3>
+      <table id="gl"></table>
+      <button id="glAdd">＋ 줄 추가</button>
+
+      <h3>바꿔 쓰기 <span class="help" style="margin:0;font-weight:400">번역이 끝난 뒤 이 말을 → 이렇게 (항상 100% 바꿔요)</span></h3>
+      <table id="rp"></table>
+      <button id="rpAdd">＋ 줄 추가</button>
+
+      <h3>말투 메모</h3>
+      <p class="help">자유롭게 적어 주세요. 예: "여자는 끝까지 존댓말", "짧게 끊어서", "유행어는 쓰지 않기"</p>
+      <textarea id="memo"></textarea>
+
+      <h3>받아쓰기 힌트 단어 <span class="help" style="margin:0;font-weight:400">일본어 — 이 말들을 더 잘 알아들어요 (쉼표나 줄바꿈으로 구분)</span></h3>
+      <textarea id="asr" style="min-height:70px"></textarea>
+
+      <div class="row" style="margin-top:26px"><span style="flex:1"></span><button class="del" id="bDel">이 컨셉 지우기</button></div>
+    </div>
+  </div>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+let P = null, cur = new URLSearchParams(location.search).get("p") || "", saveT = null;
+
+function loadList() {
+  return fetch("/profiles").then(r => r.json()).then(ps => {
+    if (!cur || !ps.some(p => p.id === cur)) cur = (ps[0] || {}).id;
+    $("plist").innerHTML = ps.map(p => `<div class="it${p.id === cur ? " on" : ""}" data-id="${p.id}">${esc(p.name)}${p.default ? " <small>기본</small>" : ""}</div>`).join("");
+    $("plist").querySelectorAll(".it").forEach(e => e.onclick = () => { cur = e.dataset.id; loadList(); loadOne(); });
+  });
+}
+function loadOne() { return fetch(`/profiles/${cur}`).then(r => r.json()).then(p => { P = p; draw(); }); }
+
+function rows(id, arr, ph) {
+  $(id).innerHTML = arr.map((r, i) => `<tr><td><input type="text" data-i="${i}" data-k="0" value="${esc(r[0])}" placeholder="${ph[0]}"></td>
+    <td><input type="text" data-i="${i}" data-k="1" value="${esc(r[1])}" placeholder="${ph[1]}"></td><td><button class="x" data-i="${i}" title="지우기">✕</button></td></tr>`).join("");
+  $(id).querySelectorAll("input").forEach(e => e.oninput = () => { arr[+e.dataset.i][+e.dataset.k] = e.value; save(); });
+  $(id).querySelectorAll(".x").forEach(e => e.onclick = () => { arr.splice(+e.dataset.i, 1); draw(); save(); });
+}
+function draw() {
+  $("pName").value = P.name || "";
+  rows("gl", P.glossary, ["일본어 (예: すごい)", "한국어 (예: 굉장해요)"]);
+  rows("rp", P.replace, ["이 말을 (예: 대박)", "이렇게 (예: 굉장해)"]);
+  $("memo").value = P.memo || "";
+  $("asr").value = (P.asr_words || []).join("、");
+  const s = P.stats || {};
+  $("stats").innerHTML = s.cues ? `<span>배운 자막 <b>${s.cues.toLocaleString()}개</b></span><span>한 줄 보통 <b>${s.line_len_median}자</b> (길어도 ${s.line_len_p90}자)</span>
+    <span>두 줄 자막 <b>${Math.round(s.two_line * 100)}%</b></span><span>하이픈(두 사람) <b>${Math.round(s.hyphen * 100)}%</b></span><span>한 자막 <b>${s.dur_median}초</b></span>` : "";
+  $("examples").innerHTML = (P.examples || []).map((e, i) => `<span class="chip">${esc(e)}<button data-i="${i}" title="이 예시 빼기">✕</button></span>`).join("")
+    || '<span class="help">아직 배운 예시가 없어요</span>';
+  $("examples").querySelectorAll("button").forEach(b => b.onclick = () => { P.examples.splice(+b.dataset.i, 1); draw(); save(); });
+  $("bDel").style.display = cur === "hq" ? "none" : "";
+}
+function save() {
+  clearTimeout(saveT); $("saved").textContent = "";
+  saveT = setTimeout(() => {
+    P.name = $("pName").value.trim() || "이름 없음"; P.memo = $("memo").value;
+    P.asr_words = $("asr").value.split(/[、,\n]+/).map(s => s.trim()).filter(Boolean);
+    fetch(`/profiles/${cur}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(P) })
+      .then(() => { $("saved").textContent = "저장됨"; loadList(); });
+  }, 500);
+}
+["pName", "memo", "asr"].forEach(id => $(id).oninput = save);
+$("glAdd").onclick = () => { P.glossary.push(["", ""]); draw(); };
+$("rpAdd").onclick = () => { P.replace.push(["", ""]); draw(); };
+$("bSrt").onclick = () => $("srt").click();
+$("srt").onchange = e => {
+  const fd = new FormData(); [...e.target.files].forEach(f => fd.append("files", f)); e.target.value = "";
+  $("learnMsg").textContent = "배우는 중…";
+  fetch(`/profiles/${cur}/learn`, { method: "POST", body: fd }).then(r => r.json()).then(p => {
+    if (p.error) { $("learnMsg").textContent = p.error; return; }
+    P = p; draw(); $("learnMsg").textContent = "다 배웠어요 — 예시와 특징을 아래에 넣었어요";
+  });
+};
+$("bNew").onclick = () => { const n = prompt("새 컨셉 이름", "새 컨셉"); if (!n) return;
+  fetch("/profiles-new", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: n }) }).then(r => r.json()).then(p => { cur = p.id; loadList(); loadOne(); }); };
+$("bCopy").onclick = () => { const n = prompt("복사해서 만들 컨셉 이름", (P.name || "") + " 복사"); if (!n) return;
+  fetch("/profiles-new", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: n, copy_from: cur }) }).then(r => r.json()).then(p => { cur = p.id; loadList(); loadOne(); }); };
+$("bDel").onclick = () => { if (!confirm(`'${P.name}' 컨셉을 지울까요?`)) return;
+  fetch(`/profiles/${cur}/delete`, { method: "POST" }).then(() => { cur = ""; loadList().then(loadOne); }); };
+loadList().then(loadOne);
+</script>
+</body>
+</html>

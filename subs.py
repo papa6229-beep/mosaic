@@ -225,7 +225,16 @@ def _attach_alt(main, other):
     return main
 
 
-def transcribe(wav, dur, job=None):
+def _wj_args(words=None):
+    """받아쓰기 명령 (힌트 단어는 컨셉의 받아쓰기 힌트로)"""
+    a = list(WJ_ARGS)
+    if words:
+        ctx = "アダルトビデオの会話。よく出る言葉: " + "、".join(w for w in words if w)
+        a[a.index("--pass1-qwen-params") + 1] = json.dumps({"context": ctx[:1500]}, ensure_ascii=False)
+    return a
+
+
+def transcribe(wav, dur, job=None, words=None):
     """WhisperJAV 로 받아 적기 → 자막 줄 목록 [{start, end, src, alt?, lang}]"""
     py = ensure_whisperjav(job)
     out = os.path.join(os.path.dirname(wav), "wj")
@@ -243,7 +252,7 @@ def transcribe(wav, dur, job=None):
         except OSError:
             pass
     log = os.path.join(out, "whisperjav_log.txt")
-    cmd = [py, "-m", "whisperjav.main", wav, *WJ_ARGS, "--output-dir", out, "--log-file", log]
+    cmd = [py, "-m", "whisperjav.main", wav, *_wj_args(words), "--output-dir", out, "--log-file", log]
     _log(job, "말 받아 적기 준비 중 (처음엔 받아쓰기 모델을 받느라 오래 걸려요)", 2)
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="ignore",
                          env={**env, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"},
@@ -302,25 +311,21 @@ SYSTEM = ("You are a professional subtitle translator for Japanese adult videos 
           "those places, keeping the same number of parts in the same order; never add || anywhere else. Keep the speech level of the original: Japanese polite "
           "forms (です, ます, ございます, ください and the like) become Korean polite speech (-요 / -습니다), and only plain "
           "Japanese (だ, る-endings, ね/よ without です/ます) becomes 반말; keep it consistent for the same pair of "
-          "speakers in the earlier lines. "
-          "STYLE (match the Korean broadcaster's subtitles): short, plain, mild wording. Use these fixed renderings: "
-          "イク/イッちゃう → 가요 / 가버려요 / 갈 것 같아요; 気持ちいい → 기분 좋아(요); すごい → 굉장해(요) / 엄청나(요) / 대단해(요); "
-          "ダメ → 안 돼(요) / 더는 안 돼(요); 我慢できない → 못 참겠어(요); 恥ずかしい → 부끄러워(요); うっとり → 황홀해요. "
-          "Call genitals '거기' unless the line clearly needs a specific word. No internet slang (대박, 미친, ㅋㅋ), no 오빠/언니 "
-          "unless said, no swear words unless clearly said. No period at the end of a line; keep '?' for questions; '…' only for "
-          "trailing off. A pure moan or breathing sound (あっ, んっ, はぁ, ああん) gets an empty translation. "
+          "speakers in the earlier lines. Keep lines short like real subtitles. "
+          "A pure moan or breathing sound (あっ, んっ, はぁ, ああん) gets an empty translation. When a TEAM DICTIONARY, "
+          "TEAM STYLE NOTES or EXAMPLES are given below, they are this team's rules: follow them. "
           "Write only Korean (no kanji, no [alt]). Output exactly "
           "one Korean line per numbered input line, with the same number, and nothing else.")
 
 
-def _messages(batch, ctx, src):
+def _messages(batch, ctx, src, extra=""):
     s = _NAMES.get(src, "Japanese")
     u = ""
     if ctx:
         u += "Earlier lines (context only, do not translate):\n" + "\n".join(f"- {a} → {b}" for a, b in ctx) + "\n\n"
     u += "Translate:\n" + "\n".join(f"{i + 1}. {t}" for i, t in enumerate(batch))
     # t 는 '원문' 또는 '원문 [alt: 2차 원문]' 
-    return [{"role": "system", "content": SYSTEM.format(s=s)}, {"role": "user", "content": u}]
+    return [{"role": "system", "content": SYSTEM.format(s=s) + extra}, {"role": "user", "content": u}]
 
 
 def _parse(out, n):
@@ -485,13 +490,13 @@ class Translator:
         with urllib.request.urlopen(req, timeout=300) as r:
             return json.load(r)["choices"][0]["message"].get("content") or ""
 
-    def translate(self, batch, ctx, src="ja"):
+    def translate(self, batch, ctx, src="ja", extra=""):
         """여러 줄을 한 번에 (앞 대사를 같이 보여 줘서 흐름에 맞게) → 줄마다 한국어. 번호가 빠진 줄은 한 줄씩 다시"""
-        got = _parse(self.chat(_messages(batch, ctx, src), 80 * len(batch) + 64), len(batch))
+        got = _parse(self.chat(_messages(batch, ctx, src, extra), 80 * len(batch) + 64), len(batch))
         res = []
         for i, t in enumerate(batch):
             if not got.get(i):
-                one = _parse(self.chat(_messages([t], (ctx + list(zip(batch[:i], res)))[-CTX:], src), 120), 1)
+                one = _parse(self.chat(_messages([t], (ctx + list(zip(batch[:i], res)))[-CTX:], src, extra), 120), 1)
                 got[i] = one.get(0, "")
             res.append(got[i])
         return res
@@ -557,9 +562,11 @@ def fix_japanese(lines, tr, job=None):
     return lines
 
 
-def translate_lines(lines, job=None, tr=None, f0=None):
+def translate_lines(lines, job=None, tr=None, f0=None, prof=None):
     """f0: 목소리 높이 기록 (voice.pitch_track). 있으면 줄 안에서 남/여가 바뀌는 곳을 ‖ 로 표시해서 번역기에 넘김"""
     import voice
+    import profiles
+    extra = profiles.prompt_part(prof) if prof else ""
     own = tr is None
     tr = tr or Translator(job)
     try:
@@ -576,7 +583,7 @@ def translate_lines(lines, job=None, tr=None, f0=None):
             part = lines[k:k + BATCH]
             try:
                 kos = tr.translate([l["src_t"] for l in part],                     # (2차 받아쓰기는 위에서 일본어 다듬을 때 이미 씀)
-                                   done[-CTX:], part[0].get("lang", "ja"))
+                                   done[-CTX:], part[0].get("lang", "ja"), extra)
                 bad = 0
             except Exception as e:
                 kos = [""] * len(part)
@@ -584,7 +591,7 @@ def translate_lines(lines, job=None, tr=None, f0=None):
                 if bad >= 3:                  # 연달아 안 되면 번역기 자체 문제 → 빈 자막으로 '완성'이라 하지 않고 멈춤
                     raise RuntimeError(f"번역이 계속 실패해요: {e}")
             for l, ko in zip(part, kos):
-                l["ko"] = ko
+                l["ko"] = profiles.apply_replace(ko, prof) if prof else ko
                 l.pop("src_t", None)
                 done.append((l["src"], ko))
             n = min(k + BATCH, len(lines))
@@ -681,8 +688,11 @@ def resegment(lines):
 
 
 # ---------------- 전체 ----------------
-def make_subtitles(src, out_json, job=None):
-    """영상 → subs.json. job 에 sub_msg / sub_pct / sub_done / sub_error 를 기록"""
+def make_subtitles(src, out_json, job=None, profile=None, retranslate=False):
+    """영상 → subs.json. job 에 sub_msg / sub_pct / sub_done / sub_error 를 기록.
+    profile: 자막 컨셉 이름(없으면 기본). retranslate: 받아쓰기는 그대로 두고 번역만 다시 (다른 컨셉으로 바꿀 때)"""
+    import profiles
+    prof = profiles.get(profile)
     d = os.path.dirname(out_json)
     wav = os.path.join(d, "audio16k.wav")
     try:
@@ -693,18 +703,18 @@ def make_subtitles(src, out_json, job=None):
             except Exception:
                 old = None
         if (old and old.get("asr") == asr_id() and (old.get("asr_lines") or old.get("lines"))
-                and (not old.get("translated") or old.get("tr") != TR_VER)):
+                and (retranslate or not old.get("translated") or old.get("tr") != TR_VER)):
             lines = [dict(l) for l in (old.get("asr_lines") or old["lines"])]   # 받아쓰기는 그대로 → 번역만 다시
             for l in lines:
                 l.pop("ko", None)
-            _log(job, f"받아 적은 {len(lines)}줄로 번역만 다시 해요", 60)
+            _log(job, f"받아 적은 {len(lines)}줄로 번역만 다시 해요 (컨셉: {prof.get('name', '')})", 60)
         else:
             _log(job, "말소리 꺼내는 중", 1)
             extract_audio(src, wav, job)
             import wave
             with wave.open(wav) as w:
                 dur = w.getnframes() / float(w.getframerate())
-            lines = transcribe(wav, dur, job)
+            lines = transcribe(wav, dur, job, prof.get("asr_words"))
             json.dump({"lines": lines, "translated": False, "asr": asr_id()}, open(out_json, "w", encoding="utf-8"), ensure_ascii=False)
         raw = [dict(l) for l in lines]                    # 받아쓰기 원본 (나중에 번역만 다시 할 때 씀)
         f0 = None
@@ -718,9 +728,11 @@ def make_subtitles(src, out_json, job=None):
             f0 = voice.pitch_track(wav, f0c)
         except Exception:
             traceback.print_exc()
-        translate_lines(lines, job, f0=f0)
+        translate_lines(lines, job, f0=f0, prof=prof)
         lines = resegment(split_speakers(lines))
-        json.dump({"lines": lines, "asr_lines": raw, "translated": True, "asr": asr_id(), "tr": TR_VER}, open(out_json, "w", encoding="utf-8"), ensure_ascii=False)
+        json.dump({"lines": lines, "asr_lines": raw, "translated": True, "asr": asr_id(), "tr": TR_VER,
+                   "profile": prof.get("id"), "profile_name": prof.get("name"), "pver": profiles.version(prof)},
+                  open(out_json, "w", encoding="utf-8"), ensure_ascii=False)
         _log(job, f"자막 완성 ({len(lines)}줄)", 100)
         if job is not None:
             job["sub_done"] = True

@@ -952,7 +952,7 @@ def run_job(jid, src, params):
             subs_later = False
             if params.get("subs") == "1":                   # 자막은 그래픽카드가 비는 지금부터 뒤에서 같이 만듦
                 if _mem_free_gb() >= 12:
-                    start_subs(jid, src)
+                    start_subs(jid, src, params.get("profile"))
                 else:                                       # 메모리가 빠듯하면 블러가 끝난 뒤에 시작
                     subs_later = True
                     sub_state[jid] = {"sub_msg": "블러가 끝나면 시작해요 (메모리가 빠듯해서 차례로)", "sub_pct": 0, "sub_done": False, "kind": "make"}
@@ -991,7 +991,7 @@ def run_job(jid, src, params):
                 pass
             if subs_later:
                 sub_state.pop(jid, None)
-                start_subs(jid, src)
+                start_subs(jid, src, params.get("profile"))
             job.update(pct=100, msg="완료", done=True, out=times.get("out_path", out), report=rep)
         except Exception as e:
             traceback.print_exc()
@@ -1063,7 +1063,7 @@ def start():
             return jsonify(error="영상을 읽지 못했어요: " + str(e)[:200]), 400
         state[jid] = {"pct": 100, "msg": "자막만 만들기", "done": True, "name": os.path.basename(src), "added": time.time(),
                       "main": True, "mode": "subs"}
-        start_subs(jid, src)
+        start_subs(jid, src, request.form.get("profile"))
         return jsonify(job=jid)
     state[jid] = {"pct": 0, "msg": "앞 작업이 끝나길 기다리는 중", "done": False, "name": os.path.basename(src),
                   "added": time.time(), "main": True, "subs_on": request.form.get("subs") == "1"}
@@ -1119,7 +1119,7 @@ def _free_gpu():
         pass
 
 
-def start_subs(jid, src):
+def start_subs(jid, src, profile=None, retranslate=False):
     """자막 만들기를 뒤에서 시작 (한 번에 하나씩). 진행 상황은 sub_state[jid]"""
     st = sub_state.get(jid)
     if st and not st.get("sub_done"):
@@ -1132,7 +1132,7 @@ def start_subs(jid, src):
             try:
                 import subs
                 _free_gpu()                     # 탐지 모델이 차지한 그래픽카드 메모리를 비워서 받아쓰기 모델이 들어갈 자리 확보
-                subs.make_subtitles(src, os.path.join(JOBS, jid, "subs.json"), st)
+                subs.make_subtitles(src, os.path.join(JOBS, jid, "subs.json"), st, profile, retranslate)
             except Exception as e:
                 st.update(sub_done=True, sub_error=st.get("sub_error") or str(e)[:300])
     threading.Thread(target=run, daemon=True).start()
@@ -1219,7 +1219,51 @@ def review_subs_make(jid):
     if not d:
         return jsonify(error="없는 작업"), 404
     r = json.load(open(os.path.join(d, "review.json"), encoding="utf-8"))
-    return jsonify(state=start_subs(jid, r["src"]))
+    b = request.get_json(silent=True) or {}
+    return jsonify(state=start_subs(jid, r["src"], b.get("profile"), bool(b.get("retranslate"))))
+
+
+# ---------------- 자막 컨셉 (팀 기준: 단어 사전·바꿔 쓰기·말투 메모·받아쓰기 힌트·SRT 예시) ----------------
+@app.get("/subtitle-style")
+def page_profiles():
+    return Response(open(os.path.join(BASE, "profiles.html"), encoding="utf-8").read(), mimetype="text/html")
+
+
+@app.get("/profiles")
+def profiles_list():
+    import profiles
+    return jsonify(profiles.list_profiles())
+
+
+@app.route("/profiles/<pid>", methods=["GET", "POST"])
+def profile_one(pid):
+    import profiles
+    if request.method == "POST":
+        return jsonify(profiles.save(pid, request.get_json(silent=True) or {}))
+    return jsonify(profiles.get(pid))
+
+
+@app.post("/profiles-new")
+def profile_new():
+    import profiles
+    b = request.get_json(silent=True) or {}
+    return jsonify(profiles.create((b.get("name") or "새 컨셉").strip()[:40], b.get("copy_from")))
+
+
+@app.post("/profiles/<pid>/delete")
+def profile_delete(pid):
+    import profiles
+    return jsonify(ok=profiles.delete(pid))
+
+
+@app.post("/profiles/<pid>/learn")
+def profile_learn(pid):
+    import profiles
+    fs = [f.read() for f in request.files.getlist("files")]
+    try:
+        return jsonify(profiles.learn(pid, fs))
+    except Exception as e:
+        return jsonify(error=str(e)[:200]), 400
 
 
 @app.get("/review/<jid>/subs.srt")
