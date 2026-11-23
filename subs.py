@@ -1093,11 +1093,8 @@ def make_subtitles(src, out_json, job=None, profile=None, retranslate=False, fre
             job["sub_error"] = str(e)[:300]
             job["sub_done"] = True
         raise
-    finally:
-        try:
-            os.remove(wav)
-        except Exception:
-            pass
+    # 소리 파일(16kHz, 20분에 약 40MB)은 남겨 둠: 검수자가 일본어를 고치면 그 구간 소리를 받아쓰기 공부 자료로 바로 잘라 씀
+    # (지우면 고칠 때마다 수십 GB 원본에서 다시 꺼내느라 저장이 몇 분씩 멈춤)
 
 
 # ---------------- 자막 파일 ----------------

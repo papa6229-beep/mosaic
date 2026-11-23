@@ -1380,6 +1380,9 @@ def review_subs(jid):
     return jsonify(subs=data, state=sub_state.get(jid))
 
 
+_tm_lock = threading.Lock()
+
+
 @app.post("/review/<jid>/subs")
 def review_subs_save(jid):
     d = _jdir(jid)
@@ -1393,11 +1396,14 @@ def review_subs_save(jid):
     old = json.load(open(p, encoding="utf-8")) if os.path.exists(p) else {}
     if "lines_orig" not in old and old.get("lines"):       # 처음 손대기 전 자막을 남겨 둠 (처음 상태로 되돌리기용)
         old["lines_orig"] = old["lines"]
-    try:                                                   # 고친 줄 모으기 (번역 기억 · 받아쓰기 훈련 자료)
-        import tm
-        tm.record(os.path.basename(jid), d, old.get("lines_orig"), lines)
-    except Exception:
-        traceback.print_exc()
+    def _rec(orig=old.get("lines_orig"), ls=[dict(l) for l in lines]):
+        try:                                               # 고친 줄 모으기 (번역 기억 · 받아쓰기 공부 자료) — 뒤에서 (저장은 안 기다림)
+            import tm
+            with _tm_lock:
+                tm.record(os.path.basename(jid), d, orig, ls)
+        except Exception:
+            traceback.print_exc()
+    threading.Thread(target=_rec, daemon=True).start()
     tmp = p + ".tmp"
     json.dump({**old, "lines": lines, "edited": True}, open(tmp, "w", encoding="utf-8"), ensure_ascii=False)
     os.replace(tmp, p)
