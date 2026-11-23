@@ -538,9 +538,19 @@ function fmt(f) {                  // 분:초:프레임 (프리미어처럼 1초
 }
 
 // ---------- 재생·이동 ----------
+// 지금 위치에 선택한 블러가 없으면, 지금 위치에 있는 블러를 자동으로 선택 (재생하며 다음 블러로 넘어가면 그 블러가 바로 선택됨)
+function followSel() {
+  if (typeof drag !== "undefined" && drag) return false;
+  const on = allBars().filter(([id, a, b]) => a <= cur && cur <= b);
+  if (!on.length || on.some(([id]) => isSel(id))) return false;
+  on.sort((p, q) => q[1] - p[1]);                 // 여러 개면 가장 최근에 시작한 블러
+  selectOnly(on[0][0]);
+  return true;
+}
 function setFrame(f, seek = true, follow = true) {
   f = Math.max(0, Math.min(M.n - 1, Math.round(f)));
   cur = f;
+  followSel();
   if (seek) V.currentTime = (f + 0.5) / M.fps;
   if (follow && (cur < tlStart || cur > tlStart + tlSpan)) tlStart = Math.max(0, cur - tlSpan * 0.2);
   $("tc").textContent = fmt(cur); $("fn").textContent = cur;
@@ -549,7 +559,9 @@ function setFrame(f, seek = true, follow = true) {
 function onVF(now, meta) {
   if (!V.paused) { cur = Math.min(M.n - 1, Math.round(meta.mediaTime * M.fps));
     if (cur > tlStart + tlSpan * 0.9) tlStart = cur - tlSpan * 0.1;
-    $("tc").textContent = fmt(cur); $("fn").textContent = cur; drawTL(); }
+    $("tc").textContent = fmt(cur); $("fn").textContent = cur;
+    if (followSel()) updSide();
+    drawTL(); }
   draw();
   V.requestVideoFrameCallback(onVF);
 }
