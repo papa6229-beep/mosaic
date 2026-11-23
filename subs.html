@@ -544,7 +544,7 @@ function showMake(st) {
     $("bMake").disabled = true; $("makeMsg").textContent = st.sub_msg || "자막 만드는 중"; $("makeBar").style.width = (st.sub_pct || 0) + "%";
   } else {
     $("bMake").disabled = false;
-    $("makeMsg").innerHTML = st && st.sub_error ? `<span style="color:var(--bad)">실패 — ${esc(st.sub_error)}</span>` : L.length && !current ? "예전 방식으로 만든 자막이에요. 새 받아쓰기 방식(대사를 덜 놓침)으로 다시 만들 수 있어요." : L.length && !translated ? "번역 방식이 좋아졌어요(화자 구분 하이픈, 2차 받아쓰기 반영). 받아쓰기는 그대로 두고 번역만 다시 할 수 있어요." : "이 영상은 아직 자막이 없어요.";
+    $("makeMsg").innerHTML = st && st.sub_error ? `<span style="color:var(--bad)">실패 — ${esc(st.sub_error)}</span>` : L.length && !current ? "받아쓰기가 좋아졌어요 — 더 정확한 모델 하나로 받아 적고, 놓친 속삭임은 그 곳만 소리를 키워 다시 들어요. 오늘 만든 자막이면 받아쓴 결과를 다시 써서 몇 분이면 돼요." : L.length && !translated ? "번역 방식이 좋아졌어요(화자 구분 하이픈, 2차 받아쓰기 반영). 받아쓰기는 그대로 두고 번역만 다시 할 수 있어요." : "이 영상은 아직 자막이 없어요.";
     $("makeBar").style.width = "0";
   }
 }

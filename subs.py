@@ -39,7 +39,8 @@ WJ_ARGS = ["--ensemble", "--language", "japanese",
 TR_REPO = "HauhauCS/Qwen3.5-9B-Uncensored-HauhauCS-Aggressive"   # 번역: 검열 해제된 Qwen3.5 9B
 TR_FILE = "Qwen3.5-9B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf"
 TR_MB = 5300
-ASR_VER = "wj1.10.2/6"   # 받아쓰기 방식이 바뀌면 올림 → 예전 방식으로 만든 자막은 '다시 만들기' 버튼이 뜸
+ASR_VER = "wj1.10.2/7"   # 7: 좋은 모델 하나로 한 번만 + 놓친 곳만 소리 키워 다시 듣기
+ASR_VER_PREV = "wj1.10.2/6"  # 6의 1차 결과(같은 모델·같은 말소리 찾기)는 그대로 다시 씀   # 받아쓰기 방식이 바뀌면 올림 → 예전 방식으로 만든 자막은 '다시 만들기' 버튼이 뜸
 
 
 def asr_id():
@@ -241,8 +242,14 @@ def _attach_alt(main, other):
 
 
 def _wj_args(words=None):
-    """받아쓰기 명령 (고른 받아쓰기 모델·목소리 걸러내기 반영)"""
+    """받아쓰기 명령. 기본: 고른 모델(Galgame) 하나로 한 번만. '한 번 더 받아쓰기'를 골랐을 때만 두 번(시간 2배)"""
     import models
+    if models.pass2() == "none":
+        a = ["--mode", "qwen", "--language", "japanese", "--qwen-model-id", models.asr_model_id(),
+             "--qwen-segmenter", "whisperseg", "--qwen-sensitivity", "aggressive"]
+        if models.enhancer() != "none":
+            a += ["--qwen-enhancer", models.enhancer()]
+        return a
     a = list(WJ_ARGS)
     i = a.index("--pass1-qwen-params") + 1
     a[i] = json.dumps({"model_id": models.asr_model_id(), "vad_threshold": VAD_TH})
@@ -251,16 +258,22 @@ def _wj_args(words=None):
         a[i0:i1] = ["--pass2-pipeline", "balanced", "--pass2-model", "large-v2", "--pass2-sensitivity", "aggressive"]
     if models.enhancer() != "none":
         a += ["--pass1-speech-enhancer", models.enhancer(), "--pass2-speech-enhancer", models.enhancer()]
-    if False and words:     # 꺼 둠: 힌트 글을 주면 조용한 구간·신음 구간에서 힌트 목록을 그대로 받아 적는 문제가 있었음 (2026-11-23 실제 영상)
-        ctx = "アダルトビデオの会話。よく出る言葉: " + "、".join(w for w in words if w)
-        a[a.index("--pass1-qwen-params") + 1] = json.dumps({"context": ctx[:1500]}, ensure_ascii=False)
     return a
 
 
 def transcribe(wav, dur, job=None, words=None):
     """WhisperJAV 로 받아 적기 → 자막 줄 목록 [{start, end, src, alt?, lang}]"""
-    py = ensure_whisperjav(job)
     out = os.path.join(os.path.dirname(wav), "wj")
+    _run_wj(wav, _wj_args(words), out, job, 2, 57)
+    main = lines_from_wj(out)
+    if not main:
+        raise RuntimeError("받아쓰기 결과가 비어 있어요 (말소리를 못 찾았거나 결과 파일이 없음)")
+    return main
+
+
+def _run_wj(wav, args, out, job, p0, p1, label="말 받아 적는 중"):
+    """WhisperJAV 실행 (진행률 p0~p1%)"""
+    py = ensure_whisperjav(job)
     shutil.rmtree(out, ignore_errors=True)
     os.makedirs(out, exist_ok=True)
     # 생성기는 임시 폴더를 자기 폴더(tmp)로 바꿔 두는데, 그 경로에 한글·띄어쓰기가 있으면 WhisperJAV 가 실패함
@@ -275,8 +288,9 @@ def transcribe(wav, dur, job=None, words=None):
         except OSError:
             pass
     log = os.path.join(out, "whisperjav_log.txt")
-    cmd = [py, "-m", "whisperjav.main", wav, *_wj_args(words), "--output-dir", out, "--log-file", log]
-    _log(job, "말 받아 적기 준비 중 (처음엔 받아쓰기 모델을 받느라 오래 걸려요)", 2)
+    cmd = [py, "-m", "whisperjav.main", wav, *args, "--output-dir", out, "--log-file", log]
+    two = "--ensemble" in args
+    _log(job, "말 받아 적기 준비 중 (처음엔 받아쓰기 모델을 받느라 오래 걸려요)", p0)
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="ignore",
                          env={**env, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"},
                          creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
@@ -286,16 +300,16 @@ def transcribe(wav, dur, job=None, words=None):
         if not line or "max_new_tokens" in line or "huggingface.co/docs" in line:
             continue
         tail = (tail + [line])[-20:]
-        if re.search(r"Pass 1 completed|Starting Pass 2|Pass 2:", line):
+        if two and re.search(r"Pass 1 completed|Starting Pass 2|Pass 2:", line):
             pas = 2
         m = re.search(r"(\d+) of (\d+) VAD groups transcribed", line)
         if m:
             k, n = int(m.group(1)), max(int(m.group(2)), 1)
-            pct = int(((pas - 1) + k / n) / 2 * 57) + 2
+            f = ((pas - 1) + k / n) / 2 if two else k / n
             el = time.time() - t0
-            _log(job, f"말 받아 적는 중 ({pas}/2차) {k}/{n} 조각 · 지금까지 {int(el // 60)}분", pct)
+            _log(job, f"{label}{f' ({pas}/2차)' if two else ''} {k}/{n} 조각 · 지금까지 {int(el // 60)}분", p0 + int(f * (p1 - p0)))
         elif "Fetching" in line or "Downloading" in line:
-            _log(job, f"받아쓰기 모델 받는 중 ({pas}/2차, 처음 한 번만)")
+            _log(job, "받아쓰기 모델 받는 중 (처음 한 번만)")
     p.wait()
     if p.returncode == 3:
         raise RuntimeError("그래픽카드를 쓸 수 없어요. nvidia.com/drivers 에서 최신 드라이버(580 이상)를 설치하고 다시 켜 주세요")
@@ -308,17 +322,121 @@ def transcribe(wav, dur, job=None, words=None):
             pass
         errs = [t for t in tail if "ERROR" in t or "Error" in t or "error:" in t]
         raise RuntimeError("받아쓰기 실패: " + (why or " / ".join((errs or tail)[-3:]))[-500:])
-    main = lines_from_wj(out)
-    if not main:
-        raise RuntimeError("받아쓰기 결과가 비어 있어요 (말소리를 못 찾았거나 결과 파일이 없음): " + " / ".join(tail[-3:])[-300:])
-    return main
+
+
+RELISTEN_VER = "1"
+
+
+def _is_moan(s):
+    """신음·숨소리·입 소리로만 적힌 줄 (예: あっ、はぁ / んちゅっ、ふにぃー). 가나만 짧게 있고 작은 글자·ん·ー 가 섞인 것"""
+    s = clean_ja(s or "")
+    if not s or _MOAN.fullmatch(s):
+        return True
+    k = re.sub(r"[\s、。,.!?！？…~〜]", "", s)
+    return (bool(re.fullmatch(r"[\u3041-\u309f\u30a0-\u30ffー]+", k)) and len(k) <= 8
+            and bool(re.search(r"[んっッーぁぃぅぇぉゃゅょァィゥェォャュョ]", k)))
+
+
+def _regions(wav, lines):
+    """자막이 없는 곳(또는 신음·입 소리로만 적힌 줄) 중 실제로 소리가 있는 구간 → [(시작, 끝)] 초"""
+    import wave
+    import numpy as np
+    with wave.open(wav) as w:
+        sr = w.getframerate()
+        x = np.frombuffer(w.readframes(w.getnframes()), np.int16).astype(np.float32) / 32768
+    hop = int(sr * 0.05)
+    n = len(x) // hop
+    if n < 10:
+        return [], x, sr
+    db = 10 * np.log10((x[:n * hop].reshape(n, hop) ** 2).mean(1) + 1e-10)
+    floor = np.percentile(db, 20)
+    act = db > floor + 10                      # 바닥 소음보다 10dB 넘게 큰 곳만 (조용한 곳은 안 들음 → 시간 절약)
+    for l in lines:                            # 이미 말로 받아 적은 곳은 다시 안 들음
+        if not _is_moan(l["src"]):
+            act[max(0, int((l["start"] - 0.15) / 0.05)):int((l["end"] + 0.15) / 0.05) + 1] = False
+    out, i = [], 0
+    while i < n:
+        if not act[i]:
+            i += 1
+            continue
+        j = i
+        while j < n and (act[j] or (j + 10 < n and act[j:j + 10].any())):   # 0.5초 안 끊김은 한 덩어리
+            j += 1
+        a, b_ = i * 0.05, j * 0.05
+        if b_ - a >= 0.4:
+            out.append((max(0.0, a - 0.3), min(n * 0.05, b_ + 0.3)))
+        i = j
+    big = []                                   # 너무 긴 덩어리는 20초씩
+    for a, b_ in out:
+        while b_ - a > 20:
+            big.append((a, a + 20))
+            a += 20
+        big.append((a, b_))
+    return big, x, sr
+
+
+def relisten(wav, lines, job=None):
+    """첫 받아쓰기가 놓친 곳(소리는 있는데 자막 없음 · 신음으로만 적힘)만 소리를 키워 같은 모델로 한 번 더 → 찾은 말을 채워 넣음.
+    속삭임은 소리가 작아서 말소리 찾기에서 빠지는 일이 많음. 전체가 아니라 그 구간만 들어서 몇 분"""
+    import wave
+    import numpy as np
+    regs, x, sr = _regions(wav, lines)
+    if not regs:
+        return lines
+    gap = np.zeros(int(sr * 1.0), np.float32)
+    parts, where, pos = [], [], 0.0
+    for a, b_ in regs:
+        c = x[int(a * sr):int(b_ * sr)]
+        pk = float(np.abs(c).max()) if len(c) else 0
+        g = min(20.0, 0.5 / pk) if pk > 0 else 1.0   # 가장 큰 소리가 절반쯤 되게 키움 (최대 20배)
+        parts += [np.clip(c * g, -1, 1), gap]
+        where.append((pos, pos + len(c) / sr, a))
+        pos += len(c) / sr + 1.0
+    d = os.path.dirname(wav)
+    rw = os.path.join(d, "relisten.wav")
+    with wave.open(rw, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(sr)
+        w.writeframes((np.concatenate(parts) * 32767).astype(np.int16).tobytes())
+    tot = sum(b_ - a for a, b_ in regs)
+    import models
+    args = ["--mode", "qwen", "--language", "japanese", "--qwen-model-id", models.asr_model_id(),
+            "--qwen-segmenter", "whisperseg", "--qwen-sensitivity", "aggressive"]
+    out = os.path.join(d, "wj_re")
+    try:
+        _run_wj(rw, args, out, job, 57, 60, f"놓친 곳 다시 듣는 중 ({int(tot // 60)}분 {int(tot % 60)}초 분량)")
+    finally:
+        try:
+            os.remove(rw)
+        except OSError:
+            pass
+    srt = next((os.path.join(out, f) for f in os.listdir(out) if f.endswith(".whisperjav.srt")), None) if os.path.isdir(out) else None
+    new = []
+    for l in _read_srt(srt):
+        s = clean_ja(l["src"])
+        if not s or _MOAN.fullmatch(s):        # 다시 들어도 신음뿐이면 버림 (짧은 말 'もっと' 같은 건 살림)
+            continue
+        mid = (l["start"] + l["end"]) / 2
+        for s0, s1, a in where:
+            if s0 - 0.05 <= mid <= s1 + 0.05:
+                st, en = max(l["start"], s0), min(l["end"], s1)
+                new.append({"start": round(a + st - s0, 3), "end": round(a + max(en, st + 0.3) - s0, 3),
+                            "src": l["src"], "lang": "ja", "re": True})
+                break
+    if new:
+        keep = [l for l in lines if not (_is_moan(l["src"]) and any(_overlaps(l, n) for n in new))]
+        lines = sorted(keep + new, key=lambda l: l["start"])
+    _log(job, f"놓친 곳 다시 듣기: {len(regs)}곳 중 {len(new)}줄 찾음", 60)
+    print("다시 듣기:", len(regs), "곳,", round(tot), "초 →", len(new), "줄")
+    return lines
 
 
 def _overlaps(a, b):
     return min(a["end"], b["end"]) - max(a["start"], b["start"]) > 0.3 * min(a["end"] - a["start"], b["end"] - b["start"])
 
 
-def lines_from_wj(out):
+def lines_from_wj(out, only1=False):
     """받아쓰기 결과 파일 두 개(1차 Qwen3-ASR, 2차 anime-whisper)로 자막 줄 만들기.
     2차를 기본으로 씀(실제 영상에서 2차가 더 정확했음, 2026-11-23). 2차가 비운 곳은 1차로 채워 대사를 놓치지 않고,
     같은 곳을 1차가 다르게 들었으면 'alt'로 붙임"""
@@ -326,6 +444,11 @@ def lines_from_wj(out):
         return []
     def find(suffix):
         return next((os.path.join(out, f) for f in os.listdir(out) if f.endswith(suffix)), None)
+    if only1 or (not find(".pass1.srt") and find(".whisperjav.srt")):     # 한 번만 받아쓴 결과 (기본)
+        one = _read_srt(find(".pass1.srt")) if only1 else _read_srt(find(".whisperjav.srt"))
+        for l in one:
+            l["lang"] = "ja"
+        return one
     p1 = _read_srt(find(".pass1.srt")) or _read_srt(find(".merged.whisperjav.srt"))
     p2 = _read_srt(find(".pass2.srt"))
     main = [dict(l) for l in p2] + [dict(l) for l in p1 if not any(_overlaps(l, m) for m in p2)]
@@ -874,11 +997,20 @@ def make_subtitles(src, out_json, job=None, profile=None, retranslate=False):
         skip_fix = False
         times = {}
         rebuilt = None
-        if old and old.get("asr") in ("wj1.10.2/3",) and old.get("asr") != asr_id():    # 받아쓰기 결과 파일은 그대로 있고 합치는 방식만 바뀜 → 다시 받아쓰지 않음
-            rebuilt = lines_from_wj(os.path.join(d, "wj"))
+        import models
+        wjd = os.path.join(d, "wj")
+        if (old and old.get("asr") == ASR_VER_PREV and old.get("asr") != asr_id() and models.pass2() == "none"
+                and os.path.isdir(wjd) and any(f.endswith(".pass1.srt") for f in os.listdir(wjd))):
+            rebuilt = lines_from_wj(wjd, only1=True)      # 예전 1차 결과 = 지금 모델·말소리 찾기와 같음 → 다시 받아쓰지 않음
         if rebuilt:
             lines = rebuilt
-            _log(job, f"받아쓴 결과({len(lines)}줄)를 2차 기준으로 다시 맞추고 번역해요 (받아쓰기는 다시 안 함)", 60)
+            _log(job, f"받아쓴 결과({len(lines)}줄)를 다시 써요 (처음부터 받아쓰지 않음)", 50)
+            if not os.path.exists(wav):
+                _log(job, "놓친 곳 다시 듣기용 소리 꺼내는 중", 50)
+                extract_audio(src, wav, job)
+            t_re = time.time()
+            lines = relisten(wav, lines, job)
+            times["다시 듣기"] = round(time.time() - t_re)
             json.dump({"lines": lines, "translated": False, "asr": asr_id()}, open(out_json, "w", encoding="utf-8"), ensure_ascii=False)
         elif (old and old.get("asr") == asr_id() and (old.get("asr_lines") or old.get("lines"))
                 and (retranslate or not old.get("translated") or old.get("tr") != tr_id())):
@@ -901,6 +1033,10 @@ def make_subtitles(src, out_json, job=None, profile=None, retranslate=False):
             t_asr = time.time()
             lines = transcribe(wav, dur, job, prof.get("asr_words"))
             times["받아쓰기"] = round(time.time() - t_asr)
+            if models.pass2() == "none":
+                t_re = time.time()
+                lines = relisten(wav, lines, job)
+                times["다시 듣기"] = round(time.time() - t_re)
             json.dump({"lines": lines, "translated": False, "asr": asr_id()}, open(out_json, "w", encoding="utf-8"), ensure_ascii=False)
         raw = [dict(l) for l in lines]                    # 받아쓰기 원본 (나중에 번역만 다시 할 때 씀)
         f0 = None

@@ -24,15 +24,16 @@ ASR_MODELS = [
     {"id": "custom", "label": "직접 고른 모델 (허깅페이스 이름이나 우리 자료로 훈련한 모델 폴더)"},
 ]
 PASS2 = [
-    {"id": "anime", "label": "anime-whisper — 조용한 장면·속삭임에 강함 (지금, 기본으로 씀)"},
-    {"id": "v2", "label": "Whisper large-v2 — 배경음·잡음 큰 장면에 강함"},
+    {"id": "none", "label": "안 씀 — 위 모델 하나로 한 번만 정확히 (기본 · 빠름)"},
+    {"id": "anime", "label": "anime-whisper로 한 번 더 — 시간 2배, 다르게 들은 말을 '다른 받아쓰기'로 보여 줌"},
+    {"id": "v2", "label": "Whisper large-v2로 한 번 더 — 시간 2배, 배경음·잡음 큰 장면용"},
 ]
 ENHANCERS = [
     {"id": "none", "label": "끄기 (지금)"},
     {"id": "mel-band-roformer", "label": "목소리만 걸러내기 — Mel-Band RoFormer (시험)"},
     {"id": "htdemucs", "label": "목소리만 걸러내기 — Demucs (시험)"},
 ]
-DEFAULT = {"tr": "q9", "tr_file": "", "asr": "galgame", "asr_custom": "", "pass2": "anime", "enhancer": "none"}
+DEFAULT = {"tr": "q9", "tr_file": "", "asr": "galgame", "asr_custom": "", "second": "none", "enhancer": "none"}
 
 
 def load():
@@ -80,9 +81,10 @@ def tr_key():
 
 
 def pass2():
-    v = load().get("pass2", "anime")
-    return v if any(x["id"] == v for x in PASS2) else "anime"
+    """두 번째 받아쓰기 (기본: 안 씀). 예전 설정 이름(pass2)은 안 봄 — 기본이 '한 번만'으로 바뀌었음"""
+    v = load().get("second", "none")
+    return v if any(x["id"] == v for x in PASS2) else "none"
 
 
 def asr_key():
-    return asr_model_id() + "|" + enhancer() + ("" if pass2() == "anime" else "|p2=" + pass2())
+    return asr_model_id() + "|" + enhancer() + ("" if pass2() == "none" else "|p2=" + pass2())
