@@ -538,7 +538,7 @@ class Translator:
         import models
         gpu = ["-ngl", "999"] if models.tr_model().get("gpu_all", False) else []   # 큰 모델: llama.cpp가 그래픽카드·메모리에 알아서 나눠 올림 (--fit)
         self.p = subprocess.Popen([exe, "-m", gguf, "--port", str(LLAMA_PORT), "--host", "127.0.0.1", *gpu,
-                                   "-c", "8192"], stdout=self.log, stderr=self.log, creationflags=flags)
+                                   "-c", "8192", "--reasoning-budget", "0"], stdout=self.log, stderr=self.log, creationflags=flags)
         t0 = time.time()
         while time.time() - t0 < 300:
             if self.p.poll() is not None:
@@ -598,7 +598,7 @@ class Translator:
                 pass
 
 
-BATCH = 8       # 한 번에 번역하는 줄 수
+BATCH = 16      # 한 번에 번역하는 줄 수 (한 번 부를 때 많이 묶을수록 빠름)
 CTX = 4         # 같이 보여 주는 앞 대사 수
 
 
@@ -656,8 +656,8 @@ def translate_lines(lines, job=None, tr=None, f0=None, prof=None, skip_fix=False
     own = tr is None
     tr = tr or Translator(job)
     try:
-        if lines and lines[0].get("lang", "ja") == "ja" and not skip_fix:
-            fix_japanese(lines, tr, job)
+        if lines and lines[0].get("lang", "ja") == "ja" and not skip_fix and FIX_SEPARATE:
+            fix_japanese(lines, tr, job)              # (꺼 둠) 따로 다듬는 단계 — 번역할 때 같이 바로잡게 바꿈
         for l in lines:
             src = clean_ja(l["src"])
             tn = voice.turns(src, l["start"], l["end"], f0) if f0 is not None else [(None, src)]
@@ -671,7 +671,7 @@ def translate_lines(lines, job=None, tr=None, f0=None, prof=None, skip_fix=False
             part = lines[k:k + BATCH]
             try:
                 import tm
-                kos = tr.translate([l["src_t"] for l in part],                     # (다른 받아쓰기는 위에서 일본어 다듬을 때 이미 씀)
+                kos = tr.translate([l["src_t"] + (f" [alt: {l['alt']}]" if l.get("alt") else "") for l in part],   # 다른 받아쓰기도 같이 줘서 번역하면서 바로잡게
                                    done[-CTX:], part[0].get("lang", "ja"), extra + tm.prompt_for([l["src"] for l in part]))
                 bad = 0
             except Exception as e:
@@ -695,9 +695,10 @@ def translate_lines(lines, job=None, tr=None, f0=None, prof=None, skip_fix=False
     return lines
 
 
-TR_VER = "9"
+TR_VER = "10"
 POST_VER = "1"   # 번역 뒤 정리(기호 지우기·나누기 등)만 바뀌면 올림 → 번역 모델을 다시 돌리지 않고 몇 초 만에 다시 정리
-FIX_VER = "1"    # 일본어 다듬기 방식이 바뀌면 올림 (그대로면 번역 다시 할 때 다듬은 일본어를 다시 씀)     # 번역 방식이 바뀌면 올림 → '번역만 다시 하기' 버튼이 뜸 (받아쓰기는 그대로)
+FIX_VER = "1"
+FIX_SEPARATE = False   # 일본어 다듬기를 따로 한 번 더 돌리지 않음 (번역 모델을 두 번 부르느라 2배 걸렸음)    # 일본어 다듬기 방식이 바뀌면 올림 (그대로면 번역 다시 할 때 다듬은 일본어를 다시 씀)     # 번역 방식이 바뀌면 올림 → '번역만 다시 하기' 버튼이 뜸 (받아쓰기는 그대로)
 
 
 def split_speakers(lines):
@@ -810,6 +811,7 @@ def make_subtitles(src, out_json, job=None, profile=None, retranslate=False):
                 job["sub_done"] = True
             return lines
         skip_fix = False
+        times = {}
         rebuilt = None
         if old and old.get("asr") in ("wj1.10.2/3",) and old.get("asr") != asr_id():    # 받아쓰기 결과 파일은 그대로 있고 합치는 방식만 바뀜 → 다시 받아쓰지 않음
             rebuilt = lines_from_wj(os.path.join(d, "wj"))
@@ -835,7 +837,9 @@ def make_subtitles(src, out_json, job=None, profile=None, retranslate=False):
             import wave
             with wave.open(wav) as w:
                 dur = w.getnframes() / float(w.getframerate())
+            t_asr = time.time()
             lines = transcribe(wav, dur, job, prof.get("asr_words"))
+            times["받아쓰기"] = round(time.time() - t_asr)
             json.dump({"lines": lines, "translated": False, "asr": asr_id()}, open(out_json, "w", encoding="utf-8"), ensure_ascii=False)
         raw = [dict(l) for l in lines]                    # 받아쓰기 원본 (나중에 번역만 다시 할 때 씀)
         f0 = None
@@ -849,14 +853,16 @@ def make_subtitles(src, out_json, job=None, profile=None, retranslate=False):
             f0 = voice.pitch_track(wav, f0c)
         except Exception:
             traceback.print_exc()
+        t_tr = time.time()
         translate_lines(lines, job, f0=f0, prof=prof, skip_fix=skip_fix)
+        times["번역"] = round(time.time() - t_tr)
         tr_lines = [{k: v for k, v in l.items() if k not in ("src_t",)} for l in lines]
         lines = resegment(split_speakers([dict(l) for l in lines]))
         json.dump({"lines": lines, "asr_lines": raw, "tr_lines": tr_lines, "translated": True, "asr": asr_id(), "tr": tr_id(),
-                   "post": POST_VER, "fix": FIX_VER,
+                   "post": POST_VER, "fix": FIX_VER, "times": times,
                    "profile": prof.get("id"), "profile_name": prof.get("name"), "pver": profiles.version(prof)},
                   open(out_json, "w", encoding="utf-8"), ensure_ascii=False)
-        _log(job, f"자막 완성 ({len(lines)}줄)", 100)
+        _log(job, f"자막 완성 ({len(lines)}줄) · " + " · ".join(f"{k} {v // 60}분 {v % 60}초" for k, v in times.items()), 100)
         if job is not None:
             job["sub_done"] = True
         return lines
