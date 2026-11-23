@@ -25,7 +25,7 @@ JA_CONTEXT = ("アダルトビデオの会話。よく出る言葉: 気持ちい
               "もっと、奥、中に出して、おっぱい、乳首、おちんちん、まんこ、クリ、お尻、濡れてる、硬い、大きい、気持ちいいところ、"
               "禁欲、男優さん、感触、生、ベッド、パンツ、キス、フェラ、潮吹き、敏感、くすぐったい、エッチ、可愛い、綺麗")
 WJ_ARGS = ["--ensemble", "--language", "japanese",
-           "--pass1-pipeline", "qwen", "--pass1-qwen-params", json.dumps({"context": JA_CONTEXT}, ensure_ascii=False),
+           "--pass1-pipeline", "qwen", "--pass1-qwen-params", "{}",
            "--pass1-sensitivity", "aggressive",
            "--pass1-scene-detector", "semantic", "--pass1-speech-segmenter", "firered-vad",
            "--pass2-pipeline", "qwen", "--pass2-qwen-params", '{"generator_backend": "anime-whisper"}',
@@ -35,7 +35,7 @@ WJ_ARGS = ["--ensemble", "--language", "japanese",
 TR_REPO = "HauhauCS/Qwen3.5-9B-Uncensored-HauhauCS-Aggressive"   # 번역: 검열 해제된 Qwen3.5 9B
 TR_FILE = "Qwen3.5-9B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf"
 TR_MB = 5300
-ASR_VER = "wj1.10.2/2"   # 받아쓰기 방식이 바뀌면 올림 → 예전 방식으로 만든 자막은 '다시 만들기' 버튼이 뜸
+ASR_VER = "wj1.10.2/3"   # 받아쓰기 방식이 바뀌면 올림 → 예전 방식으로 만든 자막은 '다시 만들기' 버튼이 뜸
 
 
 def asr_id():
@@ -228,7 +228,7 @@ def _attach_alt(main, other):
 def _wj_args(words=None):
     """받아쓰기 명령 (힌트 단어는 컨셉의 받아쓰기 힌트로)"""
     a = list(WJ_ARGS)
-    if words:
+    if False and words:     # 꺼 둠: 힌트 글을 주면 조용한 구간·신음 구간에서 힌트 목록을 그대로 받아 적는 문제가 있었음 (2026-11-23 실제 영상)
         ctx = "アダルトビデオの会話。よく出る言葉: " + "、".join(w for w in words if w)
         a[a.index("--pass1-qwen-params") + 1] = json.dumps({"context": ctx[:1500]}, ensure_ascii=False)
     return a
