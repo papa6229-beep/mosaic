@@ -186,6 +186,11 @@
       <button class="btn" data-w="subs">자막만</button><button class="btn" data-w="later" style="margin-left:auto">나중에</button></div>
     <div class="bar hide" id="setupBar"><i></i></div>
   </div>
+  <div id="cdrive" class="job hide">
+    <div class="hd"><span class="nm">C드라이브 정리</span></div>
+    <div class="m" id="cdMsg" style="margin-top:6px"></div>
+    <div class="acts"><button class="btn" id="cdDel">지우기</button><button class="btn" id="cdLater" style="margin-left:auto">그냥 두기</button></div>
+  </div>
   <div id="qWrap" class="hide"><h2>진행 <span class="n" id="qN"></span></h2><div id="queue"></div></div>
 
   <h2>최근 작업 <span class="n">— 검수·수정하기</span></h2>
@@ -361,6 +366,20 @@ function setupPoll(d) {
 $("setupBtns").querySelectorAll("button").forEach(b => b.onclick = () =>
   post("/setup", { what: b.dataset.w }).then(d => { if (b.dataset.w === "later") $("setup").classList.add("hide"); else setTimeout(() => fetch("/setup").then(r => r.json()).then(setupPoll), 300); }));
 fetch("/setup").then(r => r.json()).then(setupPoll).catch(() => {});
+// ---------- C드라이브에 남은 예전 시험용 모델 ----------
+function cdPoll() {
+  fetch("/cache-old").then(r => r.json()).then(c => {
+    let skip = false; try { skip = localStorage.getItem("cdSkip") === "1"; } catch (e) {}
+    const gb = c.old.reduce((a, o) => a + o.gb, 0);
+    $("cdrive").classList.toggle("hide", skip || !c.old.length);
+    $("cdMsg").textContent = `예전에 자막 방식을 시험하느라 C드라이브에 받아 둔 받아쓰기 모델 ${c.old.length}개(${gb.toFixed(1)}GB)가 남아 있어요. 지금은 안 쓰는 것들이라 지워도 돼요.`;
+    if (c.moving) { $("cdrive").classList.remove("hide"); $("cdMsg").textContent = `쓰는 모델(${c.moving})을 C드라이브에서 생성기 폴더로 옮기는 중…`; setTimeout(cdPoll, 2000); }
+  }).catch(() => {});
+}
+$("cdDel").onclick = () => { if (!confirm("C드라이브에 남은 예전 시험용 받아쓰기 모델을 지울까요? (지금 생성기는 안 쓰는 것들이에요)")) return;
+  $("cdMsg").textContent = "지우는 중…"; post("/cache-old").then(cdPoll); };
+$("cdLater").onclick = () => { try { localStorage.setItem("cdSkip", "1"); } catch (e) {} $("cdrive").classList.add("hide"); };
+setTimeout(cdPoll, 1500);
 setMode(mode); loadJobs(); pollQ();
 </script>
 </body>

@@ -9,10 +9,15 @@ import numpy as np
 import cv2
 from flask import Flask, request, jsonify, send_file, Response
 
+BASE = os.path.dirname(os.path.abspath(__file__))
+# 모델·캐시는 전부 생성기 폴더(D드라이브 등) 안에 — C드라이브 사용자 폴더(.cache)에 쌓이지 않게. 받아쓰기 프로그램에도 그대로 물려줌
+CACHE = os.path.join(BASE, "cache")
+for _k, _v in (("HF_HOME", "huggingface"), ("TORCH_HOME", "torch"), ("MODELSCOPE_CACHE", "modelscope"), ("XDG_CACHE_HOME", "")):
+    os.environ[_k] = os.path.join(CACHE, _v) if _v else CACHE
+
 import cover
 import media
 
-BASE = os.path.dirname(os.path.abspath(__file__))
 JOBS = os.path.join(BASE, "jobs")
 MODEL_PATH = os.path.join(BASE, "models", "lada_mosaic_detection_model_v4_fast.pt")
 MODEL_URL = "https://huggingface.co/ladaapp/lada/resolve/main/lada_mosaic_detection_model_v4_fast.pt"
@@ -1119,6 +1124,64 @@ def _free_gpu():
         pass
 
 
+# 예전에 C드라이브 사용자 폴더(.cache)에 받아 둔 것 중 생성기가 쓰는 모델 → 생성기 폴더로 옮김 / 이제 안 쓰는 시험용 모델은 목록만
+USED_HF = ("models--Qwen--Qwen3-ASR-1.7B", "models--Qwen--Qwen3-ForcedAligner-0.6B", "models--litagin--anime-whisper")
+OLD_HF_HINTS = ("faster-whisper", "kotoba-whisper", "anime-whisper-ct2", "translategemma", "anime-whisper-faster")
+cache_state = {"moving": "", "old": []}
+
+
+def _home_hub():
+    return os.path.join(os.path.expanduser("~"), ".cache", "huggingface", "hub")
+
+
+def _dir_gb(d):
+    t = 0
+    for r, _, fs in os.walk(d):
+        for f in fs:
+            try:
+                t += os.path.getsize(os.path.join(r, f))
+            except Exception:
+                pass
+    return round(t / 1e9, 1)
+
+
+def _move_caches():
+    src = _home_hub()
+    dst = os.path.join(CACHE, "huggingface", "hub")
+    if not os.path.isdir(src) or os.path.abspath(src) == os.path.abspath(dst):
+        return
+    with sub_lock:                               # 옮기는 동안 자막 작업은 기다림
+        for name in USED_HF:
+            a, b = os.path.join(src, name), os.path.join(dst, name)
+            if os.path.isdir(a) and not os.path.exists(b):
+                try:
+                    cache_state["moving"] = name.split("--")[-1]
+                    os.makedirs(dst, exist_ok=True)
+                    shutil.move(a, b)
+                    print(f"  {name} 를 C드라이브에서 생성기 폴더로 옮겼어요")
+                except Exception as e:
+                    print("  모델 옮기기 실패:", e)
+        cache_state["moving"] = ""
+    try:
+        cache_state["old"] = [{"name": n, "gb": _dir_gb(os.path.join(src, n))} for n in sorted(os.listdir(src))
+                              if any(h in n.lower() for h in OLD_HF_HINTS)]
+    except Exception:
+        cache_state["old"] = []
+
+
+@app.route("/cache-old", methods=["GET", "POST"])
+def cache_old():
+    """C드라이브에 남은 예전 시험용 모델(지금은 안 씀): 목록 보기 / 누르면 지우기"""
+    if request.method == "POST":
+        src = _home_hub()
+        for o in list(cache_state["old"]):
+            p = os.path.join(src, o["name"])
+            if os.path.isdir(p) and o["name"] not in USED_HF:
+                shutil.rmtree(p, ignore_errors=True)
+        cache_state["old"] = [o for o in cache_state["old"] if os.path.isdir(os.path.join(src, o["name"]))]
+    return jsonify(cache_state)
+
+
 def _kill_leftovers():
     """생성기 창을 닫아도 남아서 메모리를 잡고 있는 자막 프로그램(받아쓰기·번역 모델)을 끔"""
     try:
@@ -1715,6 +1778,7 @@ if __name__ == "__main__":
         time.sleep(1.5)
     except Exception:
         pass
+    threading.Thread(target=_move_caches, daemon=True).start()
     try:   # 창을 닫아도 남아 있던 자막 프로그램(받아쓰기·번역)이 메모리를 잡고 있으면 끄기
         k = _kill_leftovers()
         if k:
