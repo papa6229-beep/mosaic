@@ -67,6 +67,17 @@ def main():
             except ValueError:
                 pass
         dst = f"{base}_{int(start // 60)}분부터{int(minutes)}분{ext}"
+        if os.environ.get("CUT_AUDIO"):                  # 소리만 (보내기 쉽게 작게, 소리 트랙·좌우 채널은 원본 그대로)
+            dst = f"{base}_{int(start // 60)}분부터{int(minutes)}분_소리.mka"
+            print(f"{int(start // 60)}분 {int(start % 60)}초부터 {int(minutes)}분 소리만 꺼내는 중...")
+            r = subprocess.run([media.ffmpeg_exe(), "-y", "-hide_banner", "-loglevel", "error", "-stats",
+                                *(["-ss", str(start)] if start else []), "-i", src, "-t", str(minutes * 60),
+                                "-map", "0:a", "-vn", "-c:a", "flac", "-ar", "24000", dst])
+            if r.returncode != 0 or not os.path.exists(dst):
+                print("소리 꺼내기에 실패했어요. 이 창을 캡처해서 보내 주세요.")
+                return 1
+            print(f"\n완료: {dst}  ({os.path.getsize(dst) / 1e6:.0f}MB) — 이 파일을 보내 주세요")
+            return 0
     else:
         dst = f"{base}_앞{int(minutes)}분{ext}"
     info = media.probe(src)
