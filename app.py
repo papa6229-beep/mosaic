@@ -1125,7 +1125,8 @@ def _free_gpu():
 
 
 # 예전에 C드라이브 사용자 폴더(.cache)에 받아 둔 것 중 생성기가 쓰는 모델 → 생성기 폴더로 옮김 / 이제 안 쓰는 시험용 모델은 목록만
-USED_HF = ("models--Qwen--Qwen3-ASR-1.7B", "models--Qwen--Qwen3-ForcedAligner-0.6B", "models--litagin--anime-whisper")
+USED_HF = ("models--Qwen--Qwen3-ASR-1.7B", "models--jaykwok--Qwen3-ASR-1.7B-JA-Anime-Galgame", "models--Qwen--Qwen3-ForcedAligner-0.6B",
+           "models--litagin--anime-whisper")
 OLD_HF_HINTS = ("faster-whisper", "kotoba-whisper", "anime-whisper-ct2", "translategemma", "anime-whisper-faster")
 cache_state = {"moving": "", "old": [], "moved": [], "checked": False}
 
@@ -1390,7 +1391,7 @@ def _prefetch_asr_models(job):
     import subs
     py = subs.ensure_whisperjav(job)
     code = ("from huggingface_hub import snapshot_download as s\n"
-            "for m in ('Qwen/Qwen3-ASR-1.7B','Qwen/Qwen3-ForcedAligner-0.6B','litagin/anime-whisper'):\n"
+            "for m in ('jaykwok/Qwen3-ASR-1.7B-JA-Anime-Galgame','Qwen/Qwen3-ForcedAligner-0.6B','litagin/anime-whisper'):\n"
             "    print('받는 중', m, flush=True); s(m)\n")
     env = dict(os.environ, HF_HUB_DISABLE_XET="1")
     p = subprocess.Popen([py, "-c", code], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, text=True, encoding="utf-8", errors="ignore")
