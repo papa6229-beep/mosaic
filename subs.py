@@ -629,10 +629,12 @@ def ensure_translator(job=None):
             _download(f"https://huggingface.co/{TR_REPO_}/resolve/main/{TR_FILE_}", gguf, job, "번역 모델")
     exe = _find_server()
     if os.name == "nt" and _has_nvidia() and not _find_server(LLAMA_CUDA_DIR):
-        try:                                   # 엔비디아 그래픽카드면 CUDA판 (Vulkan판은 지포스에서 CPU로 돌아 초당 몇 글자밖에 안 나옴)
-            exe = _get_llama(LLAMA_CUDA_DIR, "bin-win-cuda-12.4-x64.zip", job, cudart=True)
-        except Exception as e:
-            print("CUDA판 번역 도구 실패, Vulkan판 사용:", e)
+        for cv in ("13.1", "12.4"):            # 엔비디아 그래픽카드면 CUDA판 (Vulkan판은 지포스에서 CPU로 돌아 초당 몇 글자밖에 안 나옴)
+            try:                               # 13.1 먼저: RTX 50(5060 등) 지원. 드라이버 580 이상 필요(받아쓰기도 580 이상 필요)
+                exe = _get_llama(LLAMA_CUDA_DIR, f"bin-win-cuda-{cv}-x64.zip", job, cudart=True)
+                break
+            except Exception as e:
+                print(f"CUDA {cv}판 번역 도구 실패:", e)
     if not exe:
         exe = _get_llama(LLAMA_DIR, "bin-win-vulkan-x64.zip" if os.name == "nt" else "bin-ubuntu-vulkan-x64.tar.gz", job)
     return exe, gguf
