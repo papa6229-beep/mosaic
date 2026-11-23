@@ -12,6 +12,18 @@ set PIP_NO_CACHE_DIR=1
 set TEMP=%~dp0tmp
 set TMP=%~dp0tmp
 if not exist tmp mkdir tmp
+
+rem ---- Microsoft Visual C++ runtime (needed by the graphics-card packages) ----
+reg query "HKLM\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64" /v Installed >nul 2>&1
+if not errorlevel 1 goto vcok
+echo.
+echo [0/2] Installing Microsoft Visual C++ runtime ... (click YES if Windows asks)
+curl -L --fail -o tmp\vc_redist.x64.exe https://aka.ms/vs/17/release/vc_redist.x64.exe
+if errorlevel 1 goto fail
+tmp\vc_redist.x64.exe /install /quiet /norestart
+del tmp\vc_redist.x64.exe
+:vcok
+
 if exist python\python.exe goto app
 
 echo.

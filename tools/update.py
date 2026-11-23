@@ -100,6 +100,34 @@ def shortcut():
     subprocess.run(["powershell", "-NoProfile", "-Command", ps])
 
 
+def check_gpu():
+    """엔비디아 그래픽카드와 드라이버 버전 확인 (자막 받아쓰기·번역은 드라이버 580 이상 필요)"""
+    if os.name != "nt":
+        return
+    import shutil
+    smi = shutil.which("nvidia-smi") or os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "System32", "nvidia-smi.exe")
+    try:
+        out = subprocess.run([smi, "--query-gpu=name,driver_version", "--format=csv,noheader"],
+                             capture_output=True, text=True, timeout=20).stdout.strip().splitlines()[0]
+        name, ver = [x.strip() for x in out.split(",")]
+    except Exception:
+        print("\n[알림] 엔비디아 그래픽카드를 찾지 못했어요. 그래픽카드 드라이버를 설치한 뒤 다시 켜 주세요.")
+        print("        드라이버 받는 곳: https://www.nvidia.com/ko-kr/drivers/")
+        return
+    print(f"\n그래픽카드: {name} (드라이버 {ver})")
+    try:
+        old = float(ver.split(".")[0]) < 580
+    except ValueError:
+        old = False
+    if old:
+        print("[알림] 그래픽카드 드라이버가 오래됐어요. 자막 기능은 드라이버 580 이상이 필요해요.")
+        print("       드라이버 받는 곳(열어 드릴게요): https://www.nvidia.com/ko-kr/drivers/ — 설치 후 PC를 다시 켜 주세요.")
+        try:
+            os.startfile("https://www.nvidia.com/ko-kr/drivers/")
+        except Exception:
+            pass
+
+
 def main():
     what = sys.argv[1] if len(sys.argv) > 1 else "update"
     if what == "install":
@@ -108,6 +136,7 @@ def main():
         packages(force=True)
         ask_mode()
         shortcut()
+        check_gpu()
         print("\n설치 끝! 바탕화면의 '모자이크 생성기'로 켜요. (이 폴더의 start.bat 과 같아요)")
         return 0
     try:                                   # 켤 때: 새 판 확인 (인터넷이 안 되면 지금 판으로)
