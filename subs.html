@@ -26,8 +26,17 @@
   /* 방송본부 자막 샘플 기준: 가로 가운데, 글자 높이 ≈ 영상 높이 4%, 글자 아래 끝이 영상 아래에서 ≈ 11% 위, 흰 글자 + 얇은 검은 테두리 */
   @font-face{font-family:"SubKR";src:url("/fonts/NotoSansKR-Medium.otf") format("opentype");font-weight:500}
   #cap{position:absolute;text-align:center;line-height:1.38;pointer-events:none}
-  #cap span{display:inline-block;color:#fff;font-family:"SubKR","Malgun Gothic",sans-serif;font-weight:500;white-space:pre;-webkit-text-stroke:.1em #000;paint-order:stroke fill;text-shadow:0 0 .08em #000}
+  #cap span{display:inline-block;color:#fff;font-family:"SubKR","Malgun Gothic",sans-serif;font-weight:500;white-space:pre;-webkit-text-stroke:.1em #000;paint-order:stroke fill}
   #cap span.dlg{text-align:left}
+  #cap span.box{-webkit-text-stroke:0;text-shadow:none;padding:.45em .6em}
+  .sm.nar.on{background:#e5e7eb;color:#111;border-color:#e5e7eb}
+  #styleBox{display:none;position:fixed;right:16px;top:60px;z-index:20;width:340px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px;box-shadow:0 12px 40px rgba(0,0,0,.5)}
+  #styleBox h3{margin:0 0 10px;font-size:16px}
+  #styleBox .r{display:flex;align-items:center;gap:8px;margin:8px 0}
+  #styleBox .r label{width:92px;color:var(--sub);font-size:14px;flex:none}
+  #styleBox .r input[type=range]{flex:1}
+  #styleBox .r span{width:44px;text-align:right;font-size:13px;color:var(--sub)}
+  #styleBox select{flex:1;background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:5px}
   .ctl{display:flex;align-items:center;gap:6px;margin-top:8px;flex-wrap:wrap}
   .tc{font-variant-numeric:tabular-nums;color:var(--sub);margin-left:6px}
   .tc b{color:var(--ink)}
@@ -65,11 +74,26 @@
   <button id="bLang" title="화면에 보이는 자막 바꾸기">화면: 한국어</button>
   <button id="bUndo" title="되돌리기 (Ctrl+Z)">↶ 되돌리기</button>
   <button class="btn" id="bResetSubs" title="자막에서 고친 내용을 모두 지우고 처음 만든 상태로">처음 상태로</button>
+  <button id="bStyle" title="자막 글꼴·크기·위치·색·테두리·상자 (영상에 입힐 때 그대로 들어가요)">자막 모양</button>
+  <button class="main" id="bBurn" title="이 자막을 영상에 입혀서 저장해요. 블러 작업이면 검수한 블러도 같이 한 번에 저장해요">영상에 자막 입혀 저장</button>
+  <a class="btn" id="dlBurn" href="#" style="display:none">입힌 영상 받기</a>
   <a class="btn main" id="dlKo" href="#">한국어 자막 파일 받기 (.srt)</a>
   <a class="btn" id="dlSrc" href="#">원문 자막 파일</a>
   <span id="msg"></span>
 </header>
 <main>
+  <div id="styleBox">
+    <h3>자막 모양 <span class="muted" style="font-size:13px;font-weight:400">— 모든 작업에 같이 적용돼요</span></h3>
+    <div class="r"><label>글꼴</label><select id="sFont"></select></div>
+    <div class="r"><label>글자 크기</label><input type="range" id="sSize" min="0.025" max="0.08" step="0.001"><span id="vSize"></span></div>
+    <div class="r"><label>높이 (아래에서)</label><input type="range" id="sBottom" min="0.02" max="0.3" step="0.002"><span id="vBottom"></span></div>
+    <div class="r"><label>글자색</label><input type="color" id="sColor"><label style="width:auto;margin-left:10px">테두리색</label><input type="color" id="sOutline"></div>
+    <div class="r"><label>테두리 두께</label><input type="range" id="sOutW" min="0" max="0.15" step="0.005"><span id="vOutW"></span></div>
+    <div class="r"><label>모든 자막 상자</label><input type="checkbox" id="sBox"><span class="muted" style="width:auto;text-align:left">자막 뒤에 반투명 검은 상자</span></div>
+    <div class="r"><label>나레이션 상자</label><input type="range" id="sNarA" min="0.3" max="1" step="0.05"><span id="vNarA"></span></div>
+    <div class="muted" style="font-size:13px;margin:6px 0 10px">줄마다 <b>상자</b> 버튼을 누르면 그 줄만 나레이션처럼 검은 상자가 깔려요.</div>
+    <div class="r"><button id="sReset">기본값 (방송본부 샘플)</button><span style="flex:1"></span><button id="sClose">닫기</button></div>
+  </div>
   <div id="left">
     <div id="stage">
       <video id="v" preload="auto" playsinline></video>
@@ -147,6 +171,51 @@ $("bResetSubs").onclick = () => {
 };
 $("dlSrc").href = `/review/${JID}/subs.srt?field=src`;
 
+// ---------- 자막 모양 (영상에 입힐 때와 같은 값) ----------
+let ST = { font: "NotoSansKR-Medium.otf", size: 0.046, bottom: 0.096, color: "#ffffff", outline: "#000000", outline_w: 0.05, box: false,
+  box_color: "#000000", box_alpha: 0.6, nar_box_alpha: 0.85 }, ST_DEF = null, stT = null;
+function hexA(h, a) { const n = parseInt(h.slice(1), 16); return `rgba(${n >> 16 & 255},${n >> 8 & 255},${n & 255},${a})`; }
+function loadFont() {
+  try { const f = new FontFace("SubSel", `url(/fontfile/${encodeURIComponent(ST.font)})`); f.load().then(ff => { document.fonts.add(ff); showCap(true); }).catch(() => {}); } catch (e) {}
+}
+function fillStyle() {
+  $("sFont").value = ST.font; $("sSize").value = ST.size; $("sBottom").value = ST.bottom; $("sColor").value = ST.color;
+  $("sOutline").value = ST.outline; $("sOutW").value = ST.outline_w; $("sBox").checked = !!ST.box; $("sNarA").value = ST.nar_box_alpha;
+  $("vSize").textContent = (ST.size * 100).toFixed(1) + "%"; $("vBottom").textContent = (ST.bottom * 100).toFixed(1) + "%";
+  $("vOutW").textContent = Math.round(ST.outline_w * 100) + "%"; $("vNarA").textContent = Math.round(ST.nar_box_alpha * 100) + "%";
+}
+function styleChanged() {
+  ST = { ...ST, font: $("sFont").value, size: +$("sSize").value, bottom: +$("sBottom").value, color: $("sColor").value, outline: $("sOutline").value,
+    outline_w: +$("sOutW").value, box: $("sBox").checked, nar_box_alpha: +$("sNarA").value };
+  fillStyle(); showCap(true);
+  clearTimeout(stT); stT = setTimeout(() => fetch("/sub-style", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(ST) }), 400);
+}
+fetch("/sub-style").then(r => r.json()).then(d => {
+  ST = d.style; ST_DEF = d.default;
+  $("sFont").innerHTML = d.fonts.map(f => `<option value="${esc(f.file)}">${esc(f.label)}</option>`).join("");
+  fillStyle(); loadFont(); showCap(true);
+}).catch(() => {});
+["sSize", "sBottom", "sColor", "sOutline", "sOutW", "sBox", "sNarA"].forEach(id => $(id).addEventListener("input", styleChanged));
+$("sFont").addEventListener("change", () => { styleChanged(); loadFont(); });
+$("bStyle").onclick = () => { $("styleBox").style.display = $("styleBox").style.display === "block" ? "none" : "block"; };
+$("sClose").onclick = () => $("styleBox").style.display = "none";
+$("sReset").onclick = () => { if (ST_DEF) { ST = { ...ST_DEF }; fillStyle(); styleChanged(); loadFont(); } };
+// ---------- 영상에 자막 입혀 저장 ----------
+$("bBurn").onclick = () => {
+  if (!confirm("지금 자막을 영상에 입혀서 저장할까요?\n(블러 작업이면 검수한 블러도 같이 한 번에 저장해요. 원본 영상은 그대로 남아요)")) return;
+  clearTimeout(saveT);
+  fetch(`/review/${JID}/subs`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ lines: L }) })
+    .then(() => fetch(`/review/${JID}/subs/burn`, { method: "POST" })).then(r => r.json()).then(r => {
+      if (r.error) return msg(r.error, "bad");
+      $("bBurn").disabled = true; $("dlBurn").style.display = "none";
+      const poll = () => fetch(`/status/${r.job}`).then(x => x.json()).then(s => {
+        if (s.error) { $("bBurn").disabled = false; return msg("자막 입히기 실패: " + s.error, "bad"); }
+        if (s.done) { $("bBurn").disabled = false; $("dlBurn").href = `/download/${r.job}`; $("dlBurn").style.display = ""; return msg("자막 입힌 영상 저장 끝 — 작업 폴더에 _sub 이름으로 있어요", "ok"); }
+        msg(`자막 입히는 중 ${s.pct || 0}% · ${s.msg || ""}`); setTimeout(poll, 1500);
+      }).catch(() => setTimeout(poll, 3000));
+      poll();
+    });
+};
 function msg(t, c) { $("msg").textContent = t || ""; $("msg").className = c || ""; }
 function fmt(t, d = 1) {
   t = Math.max(0, t); const h = Math.floor(t / 3600), m = Math.floor(t % 3600 / 60), s = t % 60;
@@ -186,6 +255,7 @@ function rowHTML(l, i) {
       <button class="sm" data-a="e" title="끝을 지금 위치로 (])">←지금</button>
       <span>${(l.end - l.start).toFixed(1)}초</span> ${over}
       <span style="margin-left:auto"></span>
+      <button class="sm nar${l.nar ? " on" : ""}" data-a="n" title="나레이션 줄: 이 줄만 뒤에 검은 상자를 깔아요">상자</button>
       <button class="sm" data-a="p" title="이 줄 처음부터 재생 (R)">▶</button>
       <button class="sm danger" data-a="d" title="이 줄 삭제 (Del)">✕</button>
     </div>
@@ -213,6 +283,7 @@ $("list").addEventListener("click", e => {
   if (a === "d") { snap(); L.splice(i, 1); if (sel >= L.length) sel = L.length - 1; render(); save(); return; }
   if (a === "s" || a === "e") { snap(); setTime(i, a === "s" ? "start" : "end", V.currentTime); return; }
   if (a === "p") { setSel(i, true); V.play(); return; }
+  if (a === "n") { snap(); L[i].nar = !L[i].nar; e.target.classList.toggle("on", !!L[i].nar); save(); showCap(true); return; }
   if (i !== sel) setSel(i, !/TEXTAREA|INPUT/.test(e.target.tagName) && !e.target.isContentEditable);
 });
 $("list").addEventListener("focusin", e => { const r = e.target.closest(".ln"); if (r && +r.dataset.i !== sel) setSel(+r.dataset.i, false); });
@@ -285,25 +356,35 @@ function idxAt(t) {
   for (let i = k; i >= 0 && i > k - 4; i--) if (L[i].start <= t && t < L[i].end) return i;
   return -1;
 }
-function wrapKo(t) {                 // 한 줄이 23자를 넘으면 가운데 가까운 띄어쓰기에서 두 줄로 (하이픈 두 줄은 그대로)
-  if (!t || t.includes("\n") || t.length <= 23) return t;
-  const mid = t.length / 2; let best = -1;
-  for (let i = 0; i < t.length; i++) if (t[i] === " " && (best < 0 || Math.abs(i - mid) < Math.abs(best - mid))) best = i;
-  return best < 0 ? t : t.slice(0, best) + "\n" + t.slice(best + 1);
+function wrapKo(t) {                 // 한 줄이 20자를 넘으면 가운데 가까운 띄어쓰기에서 두 줄로 (하이픈 두 줄은 그대로) — 영상에 입힐 때도 같은 규칙
+  if (!t) return t;
+  return t.split("\n").map(u => {
+    if (u.length <= 20) return u;
+    const mid = u.length / 2; let best = -1;
+    for (let i = 0; i < u.length; i++) if (u[i] === " " && (best < 0 || Math.abs(i - mid) < Math.abs(best - mid))) best = i;
+    return best < 0 ? u : u.slice(0, best) + "\n" + u.slice(best + 1);
+  }).join("\n");
 }
 function showCap() {
   const i = idxAt(V.currentTime);
   const txt = i < 0 ? "" : (showKo ? L[i].ko : L[i].src) || "";
   const t2 = wrapKo(txt.trim());
-  $("cap").innerHTML = t2 ? `<span class="${/^- /.test(t2) ? "dlg" : ""}">${esc(t2)}</span>` : "";
+  const boxed = i >= 0 && showKo && (ST.box || L[i].nar);
+  $("cap").innerHTML = t2 ? `<span class="${/^- /.test(t2) ? "dlg" : ""}${boxed ? " box" : ""}">${esc(t2)}</span>` : "";
   // 영상이 실제로 그려진 칸(위아래·양옆 검은 여백 뺀 곳) 기준으로 크기·위치를 맞춤
   const ew = V.clientWidth, eh = V.clientHeight, ar = (V.videoWidth || 16) / (V.videoHeight || 9);
   let cw = ew, ch = ew / ar;
   if (ch > eh) { ch = eh; cw = eh * ar; }
   const ox = (ew - cw) / 2, oy = (eh - ch) / 2, c = $("cap");
   c.style.left = ox + "px"; c.style.width = cw + "px";
-  c.style.bottom = (eh - oy - ch + ch * 0.096) + "px";
-  c.style.fontSize = Math.max(12, ch * 0.046) + "px";
+  c.style.bottom = (eh - oy - ch + ch * ST.bottom) + "px";
+  c.style.fontSize = Math.max(10, ch * ST.size) + "px";
+  const sp = c.firstElementChild;
+  if (sp) {
+    sp.style.color = ST.color; sp.style.fontFamily = `"SubSel","SubKR","Malgun Gothic",sans-serif`;
+    sp.style.webkitTextStroke = sp.classList.contains("box") && i >= 0 && L[i].nar ? "0" : `${ST.outline_w * 2}em ${ST.outline}`;
+    sp.style.background = sp.classList.contains("box") ? hexA(ST.box_color, i >= 0 && L[i].nar ? ST.nar_box_alpha : ST.box_alpha) : "";
+  }
   if (i !== nowIdx) {
     const o = rowEl(nowIdx); if (o) o.classList.remove("now");
     nowIdx = i; const r = rowEl(i);

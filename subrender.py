@@ -12,7 +12,7 @@ DEFAULT_STYLE = {
     "bottom": 0.096,                   # 자막 아래 끝이 영상 아래에서 영상 높이 × bottom 만큼 위
     "color": "#ffffff",
     "outline": "#000000",
-    "outline_w": 0.10,                 # 테두리 두께 = 글자 크기 × outline_w
+    "outline_w": 0.05,                 # 테두리 두께(바깥쪽) = 글자 크기 × outline_w
     "box": False,                      # 모든 자막 뒤에 상자
     "box_color": "#000000",
     "box_alpha": 0.6,
@@ -78,6 +78,15 @@ def _rgb(h):
     return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
 
 
+def _wrap(t, n=20):
+    """한 줄이 n자를 넘으면 가운데 가까운 띄어쓰기에서 두 줄로 (자막 화면 미리보기와 같은 규칙)"""
+    if len(t) <= n or " " not in t:
+        return [t]
+    sp = [i for i, ch in enumerate(t) if ch == " "]
+    i = min(sp, key=lambda x: abs(x - len(t) / 2))
+    return [t[:i], t[i + 1:]]
+
+
 class Overlay:
     """자막 목록(cues: [{start,end,ko,nar}], 초 단위)을 프레임 번호로 찾아 YUV 프레임에 입힘. 같은 자막 그림은 한 번만 만듦"""
 
@@ -113,7 +122,7 @@ class Overlay:
         c, st, W, H = self.cues[k], self.st, self.W, self.H
         f = self._font()
         fs = f.size
-        lines = c["ko"].strip().split("\n")
+        lines = [x for l in c["ko"].strip().split("\n") for x in _wrap(l)]
         dlg = len(lines) > 1 and all(l.startswith("-") for l in lines)      # 두 사람 대사: 줄 왼쪽 맞춤 덩어리를 가운데에
         sw = max(1, int(round(fs * st["outline_w"])))
         lh = int(round(fs * st["line_gap"]))
