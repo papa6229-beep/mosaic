@@ -1223,6 +1223,90 @@ def review_subs_make(jid):
     return jsonify(state=start_subs(jid, r["src"], b.get("profile"), bool(b.get("retranslate"))))
 
 
+# ---------------- 처음 준비 (설치 후 한 번: 쓸 것만 미리 받아 두기) ----------------
+SETUP_P = os.path.join(BASE, "settings", "setup.json")
+setup_state = {"running": False, "msg": "", "pct": 0, "error": ""}
+
+
+def _setup_done():
+    try:
+        return json.load(open(SETUP_P, encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _prefetch_asr_models(job):
+    """받아쓰기 모델들을 미리 받음 (WhisperJAV가 첫 작업 때 받는 것과 같은 저장 위치)"""
+    import subs
+    py = subs.ensure_whisperjav(job)
+    code = ("from huggingface_hub import snapshot_download as s\n"
+            "for m in ('Qwen/Qwen3-ASR-1.7B','Qwen/Qwen3-ForcedAligner-0.6B','litagin/anime-whisper'):\n"
+            "    print('받는 중', m, flush=True); s(m)\n")
+    env = dict(os.environ, HF_HUB_DISABLE_XET="1")
+    p = subprocess.Popen([py, "-c", code], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, text=True, encoding="utf-8", errors="ignore")
+    for line in p.stdout:
+        if line.startswith("받는 중"):
+            subs._log(job, "받아쓰기 모델 " + line.split()[-1] + " 받는 중 (처음 한 번만, 수 GB)")
+    if p.wait() != 0:
+        raise RuntimeError("받아쓰기 모델을 받지 못했어요 (인터넷 연결을 확인해 주세요)")
+
+
+def run_setup(what):
+    st = setup_state
+    st.update(running=True, error="", pct=0)
+    done = _setup_done()
+    try:
+        if what in ("blur", "both"):
+            st["msg"] = "블러 모델 받는 중"
+            job = {}
+            t = threading.Thread(target=ensure_model, args=(job,), daemon=True)
+            t.start()
+            while t.is_alive():
+                st["msg"] = job.get("msg") or st["msg"]
+                time.sleep(0.5)
+            if not FAKE and not os.path.exists(MODEL_PATH):
+                raise RuntimeError("블러 모델을 받지 못했어요")
+            done["blur"] = True
+            st["pct"] = 30 if what == "both" else 100
+        if what in ("subs", "both"):
+            import subs
+            job = {}
+            def watch():
+                while st["running"]:
+                    if job.get("sub_msg"):
+                        st["msg"] = job["sub_msg"]
+                    time.sleep(0.5)
+            threading.Thread(target=watch, daemon=True).start()
+            st["msg"] = "받아쓰기 프로그램 설치 중 (10~30분)"
+            _prefetch_asr_models(job)
+            st["pct"] = 70
+            st["msg"] = "번역 모델 받는 중"
+            subs.ensure_translator(job)
+            done["subs"] = True
+        st.update(pct=100, msg="준비 끝 — 바로 작업할 수 있어요")
+    except Exception as e:
+        traceback.print_exc()
+        st["error"] = str(e)[:300]
+    finally:
+        done["asked"] = True
+        os.makedirs(os.path.dirname(SETUP_P), exist_ok=True)
+        json.dump(done, open(SETUP_P, "w", encoding="utf-8"))
+        st["running"] = False
+
+
+@app.route("/setup", methods=["GET", "POST"])
+def setup():
+    if request.method == "POST":
+        what = (request.get_json(silent=True) or {}).get("what")
+        if what == "later":
+            d = _setup_done(); d["asked"] = True
+            os.makedirs(os.path.dirname(SETUP_P), exist_ok=True)
+            json.dump(d, open(SETUP_P, "w", encoding="utf-8"))
+        elif what in ("blur", "subs", "both") and not setup_state["running"]:
+            threading.Thread(target=run_setup, args=(what,), daemon=True).start()
+    return jsonify(done=_setup_done(), state=setup_state)
+
+
 # ---------------- 자막 컨셉 (팀 기준: 단어 사전·바꿔 쓰기·말투 메모·받아쓰기 힌트·SRT 예시) ----------------
 @app.get("/subtitle-style")
 def page_profiles():

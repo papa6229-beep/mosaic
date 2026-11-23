@@ -179,6 +179,13 @@
   </section>
 
   <div class="right">
+  <div id="setup" class="job hide" style="border-color:rgba(232,165,75,.45)">
+    <div class="hd"><span class="nm" style="font-size:18px">처음 준비 — 무엇을 쓰실 건가요?</span></div>
+    <div class="m" id="setupMsg" style="margin-top:6px">쓸 것만 미리 받아 두면 첫 작업에서 기다리지 않아요. 고르지 않은 것도 나중에 처음 쓸 때 알아서 받아요.</div>
+    <div class="acts" id="setupBtns"><button class="btn pri" data-w="both">블러 + 자막 둘 다</button><button class="btn" data-w="blur">블러만</button>
+      <button class="btn" data-w="subs">자막만</button><button class="btn" data-w="later" style="margin-left:auto">나중에</button></div>
+    <div class="bar hide" id="setupBar"><i></i></div>
+  </div>
   <div id="qWrap" class="hide"><h2>진행 <span class="n" id="qN"></span></h2><div id="queue"></div></div>
 
   <h2>최근 작업 <span class="n">— 검수·수정하기</span></h2>
@@ -340,6 +347,20 @@ fetch("/profiles").then(r => r.json()).then(ps => {
   if (ps.some(p => p.id === last)) $("profile").value = last;
 }).catch(() => {});
 $("profile").onchange = () => { try { localStorage.setItem("profile", $("profile").value); } catch (e) {} };
+// ---------- 처음 준비 ----------
+function setupPoll(d) {
+  const st = d.state, show = st.running || st.error || !d.done.asked;
+  $("setup").classList.toggle("hide", !show);
+  $("setupBtns").classList.toggle("hide", st.running);
+  $("setupBar").classList.toggle("hide", !st.running);
+  $("setupBar").firstElementChild.style.width = (st.pct || 3) + "%";
+  if (st.running) $("setupMsg").textContent = st.msg || "준비 중";
+  if (st.error) { $("setupMsg").textContent = "준비 중 문제가 생겼어요: " + st.error + " — 다시 눌러 주세요"; $("setupMsg").className = "m bad"; }
+  if (st.running) setTimeout(() => fetch("/setup").then(r => r.json()).then(setupPoll), 1500);
+}
+$("setupBtns").querySelectorAll("button").forEach(b => b.onclick = () =>
+  post("/setup", { what: b.dataset.w }).then(d => { if (b.dataset.w === "later") $("setup").classList.add("hide"); else setTimeout(() => fetch("/setup").then(r => r.json()).then(setupPoll), 300); }));
+fetch("/setup").then(r => r.json()).then(setupPoll).catch(() => {});
 setMode(mode); loadJobs(); pollQ();
 </script>
 </body>
