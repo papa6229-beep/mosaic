@@ -507,6 +507,19 @@ def clean_ja(t):
     return t.strip()
 
 
+_KO_SND = set("아으하응앗읏흐후헉흑음읍앙힝히흣야이우푸츄쪽쭈")
+
+
+def _ko_sound(w):
+    """하하·흐흐·하하야·으으이·히푸 같은 소리 낱말 (같은 글자가 되풀이되거나 푸·츄·쭈가 섞임). '아이'·'아니야' 같은 말은 아님"""
+    c = re.sub(r"[,.!?~…]", "", w)
+    if c in ("츄", "쭈", "푸", "쪽"):
+        return True
+    return (len(c) >= 2 and all(ch in _KO_SND for ch in c)
+            and (len(set(c)) < len(c) or any(ch in "푸츄쭈" for ch in c)
+                 or c in ("하아", "흐응", "으응", "아앙", "하앙", "흐아", "히잉", "아응", "하읏", "흐읏", "후우")))
+
+
 def clean_ko(t):
     """번역 결과 정리: 일본어 문장부호·쓸데없는 기호 지우기, 줄 앞뒤 말줄임표 지우기 (방송본부 자막처럼). 화자 표시 ' || ' 는 남김"""
     t = (t or "").replace("‖", "||")
@@ -520,6 +533,8 @@ def clean_ko(t):
         p = re.sub(r"[\s…,~]+$", "", p).strip()
         p = re.sub(r"\s*…\s*", " ", p).strip()                                 # 가운데 말줄임표는 띄어쓰기로
         p = re.sub(r"\s{2,}", " ", p)
+        p = " ".join(w for w in p.split(" ") if not _ko_sound(w)).strip(" ,")   # 하하·흐흐·하하야 같은 소리 낱말은 뺌
+        p = re.sub(r"\s*,\s*,", ",", p).strip(" ,")
         if re.search(r"[가-힣A-Za-z0-9]", p):
             parts.append(p)
     return " || ".join(parts)
@@ -884,7 +899,7 @@ def translate_lines(lines, job=None, tr=None, f0=None, prof=None, skip_fix=False
 
 
 TR_VER = "11"
-POST_VER = "1"   # 번역 뒤 정리(기호 지우기·나누기 등)만 바뀌면 올림 → 번역 모델을 다시 돌리지 않고 몇 초 만에 다시 정리
+POST_VER = "2"   # 번역 뒤 정리(기호 지우기·나누기 등)만 바뀌면 올림 → 번역 모델을 다시 돌리지 않고 몇 초 만에 다시 정리
 FIX_VER = "1"
 FIX_SEPARATE = False   # 일본어 다듬기를 따로 한 번 더 돌리지 않음 (번역 모델을 두 번 부르느라 2배 걸렸음)    # 일본어 다듬기 방식이 바뀌면 올림 (그대로면 번역 다시 할 때 다듬은 일본어를 다시 씀)     # 번역 방식이 바뀌면 올림 → '번역만 다시 하기' 버튼이 뜸 (받아쓰기는 그대로)
 
