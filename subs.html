@@ -273,7 +273,7 @@ function rowHTML(l, i) {
       <button class="sm danger" data-a="d" title="이 줄 삭제 (Del)">✕</button>
     </div>
     <div class="src" contenteditable="plaintext-only" spellcheck="false" title="원문 (${l.lang === "en" ? "영어" : "일본어"})">${esc(l.src)}</div>
-    ${l.alt ? `<div class="muted" style="font-size:11px;margin:0 0 2px 3px" title="두 번째 받아쓰기가 같은 곳을 다르게 들은 글자 — 번역할 때 흐름에 맞는 쪽을 골랐어요">2차로 들은 말: ${esc(l.alt)}</div>` : ""}
+    ${l.alt ? `<div class="muted" style="font-size:11px;margin:0 0 2px 3px" title="다른 받아쓰기(Qwen3-ASR)가 같은 곳을 다르게 들은 말 — 번역 전에 흐름에 맞는 쪽으로 다듬었어요">다른 받아쓰기: ${esc(l.alt)}</div>` : ""}
     <textarea rows="${Math.max(1, (l.ko || "").split("\n").length)}" placeholder="한국어 자막">${esc(l.ko)}</textarea>
   </div>`;
 }
