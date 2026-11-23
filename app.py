@@ -550,7 +550,7 @@ def _scan_worker(src, start, count, W, H, fps, mi, table, entries, exps, params,
         q.put((start, 0, traceback.format_exc()[-800:]))
 
 
-def _paint_worker(src, runs, count, W, H, fps, params, mi, counter, q):
+def _paint_worker(src, runs, count, W, H, fps, params, mi, subs, counter, q):
     """3단계(그리기): 원본을 원본 픽셀 형식(YUV) 그대로 풀고, 계획된 블러만 섞어서, 원본과 같은 압축 방식으로 조각 저장.
     runs: [(시작, 프레임 수, 블러, 윤곽, [(조각번호, 조각시작, 조각길이, 파일)])] — 이어진 구간은 한 번에 풀고 조각마다 따로 압축
     (조각은 남겨 둬서, 검수 뒤 수정본을 만들 때 안 바뀐 조각은 다시 만들지 않음). 블러가 없는 곳의 픽셀은 원본 그대로"""
@@ -561,6 +561,10 @@ def _paint_worker(src, runs, count, W, H, fps, params, mi, counter, q):
             setattr(cover2, k, v)
         fmt = mi["compose"]
         fsz = media.frame_bytes(fmt, W, H)
+        ov = None
+        if subs and subs.get("cues"):                   # 자막 입히기
+            import subrender
+            ov = subrender.Overlay(subs["cues"], W, H, fps, subs.get("style"))
         made = {}
         for start, cnt, ells, polys, parts in runs:
             w0 = max(0, start - WARMUP)
@@ -609,6 +613,8 @@ def _paint_worker(src, runs, count, W, H, fps, params, mi, counter, q):
                     break
                 yf = media.YuvFrame(buf, fmt, W, H, mi["matrix"], mi["range"])
                 changed = P.paint_yuv(yf, ells[j] if j < len(ells) else [], polys[j] if j < len(polys) else [])
+                if ov is not None and i >= start and ov.apply(yf, i):
+                    changed = True
                 if i >= start:
                     cur_ = yf.tobytes() if changed else buf
                     while st["expect"] < i:
@@ -766,7 +772,7 @@ def _load_table(d):
         return None
 
 
-def paint_save(src, ells, polys, dst, job, n, W, H, fps, params, p0=77, p1=99, times=None):
+def paint_save(src, ells, polys, dst, job, n, W, H, fps, params, p0=77, p1=99, times=None, subs=None):
     """계획된 블러대로 그려서 원본과 같은 형식으로 저장 (CPU 여러 개로 나눠서) → 원본 소리 트랙 그대로 붙여 하나로.
     실제로 저장한 파일 경로를 times["out_path"]에 남김"""
     times = times if times is not None else {}
@@ -796,7 +802,9 @@ def paint_save(src, ells, polys, dst, job, n, W, H, fps, params, p0=77, p1=99, t
     def phash(k):                                       # 이 조각에 들어가는 블러(앞 준비 구간 포함)가 같으면 같은 값
         s_, c_ = bounds[k]
         w0 = max(0, s_ - WARMUP)
-        return hashlib.md5(json.dumps([sig, ells[w0:s_ + c_], polys[w0:s_ + c_]], default=_j).encode()).hexdigest()
+        cs = [c for c in (subs or {}).get("cues", []) if c["end"] * fps >= s_ - 1 and c["start"] * fps <= s_ + c_ + 1]   # 이 조각에 걸친 자막
+        return hashlib.md5(json.dumps([sig, ells[w0:s_ + c_], polys[w0:s_ + c_], cs, (subs or {}).get("style") if cs else None],
+                                      default=_j).encode()).hexdigest()
     man_p = os.path.join(pd, "parts.json")
     try:
         old = json.load(open(man_p))
@@ -850,7 +858,7 @@ def paint_save(src, ells, polys, dst, job, n, W, H, fps, params, p0=77, p1=99, t
                 groups[w].append(k)
                 acc += bounds[k][1]
             try:
-                _run_parallel(job, K, total, lambda k: (src, runs_of(groups[k]), sum(bounds[i][1] for i in groups[k]), W, H, fps, params, mi),
+                _run_parallel(job, K, total, lambda k: (src, runs_of(groups[k]), sum(bounds[i][1] for i in groups[k]), W, H, fps, params, mi, subs),
                               _paint_worker, label, p0, p1)
                 break
             except RuntimeError as e:
@@ -1457,7 +1465,7 @@ def review_save(jid):
     return jsonify(ok=True)
 
 
-def run_fix(fid, d):
+def run_fix(fid, d, burn=False):
     job = state[fid]
     with run_lock:
         os.environ["MOSAIC_FULL"] = "1" if night["on"] else "0"
@@ -1468,16 +1476,28 @@ def run_fix(fid, d):
                 setattr(cover2, k, v)
             n, fps = r["n"], r["fps"]
             _set_hw(r["src"], job)
-            ells = json.load(open(os.path.join(d, "blur_plan.json")))
-            segtab = {int(k): v for k, v in json.load(open(os.path.join(d, "segments.json"))).items()}
-            ep = os.path.join(d, "edits.json")
-            edits = json.load(open(ep)) if os.path.exists(ep) else {}
-            ells = cover2.apply_edits(ells, segtab, edits, n)
-            polys = json.load(open(os.path.join(d, "polys.json")))
-            out = os.path.join(d, os.path.splitext(os.path.basename(r["src"]))[0] + "_fix" + os.path.splitext(r["src"])[1])
+            blur = os.path.exists(os.path.join(d, "blur_plan.json"))
+            if blur:
+                ells = json.load(open(os.path.join(d, "blur_plan.json")))
+                segtab = {int(k): v for k, v in json.load(open(os.path.join(d, "segments.json"))).items()}
+                ep = os.path.join(d, "edits.json")
+                edits = json.load(open(ep)) if os.path.exists(ep) else {}
+                ells = cover2.apply_edits(ells, segtab, edits, n)
+                polys = json.load(open(os.path.join(d, "polys.json")))
+            else:                                          # 자막만 작업: 블러 없이 원본에 자막만
+                ells, polys = [[] for _ in range(n)], [[] for _ in range(n)]
+            subs_ = None
+            if burn:
+                import subrender
+                cues = subrender.cues_of(os.path.join(d, "subs.json"))
+                if not cues:
+                    raise RuntimeError("입힐 한국어 자막이 없어요")
+                subs_ = {"cues": cues, "style": subrender.load_style()}
+            out = os.path.join(d, os.path.splitext(os.path.basename(r["src"]))[0] + ("_fix" if blur else "") + ("_sub" if burn else "")
+                               + os.path.splitext(r["src"])[1])
             t0 = time.time()
             times = {}
-            res, KP = paint_save(r["src"], ells, polys, out, job, n, r["W"], r["H"], fps, r.get("params", {}), 0, 99, times=times)
+            res, KP = paint_save(r["src"], ells, polys, out, job, n, r["W"], r["H"], fps, r.get("params", {}), 0, 99, times=times, subs=subs_)
             frames = sum(x[1] for x in res)
             job.update(pct=100, msg="완료", done=True, out=times.get("out_path", out),
                        report={"frames": frames, "fps": fps, "sec": round(time.time() - t0, 1), "fix": True,
@@ -1495,10 +1515,42 @@ def review_render(jid):
     data = request.get_json(silent=True)
     if data is not None:
         json.dump(data, open(os.path.join(d, "edits.json"), "w"))
+    burn = request.args.get("burn") == "1"
     fid = os.path.basename(jid) + "_fix_" + uuid.uuid4().hex[:4]
     state[fid] = {"pct": 0, "msg": "수정본 만들 준비 중", "done": False}
-    threading.Thread(target=run_fix, args=(fid, d), daemon=True).start()
+    threading.Thread(target=run_fix, args=(fid, d, burn), daemon=True).start()
     return jsonify(job=fid)
+
+
+@app.post("/review/<jid>/subs/burn")
+def review_subs_burn(jid):
+    """자막 화면에서: 자막을 영상에 입혀 저장 (블러 작업이면 검수한 블러도 같이 — 한 번에 저장해서 화질 손해 없음)"""
+    d = _jdir(jid)
+    if not d:
+        return jsonify(error="없는 작업"), 404
+    fid = os.path.basename(jid) + "_sub_" + uuid.uuid4().hex[:4]
+    state[fid] = {"pct": 0, "msg": "자막 입힐 준비 중", "done": False}
+    threading.Thread(target=run_fix, args=(fid, d, True), daemon=True).start()
+    return jsonify(job=fid)
+
+
+@app.route("/sub-style", methods=["GET", "POST"])
+def sub_style():
+    import subrender
+    if request.method == "POST":
+        return jsonify(style=subrender.save_style(request.get_json(silent=True) or {}))
+    return jsonify(style=subrender.load_style(), fonts=subrender.font_list(), default=subrender.DEFAULT_STYLE)
+
+
+@app.get("/fontfile/<path:name>")
+def font_file(name):
+    import subrender
+    name = os.path.basename(name)
+    for dd in subrender.font_dirs():
+        p = os.path.join(dd, name)
+        if os.path.exists(p):
+            return send_file(p, conditional=True)
+    return "없음", 404
 
 
 if __name__ == "__main__":

@@ -6,3 +6,4 @@ __pycache__/
 *.pyc
 속도점검결과.txt
 tools/llama/
+settings/

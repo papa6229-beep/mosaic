@@ -8,3 +8,4 @@ psutil
 nudenet
 onnx
 onnx2torch
+pillow
