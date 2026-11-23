@@ -190,11 +190,16 @@ def hw_decode_ok(src, info):
     return a is not None and a == grab(True)
 
 
+GPU_ENC_WHY = ""
+
+
 def gpu_encode_args(info, fmt):
     """그래픽카드 압축(NVENC) 인자: 원본이 H.264/H.265 · 8비트 4:2:0 · 프로그레시브일 때만, 원본과 같은 비트레이트로. 안 되면 None"""
+    global GPU_ENC_WHY
     codec = (info.get("codec") or "").lower()
     if os.environ.get("MOSAIC_HWENC") == "0" or codec not in ("h264", "hevc") or fmt not in ("yuv420p", "nv12") \
             or info.get("field") in ("tt", "bb", "tb", "bt"):
+        GPU_ENC_WHY = f"원본 형식({codec} {fmt}{' 인터레이스' if info.get('field') in ('tt', 'bb', 'tb', 'bt') else ''})은 그래픽카드 압축 대상 아님"
         return None
     enc = "h264_nvenc" if codec == "h264" else "hevc_nvenc"
     br = info.get("bitrate")
@@ -206,9 +211,12 @@ def gpu_encode_args(info, fmt):
         r = subprocess.run([_ff(), "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
                             f"color=gray:s={info['W']}x{info['H']}:r=30:d=0.5", *a, "-f", "null", "-"], capture_output=True, timeout=60)
         if r.returncode != 0:
+            GPU_ENC_WHY = "시험 압축 실패: " + r.stderr.decode("utf-8", "ignore").strip().replace("\n", " / ")[-200:]
             return None
-    except Exception:
+    except Exception as e:
+        GPU_ENC_WHY = "시험 압축 실패: " + str(e)[:200]
         return None
+    GPU_ENC_WHY = ""
     return a
 
 
@@ -307,9 +315,7 @@ def mux_args(info, dst):
     e = os.path.splitext(dst)[1].lower()
     if e == ".mxf":
         a += ["-f", "mxf"]
-    elif e in (".mp4", ".m4v", ".mov"):
-        a += ["-movflags", "+faststart"]
-    return a
+    return a          # (mp4 앞쪽 정리 +faststart는 뺌: 4K 수십 GB 파일을 한 번 더 통째로 다시 쓰느라 저장 마무리가 2배로 걸렸음. 재생·편집에는 영향 없음)
 
 
 # ---------------- YUV 프레임에서 블러만 섞기 ----------------

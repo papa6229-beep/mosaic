@@ -777,6 +777,8 @@ def paint_save(src, ells, polys, dst, job, n, W, H, fps, params, p0=77, p1=99, t
     genc = media.gpu_encode_args(info, fmt)             # 원본이 H.264/H.265면 그래픽카드로 압축 (같은 비트레이트)
     if genc:
         enc, desc = genc, desc + " · 그래픽카드 압축"
+    elif media.GPU_ENC_WHY:
+        desc += " · CPU 압축 (" + media.GPU_ENC_WHY + ")"
     mi = {"compose": fmt, "enc": enc, "inp": media.input_args(info), "fps_str": info["fps_str"], "matrix": info["matrix"],
           "range": info["range"], "t0": info.get("t0", 0.0), "table": _load_table(os.path.dirname(dst))}
     times["out_fmt"] = desc
