@@ -1285,7 +1285,8 @@ def review_subs_line_tr(jid):
         line_tr["last"] = time.time()
         prof = profiles.get(b.get("profile"))
         ctx = [(c[0], c[1]) for c in (b.get("ctx") or [])][-subs.CTX:]
-        ko = line_tr["tr"].translate([src], ctx, "ja", profiles.prompt_part(prof))[0]
+        import tm
+        ko = line_tr["tr"].translate([src], ctx, "ja", profiles.prompt_part(prof) + tm.prompt_for([src]))[0]
         ko = profiles.apply_replace(ko, prof).strip().rstrip(".")
         if "\n" not in ko and len(ko) > subs.MAXL:
             ko = "\n".join(subs._wrap2(ko))
@@ -1371,7 +1372,7 @@ def review_subs(jid):
     if data is not None:
         import subs
         data["current"] = data.get("asr") == subs.asr_id()     # 지금 받아쓰기 방식으로 만든 자막인지
-        data["tr_current"] = data.get("tr") == subs.TR_VER     # 지금 번역 방식으로 번역한 자막인지
+        data["tr_current"] = data.get("tr") == subs.tr_id()    # 지금 번역 방식·번역 모델로 번역한 자막인지
         data.pop("asr_lines", None)
     return jsonify(subs=data, state=sub_state.get(jid))
 
@@ -1389,6 +1390,11 @@ def review_subs_save(jid):
     old = json.load(open(p, encoding="utf-8")) if os.path.exists(p) else {}
     if "lines_orig" not in old and old.get("lines"):       # 처음 손대기 전 자막을 남겨 둠 (처음 상태로 되돌리기용)
         old["lines_orig"] = old["lines"]
+    try:                                                   # 고친 줄 모으기 (번역 기억 · 받아쓰기 훈련 자료)
+        import tm
+        tm.record(os.path.basename(jid), d, old.get("lines_orig"), lines)
+    except Exception:
+        traceback.print_exc()
     tmp = p + ".tmp"
     json.dump({**old, "lines": lines, "edited": True}, open(tmp, "w", encoding="utf-8"), ensure_ascii=False)
     os.replace(tmp, p)
@@ -1493,6 +1499,16 @@ def setup():
 @app.get("/subtitle-style")
 def page_profiles():
     return Response(open(os.path.join(BASE, "profiles.html"), encoding="utf-8").read(), mimetype="text/html")
+
+
+@app.route("/models", methods=["GET", "POST"])
+def models_cfg():
+    """자막 모델 고르기 (번역·받아쓰기·목소리 걸러내기) + 모은 훈련 자료 수"""
+    import models, tm, subs
+    if request.method == "POST":
+        models.save(request.get_json(silent=True) or {})
+    trs = [dict(m, have=bool(m.get("file") and os.path.exists(os.path.join(subs.TR_DIR, m["file"])))) for m in models.TR_MODELS]
+    return jsonify(cfg=models.load(), tr=trs, asr=models.ASR_MODELS, enh=models.ENHANCERS, train=tm.stats())
 
 
 @app.get("/profiles")

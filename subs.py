@@ -42,7 +42,17 @@ ASR_VER = "wj1.10.2/5"   # 받아쓰기 방식이 바뀌면 올림 → 예전 �
 
 
 def asr_id():
-    return ASR_VER
+    """받아쓰기 방식 + 고른 받아쓰기 모델·목소리 걸러내기 (바뀌면 '다시 만들기')"""
+    import models
+    k = models.asr_key()
+    return ASR_VER if k == PASS1_MODEL + "|none" else ASR_VER + "|" + k
+
+
+def tr_id():
+    """번역 방식 + 고른 번역 모델 (바뀌면 '번역 다시')"""
+    import models
+    k = models.tr_key()
+    return TR_VER if k == "q9" else TR_VER + "|" + k
 
 
 OLD_TR_FILES = ["translategemma-4b-it-Q8_0.gguf"]   # 예전 번역 모델 (새 모델 받으면 지움)
@@ -229,8 +239,13 @@ def _attach_alt(main, other):
 
 
 def _wj_args(words=None):
-    """받아쓰기 명령 (힌트 단어는 컨셉의 받아쓰기 힌트로)"""
+    """받아쓰기 명령 (고른 받아쓰기 모델·목소리 걸러내기 반영)"""
+    import models
     a = list(WJ_ARGS)
+    i = a.index("--pass1-qwen-params") + 1
+    a[i] = json.dumps({"model_id": models.asr_model_id(), "vad_threshold": VAD_TH})
+    if models.enhancer() != "none":
+        a += ["--pass1-speech-enhancer", models.enhancer(), "--pass2-speech-enhancer", models.enhancer()]
     if False and words:     # 꺼 둠: 힌트 글을 주면 조용한 구간·신음 구간에서 힌트 목록을 그대로 받아 적는 문제가 있었음 (2026-11-23 실제 영상)
         ctx = "アダルトビデオの会話。よく出る言葉: " + "、".join(w for w in words if w)
         a[a.index("--pass1-qwen-params") + 1] = json.dumps({"context": ctx[:1500]}, ensure_ascii=False)
@@ -406,15 +421,18 @@ def _llama_urls(want):
 
 def ensure_translator(job=None):
     """번역 모델과 실행 도구가 없으면 받아 둠 (한 번만). → (llama-server 경로, 모델 경로)"""
+    import models
     os.makedirs(TR_DIR, exist_ok=True)
-    gguf = os.path.join(TR_DIR, TR_FILE)
+    m = models.tr_model()
+    TR_REPO_, TR_FILE_, TR_MB_ = m.get("repo", TR_REPO), m.get("file", TR_FILE), m.get("mb", TR_MB)
+    gguf = m.get("path") or os.path.join(TR_DIR, TR_FILE_)
     if not os.path.exists(gguf):
         try:
             from huggingface_hub import hf_hub_download
-            _log(job, f"번역 모델 받는 중 (처음 한 번만 약 {TR_MB / 1000:.1f}GB)")
-            watch = _DlWatch(job, TR_DIR, "번역 모델", TR_MB)
+            _log(job, f"번역 모델 받는 중 (처음 한 번만 약 {TR_MB_ / 1000:.1f}GB)")
+            watch = _DlWatch(job, TR_DIR, "번역 모델", TR_MB_)
             try:
-                p = hf_hub_download(TR_REPO, TR_FILE, local_dir=TR_DIR)
+                p = hf_hub_download(TR_REPO_, TR_FILE_, local_dir=TR_DIR)
             finally:
                 watch.close()
             if os.path.abspath(p) != os.path.abspath(gguf):
@@ -425,7 +443,7 @@ def ensure_translator(job=None):
                 except OSError:
                     pass
         except Exception:
-            _download(f"https://huggingface.co/{TR_REPO}/resolve/main/{TR_FILE}", gguf, job, "번역 모델")
+            _download(f"https://huggingface.co/{TR_REPO_}/resolve/main/{TR_FILE_}", gguf, job, "번역 모델")
     exe = os.path.join(LLAMA_DIR, "llama-server.exe" if os.name == "nt" else "llama-server")
     if not os.path.exists(exe):
         os.makedirs(LLAMA_DIR, exist_ok=True)
@@ -483,7 +501,9 @@ class Translator:
         flags = 0x08000000 if os.name == "nt" else 0          # 윈도우에서 검은 창이 따로 안 뜨게
         self.log = open(os.path.join(TR_DIR, "server.log"), "w", encoding="utf-8", errors="ignore") \
             if os.path.isdir(TR_DIR) else subprocess.DEVNULL
-        self.p = subprocess.Popen([exe, "-m", gguf, "--port", str(LLAMA_PORT), "--host", "127.0.0.1", "-ngl", "999",
+        import models
+        gpu = ["-ngl", "999"] if models.tr_model().get("gpu_all", False) else []   # 큰 모델: llama.cpp가 그래픽카드·메모리에 알아서 나눠 올림 (--fit)
+        self.p = subprocess.Popen([exe, "-m", gguf, "--port", str(LLAMA_PORT), "--host", "127.0.0.1", *gpu,
                                    "-c", "8192"], stdout=self.log, stderr=self.log, creationflags=flags)
         t0 = time.time()
         while time.time() - t0 < 300:
@@ -602,8 +622,9 @@ def translate_lines(lines, job=None, tr=None, f0=None, prof=None):
         for k in range(0, len(lines), BATCH):
             part = lines[k:k + BATCH]
             try:
-                kos = tr.translate([l["src_t"] for l in part],                     # (2차 받아쓰기는 위에서 일본어 다듬을 때 이미 씀)
-                                   done[-CTX:], part[0].get("lang", "ja"), extra)
+                import tm
+                kos = tr.translate([l["src_t"] for l in part],                     # (다른 받아쓰기는 위에서 일본어 다듬을 때 이미 씀)
+                                   done[-CTX:], part[0].get("lang", "ja"), extra + tm.prompt_for([l["src"] for l in part]))
                 bad = 0
             except Exception as e:
                 kos = [""] * len(part)
@@ -730,7 +751,7 @@ def make_subtitles(src, out_json, job=None, profile=None, retranslate=False):
             _log(job, f"받아쓴 결과({len(lines)}줄)를 2차 기준으로 다시 맞추고 번역해요 (받아쓰기는 다시 안 함)", 60)
             json.dump({"lines": lines, "translated": False, "asr": asr_id()}, open(out_json, "w", encoding="utf-8"), ensure_ascii=False)
         elif (old and old.get("asr") == asr_id() and (old.get("asr_lines") or old.get("lines"))
-                and (retranslate or not old.get("translated") or old.get("tr") != TR_VER)):
+                and (retranslate or not old.get("translated") or old.get("tr") != tr_id())):
             lines = [dict(l) for l in (old.get("asr_lines") or old["lines"])]   # 받아쓰기는 그대로 → 번역만 다시
             for l in lines:
                 l.pop("ko", None)
@@ -757,7 +778,7 @@ def make_subtitles(src, out_json, job=None, profile=None, retranslate=False):
             traceback.print_exc()
         translate_lines(lines, job, f0=f0, prof=prof)
         lines = resegment(split_speakers(lines))
-        json.dump({"lines": lines, "asr_lines": raw, "translated": True, "asr": asr_id(), "tr": TR_VER,
+        json.dump({"lines": lines, "asr_lines": raw, "translated": True, "asr": asr_id(), "tr": tr_id(),
                    "profile": prof.get("id"), "profile_name": prof.get("name"), "pver": profiles.version(prof)},
                   open(out_json, "w", encoding="utf-8"), ensure_ascii=False)
         _log(job, f"자막 완성 ({len(lines)}줄)", 100)
