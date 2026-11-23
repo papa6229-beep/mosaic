@@ -384,6 +384,7 @@ def clean_ko(t):
     t = (t or "").replace("‖", "||")
     t = re.sub(r"[\u3000-\u303f\uff61-\uff65]", " ", t)                      # 、。「」 같은 일본어 부호
     t = re.sub(r"(?<!\|)\|(?!\|)", " ", t)                                    # 혼자 있는 | 는 지움
+    t = re.sub(r"[^가-힣ㄱ-ㅎㅏ-ㅣA-Za-z0-9\s.,?!~'\"‘’“”()…\-|]", "", t)        # 화살표·악센트 글자 같은 이상한 기호는 지움
     parts = []
     for p in t.split("||"):
         p = re.sub(r"\.{2,}|…+", "…", p)
@@ -680,7 +681,7 @@ def translate_lines(lines, job=None, tr=None, f0=None, prof=None):
     return lines
 
 
-TR_VER = "8"     # 번역 방식이 바뀌면 올림 → '번역만 다시 하기' 버튼이 뜸 (받아쓰기는 그대로)
+TR_VER = "9"     # 번역 방식이 바뀌면 올림 → '번역만 다시 하기' 버튼이 뜸 (받아쓰기는 그대로)
 
 
 def split_speakers(lines):
@@ -707,6 +708,7 @@ def split_speakers(lines):
 
 
 MAXL = 16      # 한 줄 최대 글자 수 (방송본부 자막: 보통 8자, 길어도 14자 안팎)
+_KO_MOAN = re.compile(r"[\s,.!?~…\-]*(?:(?:[아으하응앗읏흐후헉흑음읍앙힝히흣]|하아|으응)+[\s,.!?~…\-]*)+")   # 한국어가 감탄·신음 소리뿐
 _MOAN = re.compile(r"[\sあぁいぃうぅえぇおぉんっッーゝ〜~はハぁふフひヒ…、。！？!?]+")
 
 
@@ -743,7 +745,7 @@ def resegment(lines):
     out = []
     for l in lines:
         ko = (l.get("ko") or "").strip().rstrip(".")
-        if not ko and _MOAN.fullmatch(l.get("src") or ""):
+        if (not ko and _MOAN.fullmatch(l.get("src") or "")) or (ko and _KO_MOAN.fullmatch(ko.replace("\n", " "))):
             continue                                    # 신음·숨소리만 → 자막 안 씀 (방송본부 방식)
         if "\n" in ko or not ko:
             out.append(dict(l, ko=ko))
