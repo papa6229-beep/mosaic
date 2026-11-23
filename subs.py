@@ -613,7 +613,7 @@ class Translator:
                            "min_p": 0, "chat_template_kwargs": {"enable_thinking": False}}).encode("utf-8")
         req = urllib.request.Request(self.url + "/v1/chat/completions", data=body, headers={"Content-Type": "application/json"})
         t0 = time.time()
-        with urllib.request.urlopen(req, timeout=300) as r:
+        with urllib.request.urlopen(req, timeout=900) as r:      # 느린 PC에서도 묶음이 시간 초과로 통째 버려지지 않게
             d = json.load(r)
         self.calls = getattr(self, "calls", 0) + 1
         self.toks = getattr(self, "toks", 0) + int((d.get("usage") or {}).get("completion_tokens") or 0)
@@ -720,16 +720,26 @@ def translate_lines(lines, job=None, tr=None, f0=None, prof=None, skip_fix=False
         done = []
         for k in range(0, len(lines), BATCH):
             part = lines[k:k + BATCH]
-            try:
-                import tm
-                kos = tr.translate([l["src_t"] + (f" [alt: {l['alt']}]" if l.get("alt") else "") for l in part],   # 다른 받아쓰기도 같이 줘서 번역하면서 바로잡게
-                                   done[-CTX:], part[0].get("lang", "ja"), extra + tm.prompt_for([l["src"] for l in part]))
-                bad = 0
-            except Exception as e:
-                kos = [""] * len(part)
-                bad += 1
-                if bad >= 3:                  # 연달아 안 되면 번역기 자체 문제 → 빈 자막으로 '완성'이라 하지 않고 멈춤
-                    raise RuntimeError(f"번역이 계속 실패해요: {e}")
+            import tm
+
+            def go(ps, ctx):
+                """한 묶음 번역. 실패(시간 초과 등)하면 반으로 나눠 다시 — 묶음 통째로 빈 자막이 되지 않게"""
+                try:
+                    return tr.translate([l["src_t"] + (f" [alt: {l['alt']}]" if l.get("alt") else "") for l in ps],   # 다른 받아쓰기도 같이 줘서 번역하면서 바로잡게
+                                        ctx, ps[0].get("lang", "ja"), extra + tm.prompt_for([l["src"] for l in ps]))
+                except Exception as e:
+                    print("번역 묶음 실패, 나눠서 다시:", len(ps), "줄", e)
+                    if len(ps) == 1:
+                        fail.append(e)
+                        return [""]
+                    h = len(ps) // 2
+                    a = go(ps[:h], ctx)
+                    return a + go(ps[h:], (ctx + [(l["src"], k) for l, k in zip(ps[:h], a)])[-CTX:])
+            fail = []
+            kos = go(part, done[-CTX:])
+            bad = bad + 1 if len(fail) == len(part) else 0
+            if bad >= 3:                      # 연달아 통째로 안 되면 번역기 자체 문제 → 빈 자막으로 '완성'이라 하지 않고 멈춤
+                raise RuntimeError(f"번역이 계속 실패해요: {fail[-1]}")
             for l, ko in zip(part, kos):
                 l["ko"] = profiles.apply_replace(ko, prof) if prof else ko
                 l.pop("src_t", None)
