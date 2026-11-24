@@ -9,3 +9,12 @@ nudenet
 onnx
 onnx2torch
 pillow
+# 이미지 번역 (rapidocr 는 opencv 판이 겹치지 않게 따로 --no-deps 로 설치: run.bat / tools/update.py)
+onnxruntime
+omegaconf
+pyclipper
+shapely
+colorlog
+pyyaml
+tqdm
+requests

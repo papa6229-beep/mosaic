@@ -69,6 +69,7 @@ def packages(force=False):
     pip("--upgrade", "pip")
     pip("torch", "torchvision", "--index-url", "https://download.pytorch.org/whl/cu128")   # RTX 50(5060)까지 지원
     pip("-r", req)
+    pip("--no-deps", "rapidocr==3.10.0")                   # 이미지 번역 글자 읽기 (opencv 판이 겹치지 않게 따로)
     open(mark, "w", encoding="utf-8").write(new)
 
 
@@ -80,13 +81,14 @@ def ask_mode():
     print("  1. 블러 + 자막 둘 다")
     print("  2. 블러만")
     print("  3. 자막만")
+    print("  4. 이미지 번역만 (상품·광고 이미지 속 일본어·중국어 → 한국어)")
     m = None
     while m is None:
         a = input("번호를 누르고 엔터 (그냥 엔터 = 1) > ").strip() or "1"
-        m = {"1": "both", "2": "blur", "3": "subs"}.get(a)
+        m = {"1": "both", "2": "blur", "3": "subs", "4": "img"}.get(a)
     os.makedirs(os.path.dirname(p), exist_ok=True)
     json.dump({"mode": m}, open(p, "w", encoding="utf-8"))
-    print({"both": "블러 + 자막", "blur": "블러만", "subs": "자막만"}[m], "— 처음 켤 때 필요한 모델을 알아서 받아요.")
+    print({"both": "블러 + 자막", "blur": "블러만", "subs": "자막만", "img": "이미지 번역만"}[m], "— 처음 켤 때 필요한 모델을 알아서 받아요.")
 
 
 def shortcut():
@@ -94,8 +96,13 @@ def shortcut():
     if os.name != "nt":
         return
     bat = os.path.join(ROOT, "start.bat")
+    try:
+        img = json.load(open(os.path.join(ROOT, "settings", "install.json"), encoding="utf-8")).get("mode") == "img"
+    except Exception:
+        img = False
+    name = "이미지 번역기" if img else "모자이크 생성기"
     ps = ("$d=[Environment]::GetFolderPath('Desktop');"
-          "$s=(New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $d '모자이크 생성기.lnk'));"
+          f"$s=(New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $d '{name}.lnk'));"
           f"$s.TargetPath='{bat}';$s.WorkingDirectory='{ROOT}';$s.Save()")
     subprocess.run(["powershell", "-NoProfile", "-Command", ps])
 
@@ -137,7 +144,7 @@ def main():
         ask_mode()
         shortcut()
         check_gpu()
-        print("\n설치 끝! 바탕화면의 '모자이크 생성기'로 켜요. (이 폴더의 start.bat 과 같아요)")
+        print("\n설치 끝! 바탕화면 아이콘으로 켜요. (이 폴더의 start.bat 과 같아요)")
         return 0
     try:                                   # 켤 때: 새 판 확인 (인터넷이 안 되면 지금 판으로)
         if fetch():

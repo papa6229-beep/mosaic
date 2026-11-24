@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>이미지 번역</title>
+<style>
+  :root{--bg:#0c0b0a;--panel:#151312;--panel2:#1c1a18;--line:#2a2725;--line2:#3a3633;
+    --ink:#f5f2ee;--sub:#c2bbb3;--dim:#948d85;--acc:#e8a54b;--acc2:#f3c27a;--ok:#5fbf8a;--bad:#ef6b5f}
+  *{box-sizing:border-box} html,body{margin:0;background:var(--bg);color:var(--ink)}
+  body{font:16px/1.55 "Pretendard","Malgun Gothic","Apple SD Gothic Neo",sans-serif;padding:22px 28px 60px}
+  a{color:var(--acc2)}
+  header{display:flex;align-items:center;gap:14px;margin-bottom:18px}
+  .mark{width:38px;height:38px;border-radius:11px;background:linear-gradient(135deg,var(--acc2),var(--acc));display:grid;place-items:center;color:#1a120a;font-weight:900}
+  h1{font-size:22px;margin:0} header small{color:var(--dim)} header .back{margin-left:auto;font-size:15px}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:22px;margin-bottom:18px}
+  #drop{border:1.5px dashed var(--line2);border-radius:14px;padding:46px 16px;text-align:center;cursor:pointer;transition:.2s;color:var(--sub)}
+  #drop:hover,#drop.on{border-color:var(--acc);background:rgba(232,165,75,.07)}
+  #drop b{color:var(--ink);font-size:18px}
+  .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:14px}
+  button{font:inherit;border-radius:10px;border:1px solid var(--line2);background:var(--panel2);color:var(--ink);padding:9px 16px;cursor:pointer}
+  button.main{background:var(--acc);color:#1a120a;border-color:var(--acc);font-weight:700}
+  button:disabled{opacity:.45;cursor:default}
+  .bar{height:8px;border-radius:99px;background:var(--panel2);overflow:hidden;margin-top:12px} .bar i{display:block;height:100%;width:0;background:var(--acc);transition:.3s}
+  #msg{color:var(--sub);margin-top:8px;min-height:24px} .bad{color:var(--bad)!important}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:18px;margin-bottom:18px}
+  .card h3{margin:0 0 12px;font-size:17px;display:flex;gap:10px;align-items:center} .card h3 span{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .pics{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .pic{position:relative;background:#000;border-radius:10px;overflow:hidden}
+  .pic img{width:100%;display:block}
+  .pic .lab{position:absolute;left:8px;top:8px;background:rgba(0,0,0,.65);padding:2px 9px;border-radius:6px;font-size:13px;color:var(--acc2)}
+  .hl{position:absolute;border:2px solid var(--acc);border-radius:4px;box-shadow:0 0 0 9999px rgba(0,0,0,.35);pointer-events:none;display:none}
+  table{width:100%;border-collapse:collapse;margin-top:14px;font-size:15px}
+  td,th{padding:7px 6px;border-top:1px solid var(--line);vertical-align:middle;text-align:left}
+  th{color:var(--dim);font-weight:500;font-size:13px}
+  td.src{color:var(--sub);max-width:220px}
+  input[type=text]{width:100%;font:inherit;padding:7px 9px;border-radius:8px;border:1px solid var(--line2);background:var(--panel2);color:var(--ink)}
+  input[type=color]{width:34px;height:28px;border:none;background:none;padding:0;cursor:pointer;vertical-align:middle}
+  select{font:inherit;padding:5px 6px;border-radius:8px;border:1px solid var(--line2);background:var(--panel2);color:var(--ink)}
+  label.ck{display:inline-flex;gap:4px;align-items:center;font-size:14px;color:var(--sub);white-space:nowrap}
+  .muted{color:var(--dim);font-size:14px}
+  @media (max-width:900px){.pics{grid-template-columns:1fr}}
+</style></head>
+<body>
+<header><div class="mark">가</div><div><h1>이미지 번역</h1><small>상품·광고 이미지 속 일본어·중국어 → 한국어 (가로는 가로, 세로는 세로 그대로)</small></div>
+  <a class="back" href="/">← 모자이크·자막 생성기</a></header>
+
+<div class="panel">
+  <div id="drop"><b>이미지를 끌어다 놓거나 눌러서 고르기</b><br>여러 장 한 번에 · png, jpg, webp</div>
+  <input id="file" type="file" accept=".png,.jpg,.jpeg,.webp,.bmp" multiple hidden>
+  <div class="row"><button id="go" class="main" disabled>번역 시작</button><span id="picked" class="muted"></span>
+    <button id="zip" style="margin-left:auto;display:none">결과 모두 받기 (zip)</button></div>
+  <div class="bar"><i id="bar"></i></div>
+  <div id="msg">처음 한 번은 글자 지우기 모델과 번역 모델을 받느라 오래 걸려요. 다음부터는 바로 시작해요.</div>
+</div>
+<div id="list"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+let files = [], cur = null, shown = {};
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+const hex = c => c ? "#" + c.map(v => Math.max(0, Math.min(255, v | 0)).toString(16).padStart(2, "0")).join("") : "#ffffff";
+const rgb = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+function pick(fs) {
+  files = [...fs].filter(f => /\.(png|jpe?g|webp|bmp)$/i.test(f.name));
+  $("picked").textContent = files.length ? `${files.length}장 골랐어요` : "";
+  $("go").disabled = !files.length;
+}
+$("drop").onclick = () => $("file").click();
+$("file").onchange = e => pick(e.target.files);
+["dragover", "dragenter"].forEach(ev => $("drop").addEventListener(ev, e => { e.preventDefault(); $("drop").classList.add("on"); }));
+["dragleave", "drop"].forEach(ev => $("drop").addEventListener(ev, e => { e.preventDefault(); $("drop").classList.remove("on"); }));
+$("drop").addEventListener("drop", e => pick(e.dataTransfer.files));
+$("go").onclick = () => {
+  const fd = new FormData(); files.forEach(f => fd.append("files", f, f.name));
+  $("go").disabled = true; $("list").innerHTML = ""; shown = {}; $("zip").style.display = "none";
+  $("msg").textContent = "올리는 중…"; $("msg").classList.remove("bad");
+  fetch("/imgtr/run", { method: "POST", body: fd }).then(r => r.json()).then(r => {
+    if (r.error) { $("msg").textContent = r.error; $("msg").classList.add("bad"); $("go").disabled = false; return; }
+    cur = r.id; try { localStorage.setItem("imgtr_last", cur); } catch (e) {} poll();
+  });
+};
+$("zip").onclick = () => { if (cur) location.href = `/imgtr/zip/${cur}`; };
+function poll() {
+  fetch(`/imgtr/state/${cur}`).then(r => r.json()).then(s => {
+    if (s.error && !s.files) return;
+    $("bar").style.width = (s.pct || 0) + "%";
+    $("msg").textContent = s.error ? "문제가 생겼어요: " + s.error : s.msg; $("msg").classList.toggle("bad", !!s.error);
+    (s.done || []).forEach(n => { if (!shown[n]) { shown[n] = true; card(n, s.blocks[n] || []); } });
+    if (s.done && s.done.length) $("zip").style.display = "";
+    if (s.running) setTimeout(poll, 1200); else $("go").disabled = !files.length;
+  }).catch(() => setTimeout(poll, 3000));
+}
+function card(n, bl) {
+  const id = "c" + Math.random().toString(36).slice(2, 8);
+  const el = document.createElement("div"); el.className = "card"; el.id = id;
+  const rows = bl.map((b, i) => `<tr data-i="${i}">
+    <td class="src">${b.vert ? "<span class='muted'>세로</span> " : ""}${esc(b.text)}</td>
+    <td style="width:34%"><input type="text" class="ko" value="${esc(b.ko)}"></td>
+    <td><input type="color" class="fill" value="${hex(b.style.grad ? b.style.grad[0] : b.style.fill)}" title="글자색${b.style.grad ? " (위)" : ""}">${b.style.grad ? `<input type="color" class="fill2" value="${hex(b.style.grad[1])}" title="글자색 (아래)">` : ""}</td>
+    <td><label class="ck"><input type="checkbox" class="ol" ${b.style.outline ? "checked" : ""}>테두리</label> <input type="color" class="olc" value="${hex(b.style.outline || [255, 255, 255])}"></td>
+    <td><select class="wt">${[400, 500, 700, 900].map(w => `<option value="${w}" ${w == b.style.weight ? "selected" : ""}>${{ 400: "보통", 500: "중간", 700: "굵게", 900: "아주 굵게" }[w]}</option>`).join("")}</select></td>
+    <td><label class="ck"><input type="checkbox" class="skip" ${b.skip ? "checked" : ""}>원문 그대로</label></td></tr>`).join("");
+  el.innerHTML = `<h3><span>${esc(n)}</span><button class="rd">고친 대로 다시 그리기</button><a href="/imgtr/img/${cur}/out/${encodeURIComponent(n)}" download="${esc(n)}"><button>이미지 받기</button></a></h3>
+    <div class="pics"><div class="pic"><span class="lab">원본</span><img src="/imgtr/img/${cur}/in/${encodeURIComponent(n)}"></div>
+    <div class="pic"><span class="lab">한국어</span><img class="out" src="/imgtr/img/${cur}/out/${encodeURIComponent(n)}?t=${Date.now()}"><div class="hl"></div></div></div>
+    ${bl.length ? `<table><tr><th>원문</th><th>한국어 (고쳐도 돼요)</th><th>글자색</th><th>테두리</th><th>굵기</th><th></th></tr>${rows}</table>` : `<p class="muted">일본어·중국어 글자를 못 찾았어요.</p>`}`;
+  $("list").appendChild(el);
+  const img = el.querySelector("img.out"), hl = el.querySelector(".hl");
+  el.querySelectorAll("tr[data-i]").forEach(tr => {
+    const b = bl[+tr.dataset.i];
+    tr.onmouseenter = () => { if (!img.naturalWidth) return; const sx = img.clientWidth / img.naturalWidth, sy = img.clientHeight / img.naturalHeight;
+      Object.assign(hl.style, { display: "block", left: b.box[0] * sx - 4 + "px", top: b.box[1] * sy - 4 + "px", width: (b.box[2] - b.box[0]) * sx + 8 + "px", height: (b.box[3] - b.box[1]) * sy + 8 + "px" }); };
+    tr.onmouseleave = () => hl.style.display = "none";
+    tr.querySelectorAll("input[type=text]").forEach(inp => inp.addEventListener("keydown", e => { if (e.key === "Enter") el.querySelector(".rd").click(); }));
+  });
+  el.querySelector(".rd").onclick = () => {
+    const blocks = [...el.querySelectorAll("tr[data-i]")].map(tr => {
+      const f2 = tr.querySelector(".fill2");
+      return { ko: tr.querySelector(".ko").value, skip: tr.querySelector(".skip").checked,
+        fill: rgb(tr.querySelector(".fill").value), grad: f2 ? [rgb(tr.querySelector(".fill").value), rgb(f2.value)] : null,
+        outline: tr.querySelector(".ol").checked ? rgb(tr.querySelector(".olc").value) : null, weight: +tr.querySelector(".wt").value };
+    });
+    const btn = el.querySelector(".rd"); btn.disabled = true; btn.textContent = "그리는 중…";
+    fetch(`/imgtr/edit/${cur}/${encodeURIComponent(n)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ blocks }) })
+      .then(r => r.json()).then(r => { img.src = `/imgtr/img/${cur}/out/${encodeURIComponent(n)}?t=${Date.now()}`; })
+      .finally(() => { btn.disabled = false; btn.textContent = "고친 대로 다시 그리기"; });
+  };
+}
+// 마지막 작업 다시 보기
+try { const last = localStorage.getItem("imgtr_last"); if (last) { cur = last; poll(); } } catch (e) {}
+</script>
+</body></html>
