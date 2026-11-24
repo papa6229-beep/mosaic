@@ -123,6 +123,8 @@
       <h2>자막 만들기</h2>
       <div id="makeMsg" class="muted"></div>
       <div class="bar"><i id="makeBar"></i></div>
+      <div style="display:flex;align-items:center;gap:8px;margin:8px 0">영상 속 말
+        <select id="mLang" style="background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:6px 8px;font:inherit"><option value="ja">일본어</option><option value="en">영어</option></select></div>
       <button id="bMake" class="main">이 영상 자막 만들기</button>
       <div class="muted" style="margin-top:6px">처음 한 번은 받아쓰기 프로그램 설치(10~30분)와 모델 받기 때문에 오래 걸려요. 다음부터는 바로 시작해요.</div>
     </div>
@@ -586,12 +588,12 @@ function showMake(st) {
     $("makeBar").style.width = "0";
   }
 }
-let translated = true, current = true, edited = false;
+let translated = true, current = true, edited = false, savedLang = "ja";
 $("bMake").onclick = () => {
   if (L.length && edited && !confirmRemake()) return;
-  const fresh = !L.length || !current || translated;
+  const fresh = !L.length || !current || translated || $("mLang").value !== savedLang;   // 언어를 바꾸면 처음부터
   if (fresh) { L = []; hist = []; render(); }              // 처음부터: 예전 일본어·한국어는 화면에서 바로 치움
-  fetch(`/review/${JID}/subs/make`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ profile: $("pSel").value, fresh }) }).then(r => r.json()).then(r => { showMake(r.state); pollSubs(); });
+  fetch(`/review/${JID}/subs/make`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ profile: $("pSel").value, fresh, lang: $("mLang").value }) }).then(r => r.json()).then(r => { showMake(r.state); pollSubs(); });
 };
 function confirmRemake() { return $("bMake").dataset.ok === "1" || ($("bMake").dataset.ok = "1", msg("한 번 더 누르면 지금 자막을 지우고 처음부터 다시 만들어요", "bad"), false); }
 let polling = false;
@@ -607,6 +609,7 @@ function pollSubs() {
     }
     polling = false;
     translated = !!(d.subs && d.subs.translated && d.subs.tr_current); current = !d.subs || !!d.subs.current; edited = !!(d.subs && d.subs.edited);
+    savedLang = d.lang || (d.subs && d.subs.lang) || "ja"; $("mLang").value = savedLang;
     $("bMake").textContent = !d.subs || !d.subs.lines ? "이 영상 자막 만들기"
       : !current ? "자막 처음부터 다시 만들기" : !translated ? "한국어 번역 다시 하기 (받아쓰기는 그대로)" : "자막 처음부터 다시 만들기";
     const mst = st;

@@ -43,11 +43,23 @@ ASR_VER = "wj1.10.2/8"   # 8: Galgame(기본으로 보임)+anime-whisper 둘 다
 ASR_VER_PREV = "wj1.10.2/6"  # 6은 같은 두 모델로 받아쓴 결과 → 합치는 방식만 바꿔 다시 씀 (다시 받아쓰지 않음)
 
 
-def asr_id():
+def asr_id(lang="ja"):
     """받아쓰기 방식 + 고른 받아쓰기 모델·목소리 걸러내기 (바뀌면 '다시 만들기')"""
     import models
+    if lang == "en":                       # 영어: Whisper(기본 모델) 하나로
+        return ASR_VER + "|en"
     k = models.asr_key()
     return ASR_VER if k == PASS1_MODEL + "|none" else ASR_VER + "|" + k
+
+
+def job_lang(d):
+    """작업 폴더에 적어 둔 자막 원문 언어: ja(기본) / en"""
+    try:
+        v = open(os.path.join(d, "sub_lang.txt"), encoding="utf-8").read().strip()
+        return v if v in ("ja", "en") else "ja"
+    except OSError:
+        return "ja"
+
 
 
 def tr_id():
@@ -241,9 +253,11 @@ def _attach_alt(main, other):
     return main
 
 
-def _wj_args(words=None):
-    """받아쓰기 명령. 기본: 고른 모델(Galgame) 하나로 한 번만. '한 번 더 받아쓰기'를 골랐을 때만 두 번(시간 2배)"""
+def _wj_args(words=None, lang="ja"):
+    """받아쓰기 명령. 일본어: Galgame + anime-whisper 둘 다(기본). 영어: Whisper 하나(영어는 Whisper가 가장 잘 들음)"""
     import models
+    if lang == "en":
+        return ["--mode", "balanced", "--language", "english", "--sensitivity", "aggressive"]
     if models.pass2() == "none":
         a = ["--mode", "qwen", "--language", "japanese", "--qwen-model-id", models.asr_model_id(),
              "--qwen-segmenter", "whisperseg", "--qwen-sensitivity", "aggressive"]
@@ -261,11 +275,11 @@ def _wj_args(words=None):
     return a
 
 
-def transcribe(wav, dur, job=None, words=None):
+def transcribe(wav, dur, job=None, words=None, lang="ja"):
     """WhisperJAV 로 받아 적기 → 자막 줄 목록 [{start, end, src, alt?, lang}]"""
     out = os.path.join(os.path.dirname(wav), "wj")
-    _run_wj(wav, _wj_args(words), out, job, 2, 57)
-    main = lines_from_wj(out)
+    _run_wj(wav, _wj_args(words, lang), out, job, 2, 57)
+    main = lines_from_wj(out, lang=lang)
     if not main:
         raise RuntimeError("받아쓰기 결과가 비어 있어요 (말소리를 못 찾았거나 결과 파일이 없음)")
     return main
@@ -436,7 +450,7 @@ def _overlaps(a, b):
     return min(a["end"], b["end"]) - max(a["start"], b["start"]) > 0.3 * min(a["end"] - a["start"], b["end"] - b["start"])
 
 
-def lines_from_wj(out, only1=False):
+def lines_from_wj(out, only1=False, lang="ja"):
     """받아쓰기 결과 파일 두 개(1차 Qwen3-ASR, 2차 anime-whisper)로 자막 줄 만들기.
     1차(Galgame)를 기본으로 보임(2026-11-23 실제 영상: 대부분 1차가 맞음). 1차가 비운 곳은 2차로 채우고(one=한 모델만 들음),
     같은 곳을 2차가 다르게 들었으면 'alt'로 붙임 → 번역 AI가 뜻이 통하는 쪽을 골라 번역, 화면엔 '확인 필요'"""
@@ -447,7 +461,7 @@ def lines_from_wj(out, only1=False):
     if only1 or (not find(".pass1.srt") and find(".whisperjav.srt")):     # 한 번만 받아쓴 결과 (기본)
         one = _read_srt(find(".pass1.srt")) if only1 else _read_srt(find(".whisperjav.srt"))
         for l in one:
-            l["lang"] = "ja"
+            l["lang"] = lang
         return one
     p1 = _read_srt(find(".pass1.srt")) or _read_srt(find(".merged.whisperjav.srt"))
     p2 = _read_srt(find(".pass2.srt"))
@@ -495,6 +509,9 @@ def _messages(batch, ctx, src, extra=""):
         u += "Earlier lines (context only, do not translate):\n" + "\n".join(f"- {a} → {b}" for a, b in ctx) + "\n\n"
     u += "Translate:\n" + "\n".join(f"{i + 1}. {t}" for i, t in enumerate(batch))
     # t 는 '원문' 또는 '원문 [alt: 2차 원문]' 
+    if src == "en":
+        extra = ("\nThe source here is ENGLISH (a Western adult video): the notes above about Japanese do not apply. "
+                 "Choose 존댓말 or 반말 from the relationship and situation, and keep it consistent for the same pair of speakers.") + extra
     return [{"role": "system", "content": SYSTEM.format(s=s) + extra}, {"role": "user", "content": u}]
 
 
@@ -1007,6 +1024,8 @@ def make_subtitles(src, out_json, job=None, profile=None, retranslate=False, fre
     prof = profiles.get(profile)
     d = os.path.dirname(out_json)
     wav = os.path.join(d, "audio16k.wav")
+    lang = job_lang(d)
+    aid = asr_id(lang)
     try:
         old = None
         if fresh:                                  # 처음부터: 저장된 받아쓰기·번역 결과를 하나도 안 씀
@@ -1019,7 +1038,7 @@ def make_subtitles(src, out_json, job=None, profile=None, retranslate=False, fre
                 old = json.load(open(out_json, encoding="utf-8"))
             except Exception:
                 old = None
-        if (old and not retranslate and old.get("asr") == asr_id() and old.get("tr") == tr_id()
+        if (old and not retranslate and old.get("asr") == aid and old.get("tr") == tr_id()
                 and old.get("post") != POST_VER and old.get("tr_lines")):
             lines = [dict(l) for l in old["tr_lines"]]          # 번역은 그대로, 정리만 다시 (몇 초)
             for l in lines:
@@ -1037,7 +1056,7 @@ def make_subtitles(src, out_json, job=None, profile=None, retranslate=False, fre
         rebuilt = None
         import models
         wjd = os.path.join(d, "wj")
-        if (old and old.get("asr") == ASR_VER_PREV and old.get("asr") != asr_id() and models.pass2() == "anime"
+        if (old and old.get("asr") == ASR_VER_PREV and old.get("asr") != aid and models.pass2() == "anime" and lang == "ja"
                 and os.path.isdir(wjd) and any(f.endswith(".pass2.srt") for f in os.listdir(wjd))):
             rebuilt = lines_from_wj(wjd)          # 예전 결과 = 지금과 같은 두 모델·말소리 찾기 → 다시 받아쓰지 않음
         if rebuilt:
@@ -1049,8 +1068,8 @@ def make_subtitles(src, out_json, job=None, profile=None, retranslate=False, fre
             t_re = time.time()
             lines = relisten(wav, lines, job)
             times["다시 듣기"] = round(time.time() - t_re)
-            json.dump({"lines": lines, "translated": False, "asr": asr_id()}, open(out_json, "w", encoding="utf-8"), ensure_ascii=False)
-        elif (old and old.get("asr") == asr_id() and (old.get("asr_lines") or old.get("lines"))
+            json.dump({"lines": lines, "translated": False, "asr": aid}, open(out_json, "w", encoding="utf-8"), ensure_ascii=False)
+        elif (old and old.get("asr") == aid and (old.get("asr_lines") or old.get("lines"))
                 and (retranslate or not old.get("translated") or old.get("tr") != tr_id())):
             lines = [dict(l) for l in (old.get("asr_lines") or old["lines"])]   # 받아쓰기는 그대로 → 번역만 다시
             if old.get("tr_lines") and old.get("fix") == FIX_VER and len(old["tr_lines"]) == len(lines):
@@ -1069,13 +1088,13 @@ def make_subtitles(src, out_json, job=None, profile=None, retranslate=False, fre
             with wave.open(wav) as w:
                 dur = w.getnframes() / float(w.getframerate())
             t_asr = time.time()
-            lines = transcribe(wav, dur, job, prof.get("asr_words"))
+            lines = transcribe(wav, dur, job, prof.get("asr_words"), lang)
             times["받아쓰기"] = round(time.time() - t_asr)
-            if True:
+            if lang == "ja":                       # 놓친 곳 다시 듣기는 일본어 모델로만
                 t_re = time.time()
                 lines = relisten(wav, lines, job)
                 times["다시 듣기"] = round(time.time() - t_re)
-            json.dump({"lines": lines, "translated": False, "asr": asr_id()}, open(out_json, "w", encoding="utf-8"), ensure_ascii=False)
+            json.dump({"lines": lines, "translated": False, "asr": aid}, open(out_json, "w", encoding="utf-8"), ensure_ascii=False)
         raw = [dict(l) for l in lines]                    # 받아쓰기 원본 (나중에 번역만 다시 할 때 씀)
         f0 = None
         try:                                               # 목소리 높이로 남/여 구분 (하이픈 자막용) — 기록은 작업 폴더에 보관
@@ -1093,7 +1112,7 @@ def make_subtitles(src, out_json, job=None, profile=None, retranslate=False, fre
         times["번역"] = round(time.time() - t_tr)
         tr_lines = [{k: v for k, v in l.items() if k not in ("src_t",)} for l in lines]
         lines = resegment(split_speakers([dict(l) for l in lines]))
-        json.dump({"lines": lines, "asr_lines": raw, "tr_lines": tr_lines, "translated": True, "asr": asr_id(), "tr": tr_id(),
+        json.dump({"lines": lines, "asr_lines": raw, "tr_lines": tr_lines, "translated": True, "asr": aid, "tr": tr_id(),
                    "post": POST_VER, "fix": FIX_VER, "times": times,
                    "profile": prof.get("id"), "profile_name": prof.get("name"), "pver": profiles.version(prof)},
                   open(out_json, "w", encoding="utf-8"), ensure_ascii=False)

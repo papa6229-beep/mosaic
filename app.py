@@ -1077,6 +1077,8 @@ def _start_one(path):
     jid = uuid.uuid4().hex[:8]
     d = os.path.join(JOBS, jid)
     os.makedirs(d)
+    if request.form.get("lang") in ("ja", "en"):        # 자막 원문 언어 (일본어 / 영어)
+        open(os.path.join(d, "sub_lang.txt"), "w", encoding="utf-8").write(request.form["lang"])
     if path:
         src = path
     else:
@@ -1251,7 +1253,7 @@ def review_subs_line_tr(jid):
         prof = profiles.get(b.get("profile"))
         ctx = [(c[0], c[1]) for c in (b.get("ctx") or [])][-subs.CTX:]
         import tm
-        ko = line_tr["tr"].translate([subs.clean_ja(src)], ctx, "ja", profiles.prompt_part(prof) + tm.prompt_for([src]))[0]
+        ko = line_tr["tr"].translate([subs.clean_ja(src)], ctx, subs.job_lang(_jdir(jid) or ""), profiles.prompt_part(prof) + tm.prompt_for([src]))[0]
         parts = [x.strip() for x in subs.clean_ko(profiles.apply_replace(ko, prof)).split("||") if x.strip()]
         ko = ("- " + parts[0] + "\n- " + parts[1]) if len(parts) == 2 else " ".join(parts)
         ko = ko.rstrip(".")
@@ -1334,15 +1336,16 @@ def review_subs(jid):
     d = _jdir(jid)
     if not d:
         return jsonify(error="없는 작업"), 404
+    import subs
     p = os.path.join(d, "subs.json")
     data = json.load(open(p, encoding="utf-8")) if os.path.exists(p) else None
     if data is not None:
-        import subs
-        data["current"] = data.get("asr") == subs.asr_id()     # 지금 받아쓰기 방식으로 만든 자막인지
+        data["current"] = data.get("asr") == subs.asr_id(subs.job_lang(d))
+        data["lang"] = subs.job_lang(d)     # 지금 받아쓰기 방식으로 만든 자막인지
         data["tr_current"] = data.get("tr") == subs.tr_id() and data.get("post", subs.POST_VER) == subs.POST_VER   # 지금 번역·정리 방식인지
         data.pop("asr_lines", None)
         data.pop("tr_lines", None)
-    return jsonify(subs=data, state=sub_state.get(jid))
+    return jsonify(subs=data, state=sub_state.get(jid), lang=subs.job_lang(d))
 
 
 _tm_lock = threading.Lock()
@@ -1382,6 +1385,8 @@ def review_subs_make(jid):
         return jsonify(error="없는 작업"), 404
     r = json.load(open(os.path.join(d, "review.json"), encoding="utf-8"))
     b = request.get_json(silent=True) or {}
+    if b.get("lang") in ("ja", "en"):
+        open(os.path.join(d, "sub_lang.txt"), "w", encoding="utf-8").write(b["lang"])
     return jsonify(state=start_subs(jid, r["src"], b.get("profile"), bool(b.get("retranslate")), bool(b.get("fresh"))))
 
 
