@@ -1664,6 +1664,7 @@ def _proxy_job(jid, src, dst, n):
 
 
 audio_state = {}
+_proxy_busy = {}
 
 
 def _audio_job(jid, src, px, dst):
@@ -1686,12 +1687,45 @@ def _audio_job(jid, src, px, dst):
         audio_state[jid] = -1
 
 
+def _blurred_out(d, r):
+    """이 작업의 가장 최근 블러 결과 영상 (수정본 > 처음 결과). 자막 입힌 것(_sub)은 빼고"""
+    base = os.path.splitext(os.path.basename(r["src"]))[0]
+    c = []
+    for f in os.listdir(d):
+        stem, ext = os.path.splitext(f)
+        if stem in (base + "_fix", base + "_cover") and ext.lower() in VIDEO_EXT:
+            c.append(os.path.join(d, f))
+    if r.get("out") and os.path.exists(os.path.join(d, r["out"])):
+        c.append(os.path.join(d, r["out"]))
+    return max(c, key=os.path.getmtime) if c else None
+
+
 @app.get("/review/<jid>/video-status")
 def review_video_status(jid):
     d = _jdir(jid)
     if not d:
         return jsonify(error="없는 작업"), 404
     r = json.load(open(os.path.join(d, "review.json"), encoding="utf-8"))
+    if request.args.get("blur"):                      # 자막 화면: 블러 처리된 결과 영상으로 미리보기
+        bo = _blurred_out(d, r)
+        if not bo:
+            return jsonify(ready=False, none=True)
+        pb, key = os.path.join(d, "proxy_blur.mp4"), jid + ":blur"
+        if os.path.exists(pb) and os.path.getmtime(pb) >= os.path.getmtime(bo):
+            return jsonify(ready=True)
+        if proxy_state.get(key) == -1 and not _proxy_busy.get(key):
+            return jsonify(ready=False, failed=True)           # 만들기 실패 → 원본 미리보기 그대로
+        if not _proxy_busy.get(key):
+            _proxy_busy[key] = True
+            proxy_state[key] = 0
+
+            def go(k=key, s=bo, dst=pb):
+                try:
+                    _proxy_job(k, s, dst, r["n"])
+                finally:
+                    _proxy_busy[k] = False
+            threading.Thread(target=go, daemon=True).start()
+        return jsonify(ready=False, pct=proxy_state.get(key, 0), failed=proxy_state.get(key) == -1 and not _proxy_busy.get(key))
     if os.path.splitext(r["src"])[1].lower() in PLAYABLE:
         return jsonify(ready=True, audio="ok")
     pav, px = os.path.join(d, "proxy_av.mp4"), os.path.join(d, "proxy.mp4")
@@ -1714,6 +1748,8 @@ def review_video(jid):
     if not d:
         return "없음", 404
     r = json.load(open(os.path.join(d, "review.json"), encoding="utf-8"))
+    if request.args.get("blur") and os.path.exists(os.path.join(d, "proxy_blur.mp4")):
+        return send_file(os.path.join(d, "proxy_blur.mp4"), conditional=True, mimetype="video/mp4")
     if os.path.splitext(r["src"])[1].lower() not in PLAYABLE:
         for nm in ("proxy_av.mp4", "proxy.mp4"):
             px = os.path.join(d, nm)

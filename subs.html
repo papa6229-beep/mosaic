@@ -106,6 +106,7 @@
     <div id="stage">
       <video id="v" preload="auto" playsinline></video>
       <div id="cap"></div>
+      <div id="vBadge" style="position:absolute;left:10px;top:10px;padding:3px 9px;border-radius:6px;background:rgba(0,0,0,.65);color:#ffb347;font-size:12px;display:none;pointer-events:none"></div>
     </div>
     <div class="ctl">
       <button id="bBack" title="1초 뒤로 (Shift+←)">⏪ 1초</button>
@@ -616,17 +617,35 @@ function pollSubs() {
 }
 
 // ---------- 시작 ----------
+let blurShown = false;
 fetch(`/review/${JID}/data`).then(r => r.json()).then(d => { $("name").textContent = d.meta.name; if (d.meta.mode === "subs") $("toBlur").style.display = "none"; document.title = "자막 편집 — " + d.meta.name; });
 const waitVideo = () => fetch(`/review/${JID}/video-status`).then(r => r.json()).then(s => {
+  if (blurShown) return;
   if (s.ready) { V.src = `/review/${JID}/video` + (s.audio === "ok" ? "?av=1" : ""); if (s.audio === "pending") setTimeout(waitAudio, 3000); return; }
   if (s.pct < 0) return msg("미리보기 영상을 만들지 못했어요", "bad");
   msg(`검수용 미리보기 만드는 중 ${s.pct}% (처음 한 번만)`); setTimeout(waitVideo, 1500);
 });
 const waitAudio = () => fetch(`/review/${JID}/video-status`).then(r => r.json()).then(s => {
+  if (blurShown) return;
   if (s.audio === "ok") { const t = V.currentTime; V.src = `/review/${JID}/video?av=` + Date.now(); V.addEventListener("loadeddata", () => { V.currentTime = t; }, { once: true }); }
   else if (s.audio === "pending") setTimeout(waitAudio, 3000);
 });
 waitVideo();
+// 블러 작업이 끝난 영상이면, 블러 결과 영상으로 미리보기를 바꿈 (만드는 동안은 원본 미리보기)
+const badge = (s) => { const b = $("vBadge"); b.textContent = s || ""; b.style.display = s ? "block" : "none"; };
+const waitBlur = () => fetch(`/review/${JID}/video-status?blur=1`).then(r => r.json()).then(s => {
+  if (s.none || s.failed) { badge(s.failed ? "원본 화면 (블러 결과 미리보기를 못 만듦)" : ""); return; }
+  if (s.ready) {
+    if (!blurShown) {
+      const t = V.currentTime, paused = V.paused; blurShown = true;
+      V.src = `/review/${JID}/video?blur=1&t=` + Date.now();
+      V.addEventListener("loadeddata", () => { V.currentTime = t; if (!paused) V.play().catch(() => {}); }, { once: true });
+    }
+    badge("블러 결과 화면"); setTimeout(() => badge(""), 4000); return;
+  }
+  badge(`원본 화면 · 블러 결과 화면 준비 중 ${s.pct || 0}%`); setTimeout(waitBlur, 3000);
+}).catch(() => setTimeout(waitBlur, 5000));
+waitBlur();
 V.addEventListener("loadedmetadata", () => { drawTL(); showCap(); });
 window.addEventListener("resize", () => { drawTL(); showCap(); });
 pollSubs();
