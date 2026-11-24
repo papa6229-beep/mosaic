@@ -564,17 +564,29 @@ def layout(b, ko, st):
 def _render_curve(img, b, ko, st):
     """휜 글씨: 원래 글자들이 놓인 길을 따라 한 글자씩 (원래가 기울어진 글자면 같이 기울여서)"""
     c = b["curve"]
-    P, T, L = _resample(c["pts"])
+    P, T, Lx = _resample(_extend(c["pts"], c["cs"]))      # 원래 글자 길 + 양 끝 조금
+    e = c["cs"] * 0.6                                      # 앞쪽 늘린 길이 (원래 첫 글자 가운데 위치)
+    L = Lx - 2 * e                                         # 원래 첫 글자~끝 글자 가운데 사이 길이
     adv = [0.55 if ch == " " else 0.6 if ch in ",.!?~…、。，！？" else 1.0 for ch in ko]
     total = sum(adv)
     s = min(b["fs"], (L + c["cs"]) / max(1.0, total * 1.02))
     f = _font(s, st["weight"])
     sw = max(1, int(round(s * 0.09))) if st.get("outline") else 0
-    pos = (L - (total - 1) * s * 1.02) / 2                 # 가운데 맞춤 (첫 글자 가운데 위치)
+    start = e + L / 2 - total * s * 1.02 / 2               # 가운데 맞춤 (글자 폭을 다 더한 길이 기준)
+    cum = 0.0
     for ch, a in zip(ko, adv):
+        pos = start + (cum + a / 2) * s * 1.02             # 이 글자 가운데
+        cum += a
         if ch != " ":
-            t = int(np.clip(pos, 0, len(P) - 1))
-            cx, cy = P[t]
+            if pos < 0:                                    # 길 밖으로 나가면 끝 방향대로 이어서 (한 자리에 겹치지 않게)
+                cx, cy = P[0] + T[0] * pos
+                t = 0
+            elif pos > len(P) - 1:
+                cx, cy = P[-1] + T[-1] * (pos - (len(P) - 1))
+                t = len(P) - 1
+            else:
+                t = int(pos)
+                cx, cy = P[t]
             ang = math.degrees(math.atan2(T[t][1], T[t][0])) if c["mode"] == "rot" else 0.0
             R = int(s * 1.8)
             fm, om = Image.new("L", (R, R), 0), Image.new("L", (R, R), 0)
@@ -591,8 +603,7 @@ def _render_curve(img, b, ko, st):
             else:
                 tile.paste(Image.new("RGBA", (R, R), tuple(st["fill"]) + (255,)), (0, 0), fm)
             tile = tile.rotate(-ang, resample=Image.BICUBIC, expand=True)
-            img.alpha_composite(tile, (int(cx - tile.width / 2), int(cy - tile.height / 2)))
-        pos += a * s * 1.02
+            img.paste(tile, (int(cx - tile.width / 2), int(cy - tile.height / 2)), tile)
     return img
 
 
