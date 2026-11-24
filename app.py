@@ -652,6 +652,7 @@ def _run_parallel(job, K, n, make_args, target, label, p0=50, p1=99):
         procs.append(p)
     t0, results = time.time(), []
     first = [None] * K                                     # 일꾼마다 실제로 프레임을 내기 시작한 때 (준비 시간은 빼고 속도를 잼)
+    hist = []                                              # (시각, 끝낸 프레임 수) 최근 1분
     while len(results) < K:
         try:
             results.append(q.get(timeout=1))
@@ -664,16 +665,21 @@ def _run_parallel(job, K, n, make_args, target, label, p0=50, p1=99):
         for k, d in enumerate(dn):
             if d and first[k] is None:
                 first[k] = (now, d)
-        # 가장 늦게 끝날 일꾼 기준 (블러가 많은 구간을 맡은 일꾼은 느려서, 전체 평균으로 재면 실제보다 짧게 나옴)
-        lefts = []
-        for k, (sz, d) in enumerate(zip(sizes, dn)):
-            if d >= sz:
-                continue
-            if first[k] is None or d - first[k][1] < 10 or now - first[k][0] < 5:
-                lefts = None                                # 아직 속도를 잴 만큼 안 됨
-                break
-            lefts.append((sz - d) * (now - first[k][0]) / (d - first[k][1]))
-        left = max(lefts) if lefts else (0 if i >= n or lefts == [] else None)
+        # 최근 1분 동안의 실제 속도로 계산 (처음 속도로 재면 일꾼들이 막 시작하는 느린 구간 때문에 3배 넘게 부풀려졌음: 42분 표시 → 실제 12분)
+        hist.append((now, i))
+        while len(hist) > 2 and now - hist[0][0] > 60:
+            hist.pop(0)
+        (ta, ia) = hist[0]
+        left = None
+        if i >= n:
+            left = 0
+        elif now - ta >= 10 and i - ia >= 10:
+            rate = (i - ia) / (now - ta)
+            left = (n - i) / rate
+            slow = [(sz - d) * (now - first[k][0]) / max(1, d - first[k][1]) for k, (sz, d) in enumerate(zip(sizes, dn))
+                    if d < sz and first[k] is not None and d - first[k][1] >= 10]
+            if slow and len(slow) <= 2:                    # 끝 무렵 일꾼 한두 개만 남으면 그 일꾼 기준
+                left = max(left, min(slow))
         job["msg"] = f"{label} {i}/{n} 프레임 · CPU {K}개 동시 처리 · " + \
             ("이 단계 남은 시간 계산 중" if left is None else f"이 단계 남은 시간 약 {fmt_sec(left)}")
         job["pct"] = p0 + int(i * (p1 - p0) / max(n, 1))
