@@ -253,7 +253,7 @@ def style(rgb, clean, b, pal=True):
         ink &= dpal > 40
     ink = ink.astype(np.uint8)
     ink = cv2.morphologyEx(ink, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
-    st = {"fill": [255, 255, 255], "outline": None, "grad": None, "weight": 700}
+    st = {"fill": [255, 255, 255], "outline": None, "grad": None, "weight": 700, "cols": []}
     if ink.sum() < 20:
         bg = c.reshape(-1, 3).mean(0)
         st["fill"] = [20, 20, 20] if bg.mean() > 128 else [245, 245, 245]
@@ -267,6 +267,7 @@ def style(rgb, clean, b, pal=True):
     lab = lab.ravel()
     d0 = dist[lab == 0].mean() if (lab == 0).any() else 0
     d1 = dist[lab == 1].mean() if (lab == 1).any() else 0
+    st["cols"] = [[int(v) for v in cc] for cc in cen]      # 글자에 쓰인 두 색 (놓친 ！ 찾을 때 씀)
     bnd = (dist <= 1.5)                                    # 글자 덩어리의 맨 가장자리 (배경과 맞닿은 곳)
     b0 = (lab[bnd] == 0).mean() if bnd.any() else 0.5
     oi = 0 if b0 > 0.5 else 1                              # 가장자리를 더 많이 차지한 색 = 테두리 후보
@@ -275,7 +276,8 @@ def style(rgb, clean, b, pal=True):
     bgc = np.median(c[(ink == 0) & area].reshape(-1, 3), 0) if ((ink == 0) & area).any() else c.reshape(-1, 3).mean(0)
     # 그냥 글자 가장자리가 배경과 섞인 색이면 테두리가 아님 (섞인 색은 글자색과 배경색 사이에 있음)
     between = np.linalg.norm(fc - oc) + np.linalg.norm(oc - bgc) < 1.25 * np.linalg.norm(fc - bgc)
-    edge = max(b0, 1 - b0) > 0.65                           # 테두리라면 가장자리 대부분을 차지
+    do_, df_ = (d0, d1) if oi == 0 else (d1, d0)
+    edge = max(b0, 1 - b0) > 0.65 or do_ < 0.6 * df_       # 테두리라면 가장자리 대부분을 차지하거나, 획 가운데서 멂
     if frac_out > 0.15 and np.linalg.norm(fc - oc) > 80 and not between and edge:
         st["outline"] = [int(v) for v in oc]
         fill_px = (lab != oi) & (dist >= 1.5)              # 테두리 색이 아닌 안쪽 = 글자
@@ -441,7 +443,7 @@ def _residual(rgb, b, st):
     if x1 - x0 < 3 or y1 - y0 < 3:
         return None, False
     z = rgb[y0:y1, x0:x1].astype(np.float32)
-    cols = [st["fill"]] + ([st["outline"]] if st.get("outline") else []) + (st["grad"] if st.get("grad") else [])
+    cols = [st["fill"]] + ([st["outline"]] if st.get("outline") else []) + (st["grad"] if st.get("grad") else []) + st.get("cols", [])
     near = np.min([np.linalg.norm(z - np.array(c, np.float32), axis=-1) for c in cols], 0) < 45
     near = cv2.morphologyEx(near.astype(np.uint8), cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
     n, lab, stt, _ = cv2.connectedComponentsWithStats(near)
