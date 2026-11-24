@@ -1588,6 +1588,9 @@ def run_setup(what):
             import subs, imgtr
             st["msg"] = "글자 지우기 모델 받는 중"
             imgtr.lama()
+            import craftnet
+            st["msg"] = "휜 글씨 찾기 모델 받는 중"
+            craftnet.net(os.path.join(BASE, "cache", "craft"))
             st["pct"] = 40
             st["msg"] = "번역 모델 받는 중"
             subs.ensure_translator({})

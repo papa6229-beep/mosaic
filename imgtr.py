@@ -49,8 +49,162 @@ def detect(rgb):
             continue
         w, h, x0, y0, x1, y1 = _geom(poly)
         vert = bool(h > 1.3 * w and len(t) >= 2)
-        out.append({"poly": [[float(a), float(b)] for a, b in poly], "text": t, "vert": vert, "cjk": bool(CJK.search(t)),
-                    "x0": x0, "y0": y0, "x1": x1, "y1": y1, "size": float(w if vert else h)})
+        l = {"poly": [[float(a), float(b)] for a, b in poly], "text": t, "vert": vert, "cjk": bool(CJK.search(t)),
+             "x0": x0, "y0": y0, "x1": x1, "y1": y1, "size": float(w if vert else h)}
+        q = np.array(poly, np.float32)
+        ang = math.degrees(math.atan2(q[1][1] - q[0][1], q[1][0] - q[0][0]))
+        if not vert and 8 < abs(ang) < 80 and l["cjk"]:     # 비스듬한 가로줄 → 같은 기울기로 다시 쓰게
+            a, b = (q[0] + q[3]) / 2, (q[1] + q[2]) / 2
+            l["curve"] = {"pts": [[float(a[0]), float(a[1])], [float(b[0]), float(b[1])]], "mode": "rot", "cs": float(h)}
+        out.append(l)
+    return out
+
+
+# ---------------- 1-2. 휘거나 비스듬한 글씨 (글자 하나씩 찾아 이어서 읽기) ----------------
+def _resample(pts, step=1.0):
+    p = np.asarray(pts, np.float64)
+    seg = np.linalg.norm(np.diff(p, axis=0), axis=1)
+    L = np.concatenate([[0], np.cumsum(seg)])
+    ts = np.arange(0, L[-1] + 1e-6, step)
+    xs, ys = np.interp(ts, L, p[:, 0]), np.interp(ts, L, p[:, 1])
+    P = np.stack([xs, ys], 1)
+    T = np.gradient(P, axis=0)
+    k = max(3, int(len(P) * 0.08)) | 1                       # 방향은 부드럽게
+    T = np.stack([np.convolve(np.pad(T[:, i], k // 2, mode="edge"), np.ones(k) / k, mode="valid") for i in range(2)], 1)
+    T /= np.linalg.norm(T, axis=1, keepdims=True) + 1e-9
+    return P, T, float(L[-1])
+
+
+def _extend(pts, cs):
+    p = np.asarray(pts, np.float64)
+    d0 = p[0] - p[1]; d0 /= np.linalg.norm(d0) + 1e-9
+    d1 = p[-1] - p[-2]; d1 /= np.linalg.norm(d1) + 1e-9
+    return np.vstack([p[0] + d0 * cs * 0.6, p, p[-1] + d1 * cs * 0.6])
+
+
+def _strip(rgb, pts, cs):
+    """경로를 따라 띠 모양으로 잘라 반듯한 가로 줄 그림으로 펴기 (휜 글씨 → 가로 글씨)"""
+    P, T, L = _resample(_extend(pts, cs))
+    N = np.stack([-T[:, 1], T[:, 0]], 1)
+    h = int(cs * 1.6)
+    off = np.arange(h) - h / 2
+    mx = (P[None, :, 0] + N[None, :, 0] * off[:, None]).astype(np.float32)
+    my = (P[None, :, 1] + N[None, :, 1] * off[:, None]).astype(np.float32)
+    return cv2.remap(rgb, mx, my, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+
+
+def _upright(rgb, pts, cs):
+    """글자는 똑바로 서 있고 줄만 비스듬한 경우: 글자를 하나씩 잘라 가로로 이어 붙임"""
+    r = int(cs * 0.6)
+    tiles = []
+    for x, y in pts:
+        x0, y0 = int(x) - r, int(y) - r
+        tile = np.full((2 * r, 2 * r, 3), 255, np.uint8)
+        sx0, sy0, sx1, sy1 = max(0, x0), max(0, y0), min(rgb.shape[1], x0 + 2 * r), min(rgb.shape[0], y0 + 2 * r)
+        tile[sy0 - y0:sy1 - y0, sx0 - x0:sx1 - x0] = rgb[sy0:sy1, sx0:sx1]
+        tiles.append(tile)
+    return np.concatenate(tiles, 1) if tiles else None
+
+
+def _read(img):
+    if img is None or img.size == 0:
+        return "", 0.0
+    r = ocr()(img)
+    if r is None or r.boxes is None:
+        return "", 0.0
+    items = sorted(zip(r.boxes, r.txts, r.scores), key=lambda x: np.mean(np.asarray(x[0])[:, 0]))
+    t = "".join(x[1] for x in items)
+    s = float(np.mean([x[2] for x in items])) if items else 0.0
+    return t, s * min(1.0, len(CJK.findall(t)) / max(1, len(t)) + 0.3)
+
+
+def curve_lines(rgb, lines):
+    """반듯한 줄로 못 찾은 글씨(휘거나 비스듬한)를 글자 하나씩 찾아 이어서 읽음 → 줄 목록(경로 포함)"""
+    import craftnet
+    hm = craftnet.heat(rgb, os.path.join(ROOT, "cache", "craft"))
+    cover = np.zeros(hm.shape, np.uint8)
+    for l in lines:                                         # 이미 읽은 줄 자리는 빼고
+        cv2.fillPoly(cover, [np.array(l["poly"], np.int32)], 255)
+    cover = cv2.dilate(cover, np.ones((9, 9), np.uint8))
+    hm[cover > 0] = 0
+    blob = (hm > 0.3).astype(np.uint8)
+    if blob.sum() < 30:
+        return []
+    dist = cv2.distanceTransform(blob, cv2.DIST_L2, 3)
+    n, lab, st, _ = cv2.connectedComponentsWithStats(blob)
+    pts = []
+    for i in range(1, n):
+        m = lab == i
+        md = float(dist[m].max())
+        if md < 3:
+            continue
+        k = max(3, int(md * 1.3)) | 1
+        mx = cv2.dilate(np.where(m, hm, 0).astype(np.float32), np.ones((k, k), np.uint8))
+        pk = np.argwhere(m & (hm >= mx - 1e-6) & (hm > 0.5))
+        for y, x in pk:
+            pts.append((float(x), float(y), max(6.0, float(dist[y, x]) * 2.6)))
+    if len(pts) < 3:
+        return []
+    P = np.array(pts)
+    # 가까운 글자끼리 잇기 (최소 연결 나무) → 한 줄씩
+    D = np.linalg.norm(P[:, None, :2] - P[None, :, :2], axis=-1)
+    cs = np.maximum(P[:, None, 2], P[None, :, 2])
+    ok = (D < 1.9 * cs) & (np.maximum(P[:, None, 2], P[None, :, 2]) < 1.8 * np.minimum(P[:, None, 2], P[None, :, 2]))
+    np.fill_diagonal(ok, False)
+    seen, out = set(), []
+    for s0 in range(len(P)):
+        if s0 in seen:
+            continue
+        comp, stack = [], [s0]
+        while stack:
+            a = stack.pop()
+            if a in seen:
+                continue
+            seen.add(a); comp.append(a)
+            stack += [b for b in np.nonzero(ok[a])[0] if b not in seen]
+        if len(comp) < 3:
+            continue
+        # 나무에서 가장 먼 두 끝을 잇는 길 = 글자 순서
+        sub = D[np.ix_(comp, comp)] * ok[np.ix_(comp, comp)]
+
+        def far(a):
+            dd = {a: 0.0}; prev = {a: None}; q = [a]
+            while q:
+                u = q.pop()
+                for v in range(len(comp)):
+                    if sub[u, v] > 0 and v not in dd:
+                        dd[v] = dd[u] + sub[u, v]; prev[v] = u; q.append(v)
+            e = max(dd, key=dd.get)
+            return e, prev
+        e1, _ = far(0)
+        e2, prev = far(e1)
+        path, u = [], e2
+        while u is not None:
+            path.append(comp[u]); u = prev[u]
+        if len(path) < 3:
+            continue
+        cpts = P[path, :2]
+        csz = float(np.median(P[path, 2]))
+        best = None
+        for mode in ("rot", "up"):
+            for order in (cpts, cpts[::-1]):
+                img = _strip(rgb, order, csz) if mode == "rot" else _upright(rgb, order, csz)
+                txt, sc = _read(img)
+                if CJK.search(txt) and (best is None or sc > best[0]):
+                    best = (sc, txt, order, mode)
+        if not best or best[0] < 0.5:
+            continue
+        sc, txt, order, mode = best
+        Pp, T, _ = _resample(_extend(order, csz))
+        N = np.stack([-T[:, 1], T[:, 0]], 1)
+        Pp, T, _ = _resample(_extend(_extend(order, csz), csz))   # 끝의 ~ ！ 같은 것까지 지우게 양 끝을 조금 더
+        N = np.stack([-T[:, 1], T[:, 0]], 1)
+        band = np.vstack([Pp - N * csz * 0.62, (Pp + N * csz * 0.62)[::-1]])
+        band = band[:: max(1, len(band) // 60)]
+        x0, y0 = band.min(0); x1, y1 = band.max(0)
+        out.append({"poly": band.tolist(), "text": txt, "vert": False, "cjk": True,
+                    "x0": float(x0), "y0": float(y0), "x1": float(x1), "y1": float(y1), "size": csz * 1.4,
+                    "curve": {"pts": [[float(a), float(b)] for a, b in order], "mode": mode, "cs": csz}})
     return out
 
 
@@ -88,8 +242,14 @@ def group(lines):
     blocks = []
     hs = sorted([l for l in lines if l["cjk"] and not l["vert"]], key=lambda l: (l["y0"], l["x0"]))
     vs = sorted([l for l in lines if l["cjk"] and l["vert"]], key=lambda l: (-l["x1"], l["y0"]))
+    for l in [l for l in lines if l.get("curve")]:          # 휜 글씨는 그 줄 하나가 한 덩어리
+        blocks.append(dict(_new(l), curve=l["curve"]))
+    hs = [l for l in hs if not l.get("curve")]
+    vs = [l for l in vs if not l.get("curve")]
     for l in hs + vs:
         for b in blocks:
+            if b.get("curve"):
+                continue
             if b["vert"] == l["vert"] and _near(b, l):
                 _add(b, l)
                 break
@@ -97,7 +257,7 @@ def group(lines):
             blocks.append(_new(l))
     for l in [l for l in lines if not l["cjk"]]:
         for b in blocks:
-            if _tail(b, l):
+            if not b.get("curve") and _tail(b, l):
                 b["lines"].append(dict(l, tail=True))
                 b["x0"], b["y0"] = min(b["x0"], l["x0"]), min(b["y0"], l["y0"])
                 b["x1"], b["y1"] = max(b["x1"], l["x1"]), max(b["y1"], l["y1"])
@@ -280,9 +440,14 @@ def style(rgb, clean, b, pal=True):
     edge = max(b0, 1 - b0) > 0.65 or do_ < 0.6 * df_       # 테두리라면 가장자리 대부분을 차지하거나, 획 가운데서 멂
     if frac_out > 0.15 and np.linalg.norm(fc - oc) > 80 and not between and edge:
         st["outline"] = [int(v) for v in oc]
+        st["how"] = "outline"
         fill_px = (lab != oi) & (dist >= 1.5)              # 테두리 색이 아닌 안쪽 = 글자
     elif min(frac_out, 1 - frac_out) > 0.2 and np.linalg.norm(fc - oc) > 80 and not between:
         ii = 0 if d0 >= d1 else 1                          # 두 색이 뚜렷한데 테두리로 확신이 없으면 안쪽(획 가운데) 색을 글자색으로
+        st["how"] = "interior"
+        thick = (dist[lab != ii] >= 2).mean() if (lab != ii).any() else 0
+        if min(d0, d1) < 0.85 * max(d0, d1) and thick > 0.3:   # 다른 색이 바깥쪽에 두께 있게 있으면 테두리 (가장자리 섞인 색은 얇음)
+            st["outline"] = [int(v) for v in cen[1 - ii]]
         fill_px = (lab == ii) & (dist >= 1.5)
     else:
         fill_px = dist >= 1.5                              # 가장자리 섞인 색은 빼고
@@ -318,10 +483,13 @@ def line_color(rgb, clean, l):
         return None
     dist = cv2.distanceTransform(ink.astype(np.uint8), cv2.DIST_L2, 3)
     core = dist >= max(1.0, np.percentile(dist[ink], 60))      # 획 가운데 (테두리 말고)
-    prof = ink.sum(1 if not l["vert"] else 0)                  # 글자 실제 높이(가로)/너비(세로) → 글자 크기
-    idx = np.nonzero(prof > max(1, prof.max() * 0.05))[0]
-    if len(idx):
-        l["fs"] = float(idx[-1] - idx[0] + 1) / 0.92
+    if l.get("curve"):
+        l["fs"] = l["curve"]["cs"] * 0.85
+    else:
+        prof = ink.sum(1 if not l["vert"] else 0)              # 글자 실제 높이(가로)/너비(세로) → 글자 크기
+        idx = np.nonzero(prof > max(1, prof.max() * 0.05))[0]
+        if len(idx):
+            l["fs"] = float(idx[-1] - idx[0] + 1) / 0.92
     return [float(v) for v in np.median(o[core], 0)]
 
 
@@ -393,6 +561,41 @@ def layout(b, ko, st):
     return [], base
 
 
+def _render_curve(img, b, ko, st):
+    """휜 글씨: 원래 글자들이 놓인 길을 따라 한 글자씩 (원래가 기울어진 글자면 같이 기울여서)"""
+    c = b["curve"]
+    P, T, L = _resample(c["pts"])
+    adv = [0.55 if ch == " " else 0.6 if ch in ",.!?~…、。，！？" else 1.0 for ch in ko]
+    total = sum(adv)
+    s = min(b["fs"], (L + c["cs"]) / max(1.0, total * 1.02))
+    f = _font(s, st["weight"])
+    sw = max(1, int(round(s * 0.09))) if st.get("outline") else 0
+    pos = (L - (total - 1) * s * 1.02) / 2                 # 가운데 맞춤 (첫 글자 가운데 위치)
+    for ch, a in zip(ko, adv):
+        if ch != " ":
+            t = int(np.clip(pos, 0, len(P) - 1))
+            cx, cy = P[t]
+            ang = math.degrees(math.atan2(T[t][1], T[t][0])) if c["mode"] == "rot" else 0.0
+            R = int(s * 1.8)
+            fm, om = Image.new("L", (R, R), 0), Image.new("L", (R, R), 0)
+            ImageDraw.Draw(fm).text((R / 2, R / 2), ch, font=f, fill=255, anchor="mm")
+            if sw:
+                ImageDraw.Draw(om).text((R / 2, R / 2), ch, font=f, fill=255, anchor="mm", stroke_width=sw, stroke_fill=255)
+            tile = Image.new("RGBA", (R, R), (0, 0, 0, 0))
+            if sw:
+                tile.paste(Image.new("RGBA", (R, R), tuple(st["outline"]) + (255,)), (0, 0), om)
+            if st.get("grad"):
+                tt = np.linspace(0, 1, R)[:, None]
+                g = (np.array(st["grad"][0]) * (1 - tt) + np.array(st["grad"][1]) * tt).astype(np.uint8)
+                tile.paste(Image.fromarray(np.repeat(g[:, None, :], R, 1)).convert("RGBA"), (0, 0), fm)
+            else:
+                tile.paste(Image.new("RGBA", (R, R), tuple(st["fill"]) + (255,)), (0, 0), fm)
+            tile = tile.rotate(-ang, resample=Image.BICUBIC, expand=True)
+            img.alpha_composite(tile, (int(cx - tile.width / 2), int(cy - tile.height / 2)))
+        pos += a * s * 1.02
+    return img
+
+
 def render(clean, blocks):
     """지운 그림 위에 블록마다 한국어를 그려 넣음"""
     img = Image.fromarray(clean).convert("RGBA")
@@ -401,6 +604,9 @@ def render(clean, blocks):
         if not ko or b.get("skip"):
             continue
         st = b["style"]
+        if b.get("curve"):
+            img = _render_curve(img, b, ko, st)
+            continue
         items, s = layout(b, ko, st)
         if not items:
             continue
@@ -465,6 +671,10 @@ def analyze(path):
     → (원본, 지운 그림, 블록들). 배경을 최대한 살리려고, 마지막엔 글자 상자 전체가 아니라 글자 획(+테두리) 자리만 새로 채움"""
     rgb = np.asarray(Image.open(path).convert("RGB"))
     lines = detect(rgb)
+    try:
+        lines += curve_lines(rgb, lines)                   # 휘거나 비스듬해서 못 찾은 글씨
+    except Exception as e:
+        print("휜 글씨 찾기 실패:", e)
     if not any(l["cjk"] for l in lines):
         return rgb, rgb, []
     pre = group(lines)                                     # 지울 곳 (덩어리 끝 조각까지)
@@ -480,7 +690,7 @@ def analyze(path):
     ink = ((np.abs(rgb.astype(np.int32) - clean.astype(np.int32)).sum(2) > 60) & (mask > 0)).astype(np.uint8) * 255
     for b in blocks:
         b["style"] = style(rgb, clean, b)
-        rm, tall = _residual(rgb, b, b["style"])           # 놓친 ！ 같은 것
+        rm, tall = _residual(rgb, b, b["style"]) if not b.get("curve") else (None, False)   # 놓친 ！ 같은 것
         if rm is not None:
             ink = np.maximum(ink, rm)
             if tall and not b.get("tail"):
@@ -493,6 +703,16 @@ def analyze(path):
         tl = b.get("tail")
         b["style"] = style(rgb, clean, b, pal=False)
         b["tail"] = tl
+        if b.get("curve") and len(b["style"].get("cols", [])) == 2 and b["style"].get("how") is None:
+            # 휜 글씨: 배경과 더 다른 색 = 글자색, 다른 하나가 뚜렷이 다르면 테두리 (위아래 그라데이션은 안 봄)
+            x0, y0, x1, y1 = int(b["x0"]), int(b["y0"]), int(b["x1"]), int(b["y1"])
+            bg = np.median(clean[y0:y1, x0:x1].reshape(-1, 3), 0)
+            c0, c1 = (np.array(c, np.float32) for c in b["style"]["cols"])
+            fc, oc = (c0, c1) if np.linalg.norm(c0 - bg) >= np.linalg.norm(c1 - bg) else (c1, c0)
+            b["style"].update(fill=[int(v) for v in fc], grad=None,
+                              outline=[int(v) for v in oc] if np.linalg.norm(fc - oc) > 80 else None)
+            if b["style"]["outline"]:
+                b["style"]["weight"] = max(b["style"]["weight"], 700)
     return rgb, clean, blocks
 
 
