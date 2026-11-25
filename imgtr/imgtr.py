@@ -883,6 +883,51 @@ def _fs_from(l, tm):
         l["fs"] = float(idx[-1] - idx[0] + 1) / 0.92
 
 
+GLYPH_TH = 60
+
+
+def glyph_mask(dfill, poly, b, dout=None):
+    """글자 모양 그대로의 마스크: 글자 자리 안에서 글자색에 가까운 픽셀 (+ 그 바로 둘레의 글자 테두리색) + 가장자리 1~2칸.
+    뱃지·스티커 테두리·글상자처럼 글자색이 아닌 꾸밈은 안 건드림"""
+    fs = b["fs"]
+    g = max(2, int(b["size"] * 0.12))
+    area = cv2.dilate(poly, np.ones((2 * g + 1, 2 * g + 1), np.uint8))
+    m = ((dfill < GLYPH_TH) & (area > 0)).astype(np.uint8)
+    m = cv2.morphologyEx(m, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))          # 배경 잡티 빼기
+    ys, xs = np.nonzero(poly)                              # 글자 상자 밖으로 크게 뻗어 나간 같은 색 덩어리(띠·바탕)는 글자가 아님
+    e = max(2, int(b["size"] * 0.05))
+    bx0, by0, bx1, by1 = xs.min() - e, ys.min() - e, xs.max() + e, ys.max() + e
+    n, lab, st, _ = cv2.connectedComponentsWithStats(m)
+    keep = np.zeros(n, bool)
+    for i in range(1, n):
+        x, y, w, h, a = st[i]
+        yy, xx = np.nonzero(lab[y:y + h, x:x + w] == i)
+        keep[i] = ((xx + x >= bx0) & (xx + x <= bx1) & (yy + y >= by0) & (yy + y <= by1)).mean() > 0.9
+    m = keep[lab].astype(np.uint8)
+    kc = max(3, int(fs * 0.05)) | 1
+    m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kc, kc)))   # 질감 글씨 구멍
+    if dout is not None:                                   # 글자 테두리: 글자 획 바로 둘레에서 테두리색인 곳만
+        ko = max(2, int(fs * 0.14))
+        ring = cv2.dilate(m, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * ko + 1, 2 * ko + 1)))
+        m = m | ((dout < GLYPH_TH) & (ring > 0)).astype(np.uint8)
+    ke = min(6, max(3, int(round(fs * 0.08))))                   # 글자 가장자리 섞인 색까지
+    return cv2.dilate(m, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * ke + 1, 2 * ke + 1)))
+
+
+def _curve_style(b, clean):
+    """휜 글씨: 배경과 더 다른 색 = 글자색, 다른 하나가 뚜렷이 다르면 테두리 (위아래 그라데이션은 안 봄)"""
+    if not (b.get("curve") and len(b["style"].get("cols", [])) == 2 and b["style"].get("how") is None):
+        return
+    x0, y0, x1, y1 = int(b["x0"]), int(b["y0"]), int(b["x1"]), int(b["y1"])
+    bg = np.median(clean[y0:y1, x0:x1].reshape(-1, 3), 0)
+    c0, c1 = (np.array(c, np.float32) for c in b["style"]["cols"])
+    fc, oc = (c0, c1) if np.linalg.norm(c0 - bg) >= np.linalg.norm(c1 - bg) else (c1, c0)
+    b["style"].update(fill=[int(v) for v in fc], grad=None,
+                      outline=[int(v) for v in oc] if np.linalg.norm(fc - oc) > 80 else None)
+    if b["style"]["outline"]:
+        b["style"]["weight"] = max(b["style"]["weight"], 700)
+
+
 def analyze(path):
     """글자 찾기 → 지우기 → 줄마다 글자색 → 덩어리로 묶기 → 덩어리 모양 읽기 → 글자 획만 다시 지우기 (번역 전까지)
     → (원본, 지운 그림, 블록들). 배경을 최대한 살리려고, 마지막엔 글자 상자 전체가 아니라 글자 획(+테두리) 자리만 새로 채움"""
@@ -939,7 +984,7 @@ def analyze(path):
             _fs_from(l, sf["mask"] > 0)
             used.append(l)
     blocks = group(used)                                   # 글자색까지 보고 다시 묶기
-    ink = ((np.abs(rgb.astype(np.int32) - clean.astype(np.int32)).sum(2) > 60) & (mask > 0)).astype(np.uint8) * 255
+    ink = np.zeros(rgb.shape[:2], np.uint8)
     polys = []
     for b in blocks:
         pm = np.zeros(rgb.shape[:2], np.uint8)
@@ -954,33 +999,56 @@ def analyze(path):
         if b.get("plate") or b.get("soft"):
             continue
         b["style"] = style(rgb, clean, b, others=others(i))
+        _curve_style(b, clean)
         rm, tall = _residual(rgb, b, b["style"]) if not b.get("curve") else (None, False)   # 놓친 ！ 같은 것
         if rm is not None:
-            ink = np.maximum(ink, rm)
+            kr = max(2, int(b["fs"] * (0.14 if b["style"].get("outline") else 0.04)))
+            ink = np.maximum(ink, cv2.dilate(rm, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * kr + 1, 2 * kr + 1))))
             if tall and not b.get("tail"):
                 b["tail"] = "!"
-    # 2차: 글자 획 자리만 (가장자리 섞인 색까지 조금 넓혀서) 원본에서 다시 채움 → 글자 사이·둘레 배경은 원본 그대로
-    if ink.any():
-        k = max(3, int(np.median([b["fs"] for b in blocks]) * 0.06))
-        ink = cv2.dilate(ink, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * k + 1, 2 * k + 1)))
-        ink[protect > 0] = 0
-    for l in lines:                                        # 무늬 판 위 글씨: 획 자리만 (판 보호 구역이어도)
+    # 2차: 글자 모양대로만 도려냄 (글자색·글자 테두리색 픽셀만. 뱃지·스티커 테두리·글상자는 남김) → 그 자리만 원본에서 새로 채움
+    tcols = []
+    for b in blocks:
+        if not (b.get("plate") or b.get("soft")):
+            tcols += [l["col"] for l in b["lines"] if l.get("col") is not None]
+    if tcols:
+        px = rgb.astype(np.float32)
+        dist = lambda cs: np.min(np.stack([np.linalg.norm(px - np.array(c, np.float32), axis=-1) for c in cs]), 0)
+        dfill = dist(tcols)
+        for i, b in enumerate(blocks):
+            if b.get("plate") or b.get("soft"):
+                continue
+            st = b.get("style") or {}                      # 글자 테두리 후보 = 글자에 쓰인 색 중 글자색이 아닌 것
+            lc = [np.array(l["col"], np.float32) for l in b["lines"] if l.get("col") is not None]
+            ocs = [c for c in list(st.get("cols") or []) + ([st["outline"]] if st.get("outline") else [])
+                   if lc and min(np.linalg.norm(np.array(c, np.float32) - x) for x in lc) > 80] \
+                if (st.get("how") == "outline" or st.get("outline")) else []   # 테두리가 있는 글씨만 (꾸밈 스티커·뱃지는 그대로)
+            ink = np.maximum(ink, glyph_mask(dfill, polys[i], b, dist(ocs) if ocs else None) * 255)
+    inb = {id(l) for b in blocks for l in b["lines"]}
+    for l in lines:                                        # 번역 안 하는 글씨(영어 등)와 그 둘레는 건드리지 않음
+        if id(l) not in inb:
+            km = np.zeros(rgb.shape[:2], np.uint8)
+            cv2.fillPoly(km, [np.array(l["poly"], np.int32)], 1)
+            if allp is not None and (allp[km > 0] > 0).mean() > 0.2:
+                continue                                   # 번역 글씨에 붙은 조각(！ 등)은 같이 지움
+            g = max(2, int(l["size"] * 0.5))
+            ink[cv2.dilate(km, np.ones((2 * g + 1, 2 * g + 1), np.uint8)) > 0] = 0
+    ink[protect > 0] = 0
+    for l in lines:                                        # 판·무늬 판 위 글씨: 글자 획 자리만 (판 보호 구역이어도)
         if l.get("soft"):
             ink = np.maximum(ink, cv2.dilate(l["soft"]["mask"] * 255, np.ones((5, 5), np.uint8)))
+        pl = l.get("plate")
+        if pl:
+            pc, tc = np.array(pl["color"], np.float32), np.array(pl["text"], np.float32)
+            px = rgb.astype(np.float32)                    # 글자색 쪽에 더 가까운 픽셀(글자 획 + 가장자리)만
+            tm = ((pl["region"] > 0) & (np.linalg.norm(px - tc, axis=-1) < np.linalg.norm(px - pc, axis=-1) * 1.6)
+                  & (np.linalg.norm(px - pc, axis=-1) > 20)).astype(np.uint8)
+            kp = max(3, int(l.get("fs", l["size"]) * 0.12) | 1)    # 글자 가장자리 섞인 색까지
+            ink = np.maximum(ink, cv2.dilate(tm, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kp, kp))) * 255)
     if ink.any():
         clean = inpaint(rgb, ink)
     else:
         clean = rgb.copy()
-    # 판 위 글씨: 판 안에서 판 색이 아닌 픽셀(글자)만 판 색으로 메움
-    for l in lines:
-        pl = l.get("plate")
-        if not pl:
-            continue
-        pc = np.array(pl["color"], np.float32)
-        tm = ((pl["region"] > 0) & (np.linalg.norm(rgb.astype(np.float32) - pc, axis=-1) > 25)).astype(np.uint8)
-        tm = cv2.dilate(tm, np.ones((3, 3), np.uint8)) & pl["region"]
-        a = cv2.GaussianBlur(tm.astype(np.float32), (3, 3), 0)[..., None]
-        clean = (clean * (1 - a) + pc * a).astype(np.uint8)
     for i, b in enumerate(blocks):                         # 글자 획 자리만 새로 채운 그림과 비교하면 글자 픽셀이 정확 → 색·테두리 다시 읽기
         if b.get("plate"):
             pl = b["plate"]
@@ -1003,16 +1071,7 @@ def analyze(path):
         tl = b.get("tail")
         b["style"] = style(rgb, clean, b, pal=False, others=others(i))
         b["tail"] = tl
-        if b.get("curve") and len(b["style"].get("cols", [])) == 2 and b["style"].get("how") is None:
-            # 휜 글씨: 배경과 더 다른 색 = 글자색, 다른 하나가 뚜렷이 다르면 테두리 (위아래 그라데이션은 안 봄)
-            x0, y0, x1, y1 = int(b["x0"]), int(b["y0"]), int(b["x1"]), int(b["y1"])
-            bg = np.median(clean[y0:y1, x0:x1].reshape(-1, 3), 0)
-            c0, c1 = (np.array(c, np.float32) for c in b["style"]["cols"])
-            fc, oc = (c0, c1) if np.linalg.norm(c0 - bg) >= np.linalg.norm(c1 - bg) else (c1, c0)
-            b["style"].update(fill=[int(v) for v in fc], grad=None,
-                              outline=[int(v) for v in oc] if np.linalg.norm(fc - oc) > 80 else None)
-            if b["style"]["outline"]:
-                b["style"]["weight"] = max(b["style"]["weight"], 700)
+        _curve_style(b, clean)
     for b in blocks:                                       # 판 영역은 저장할 필요 없음 (크기만 큼)
         b.pop("plate", None)
         b.pop("soft", None)
