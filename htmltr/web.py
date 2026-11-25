@@ -131,7 +131,7 @@ def _tr_batch(sents, ctx):
     t_ = _translator()
     u = ""
     if ctx:
-        u += "Earlier lines (context only, do not translate):\n" + "\n".join(f"- {a} → {b}" for a, b in ctx[-6:]) + "\n\n"
+        u += "Earlier lines (context only, do not translate):\n" + "\n".join(f"- {a} → {b}" for a, b in ctx[-3:]) + "\n\n"
     u += "Translate:\n" + "\n".join(f"{i + 1}. {t}" for i, t in enumerate(sents))
     with tr_lock:
         t0 = time.time()
@@ -357,7 +357,6 @@ def open_game():
     if not os.path.isfile(p):
         return jsonify(error="그 파일을 못 찾았어요"), 400
     gid = _register(p)
-    threading.Thread(target=pretranslate, args=(gid,), daemon=True).start()
     return jsonify(gid=gid, url=f"/g/{gid}/" + games[gid]["entry"])
 
 
@@ -382,9 +381,7 @@ def serve(gid, sub):
     g = games.get(gid)
     if not g:
         abort(404)
-    if gid not in pre:                                     # 목록에서 다시 연 것도 미리 번역 이어서
-        pre[gid] = {"running": False}
-        threading.Thread(target=pretranslate, args=(gid,), daemon=True).start()
+
     root = os.path.realpath(g["dir"])
     p = os.path.realpath(os.path.join(root, *sub.split("/")))
     if not (p == root or p.startswith(root + os.sep)) or not os.path.isfile(p):
