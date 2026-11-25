@@ -51,7 +51,7 @@ const $ = id => document.getElementById(id);
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 function msg(t, bad) { $("msg").textContent = t; $("msg").classList.toggle("bad", !!bad); }
 async function open_(path) {
-  msg(path ? "여는 중…" : "파일 고르는 창을 띄웠어요 (작업 표시줄에 숨어 있을 수도 있어요)");
+  msg(path ? "여는 중…" : "파일 고르는 창을 띄웠어요 — 안 보이면 Alt+Tab 으로 찾거나, 옆 칸에 경로를 붙여 넣어 주세요");
   try {
     const r = await (await fetch("/open", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path }) })).json();
     if (r.cancel) { msg(""); return; }

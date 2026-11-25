@@ -316,13 +316,17 @@ def tr_api(gid):
 
 
 # ---------------- 실행기 열기·보여 주기 ----------------
+pick_lock = threading.Lock()
+
+
 def _pick_file():
     """윈도우 '파일 열기' 창으로 HTML 고르기 → 경로 (취소하면 "")"""
     ps = ("[Console]::OutputEncoding=[Text.Encoding]::UTF8;Add-Type -AssemblyName System.Windows.Forms;"
           "$d=New-Object System.Windows.Forms.OpenFileDialog;$d.Filter='HTML (*.html;*.htm)|*.html;*.htm|모든 파일 (*.*)|*.*';"
           "$d.Title='번역해서 열 HTML 파일 고르기';"
-          "$f=New-Object System.Windows.Forms.Form;$f.TopMost=$true;"
-          "if($d.ShowDialog($f) -eq 'OK'){[Console]::Write($d.FileName)}")
+          "$f=New-Object System.Windows.Forms.Form;$f.TopMost=$true;$f.ShowInTaskbar=$false;$f.Opacity=0;"
+          "$f.StartPosition='CenterScreen';$f.Show();$f.Activate();$f.BringToFront();"   # 보이지 않는 맨 앞 창을 잠깐 띄워 그 위에 열기 (브라우저 뒤에 숨지 않게)
+          "$r=$d.ShowDialog($f);$f.Close();if($r -eq 'OK'){[Console]::Write($d.FileName)}")
     r = subprocess.run(["powershell", "-NoProfile", "-STA", "-Command", ps], capture_output=True, timeout=3600)
     return r.stdout.decode("utf-8", "ignore").strip()
 
@@ -340,10 +344,14 @@ def _register(path):
 def open_game():
     p = (request.get_json(silent=True) or {}).get("path") or ""
     if not p:
+        if not pick_lock.acquire(blocking=False):          # 이미 떠 있는 창이 있으면 또 띄우지 않음
+            return jsonify(error="파일 고르는 창이 이미 떠 있어요. 다른 창 뒤에 숨어 있을 수 있어요 (Alt+Tab)."), 409
         try:
             p = _pick_file()
         except Exception as e:
             return jsonify(error=f"파일 열기 창을 못 띄웠어요: {e}"), 500
+        finally:
+            pick_lock.release()
     if not p:
         return jsonify(cancel=True)
     if not os.path.isfile(p):
