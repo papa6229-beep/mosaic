@@ -438,7 +438,17 @@ def inpaint(rgb, mask):
 # ---------------- 4-2. 정밀 다시 그리기 (RORem: 지우기 전용으로 훈련된 그림 AI) ----------------
 RE_REPO = "LetsThink/RORem"
 RE_DIR = os.path.join(ROOT, "cache", "rorem")
-RE_STEPS = 25
+RE_STEPS = 20
+PROGRESS = None                                            # 화면에 진행 상황 알리기 (web.py 가 넣어 줌)
+
+
+def _say(msg):
+    print(msg, flush=True)
+    if PROGRESS:
+        try:
+            PROGRESS(msg)
+        except Exception:
+            pass
 _re = {"pipe": None, "tried": False}
 _re_lock = threading.Lock()
 
@@ -464,6 +474,7 @@ def rorem():
             import torch
             if not torch.cuda.is_available():
                 return None
+            _say("정밀 다시 그리기 모델 켜는 중 (처음 한 번, 1~2분)")
             from diffusers import StableDiffusionXLInpaintPipeline
             pipe = StableDiffusionXLInpaintPipeline.from_pretrained(RE_DIR, torch_dtype=torch.float16)
             pipe.set_progress_bar_config(disable=True)
@@ -519,11 +530,20 @@ def regen(rgb, base, mask, pipe=None):
                     break
             if merged:
                 break
+    todo = []
     for X0, Y0, X1, Y1 in rects:
+        mk = (mask[Y0:Y1, X0:X1] > 0).astype(np.uint8) * 255
+        if mk.any() and _textured(rgb[Y0:Y1, X0:X1], mk):
+            todo.append((X0, Y0, X1, Y1))
+    import time as _t
+    for j, (X0, Y0, X1, Y1) in enumerate(todo):
         crop, mk = rgb[Y0:Y1, X0:X1], (mask[Y0:Y1, X0:X1] > 0).astype(np.uint8) * 255
-        if not mk.any() or not _textured(crop, mk):
-            continue
         h, w = crop.shape[:2]
+        t0 = _t.time()
+
+        def step(p_, i, t_, kw, j=j):
+            _say(f"정밀 다시 그리기 {j + 1}/{len(todo)}곳 — {int((i + 1) * 100 / RE_STEPS)}%")
+            return kw
         s = 1024 / max(h, w)                               # 그림 AI 가 잘 그리는 크기 (긴 쪽 1024, 8의 배수)
         tw, th = max(512, int(round(w * s / 8)) * 8), max(512, int(round(h * s / 8)) * 8)
         tw, th = min(tw, 1536), min(th, 1536)
@@ -534,7 +554,8 @@ def regen(rgb, base, mask, pipe=None):
             with torch.inference_mode():
                 r = pipe(prompt="", image=im, mask_image=mm, width=tw, height=th, strength=1.0,
                          num_inference_steps=RE_STEPS, guidance_scale=1.0,
-                         generator=torch.Generator("cpu").manual_seed(0)).images[0]
+                         generator=torch.Generator("cpu").manual_seed(0), callback_on_step_end=step).images[0]
+            print(f"  ({_t.time() - t0:.1f}초)", flush=True)
         except Exception as e:
             print("정밀 다시 그리기 실패 (이 자리는 기존 결과 그대로):", e)
             continue

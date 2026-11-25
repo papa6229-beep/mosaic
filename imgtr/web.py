@@ -174,7 +174,9 @@ def _img_job(iid):
         allb = {}
         for k, n in enumerate(names):
             st.update(msg=f"글자 찾고 지우는 중 {k + 1}/{len(names)} — {n}", pct=int(5 + 55 * k / max(1, len(names))))
+            imgtr.PROGRESS = lambda m, k=k, n=n: st.update(msg=f"{k + 1}/{len(names)} {n} — {m}")
             rgb, clean, bl = imgtr.analyze(os.path.join(d, "in", n))
+            imgtr.PROGRESS = None
             imgtr.save_img(clean, os.path.join(d, "work", n + ".clean.png"), "x.png")
             allb[n] = bl
         texts = [(n, i, b["text"]) for n, bl in allb.items() for i, b in enumerate(bl)]
