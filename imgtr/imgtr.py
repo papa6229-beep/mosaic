@@ -239,6 +239,8 @@ def _near(b, l):
 def _tail(b, l):
     """일본어·중국어가 없는 짧은 조각(！, 100% 같은 것)이 덩어리 끝에 붙어 있는가 → 같이 지우고 같이 번역"""
     s = b["size"]
+    if len(re.sub(r"\s", "", l["text"])) > 4:
+        return False                                       # 긴 영어(로고·브랜드)는 조각이 아님
     if b["vert"]:
         ov = min(l["x1"], b["x1"]) - max(l["x0"], b["x0"])
         return ov > 0.5 * min(l["x1"] - l["x0"], b["x1"] - b["x0"]) and -0.3 * s < l["y0"] - b["y1"] < 0.6 * s
@@ -809,6 +811,7 @@ def _residual(rgb, b, st):
 
 DBG_PLATE = False
 PLATE_EDGE = 0.9
+PLATE_BORDER = 0.4
 
 
 def plate_of(rgb, l):
@@ -870,6 +873,10 @@ def plate_of(rgb, l):
     region = np.zeros((H, W), np.uint8)
     region[y0:y1, x0:x1] = reg
     full = region.copy()                                    # 판 전체 (옆 글씨를 지울 때도 이 판은 AI로 다시 그리지 않게)
+    border = np.concatenate([full[0], full[-1], full[:, 0], full[:, -1]])
+    if DBG_PLATE: print("border", l["text"], round(float(border.mean()), 2))
+    if border.mean() > PLATE_BORDER:                        # 그림 가장자리까지 이어진 색 = 판이 아니라 그냥 바탕
+        return None
     gd = max(2, int(l["size"] * 0.2))                       # 글자 상자 둘레까지만 (옆 글씨·판은 안 건드리게)
     region &= cv2.dilate(pm, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * gd + 1, 2 * gd + 1)))
     tc = cen[ti]
@@ -980,6 +987,58 @@ def _fit_box(b, gm):
         b["fs"] = min(b["fs"], h / 0.92)
 
 
+def _poly_text_color(rgb, l, extra=None):
+    """글자색 = 글자 상자 안에는 많고 상자 바로 바깥(배경)에는 드문 색.
+    상자 안 색 3묶음(+ 1차로 읽은 색) 중 (안쪽 비율 - 바깥 비율)이 가장 큰 것"""
+    H, W = rgb.shape[:2]
+    pm = np.zeros((H, W), np.uint8)
+    cv2.fillPoly(pm, [np.array(l["poly"], np.int32)], 1)
+    g = max(3, int(l["size"] * 0.3))
+    ring = (cv2.dilate(pm, np.ones((2 * g + 1, 2 * g + 1), np.uint8)) > 0) & (pm == 0)
+    px = rgb[pm > 0].astype(np.float32)
+    rp = rgb[ring].astype(np.float32)
+    if len(px) < 30 or len(rp) < 30:
+        return extra
+    crit = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 20, 1.0)
+    _, lab, cen = cv2.kmeans(px, 3, None, crit, 3, cv2.KMEANS_PP_CENTERS)
+    cands = [c for c in cen] + ([np.array(extra, np.float32)] if extra is not None else [])
+    score = lambda c: (np.linalg.norm(px - c, axis=1) < 40).mean() - (np.linalg.norm(rp - c, axis=1) < 40).mean()
+    best = max(cands, key=score)
+    if extra is not None and score(cands[-1]) >= 0.5 * score(best):
+        return extra                                       # 1차로 읽은 색이 충분히 글자다우면 그대로 (테두리 색을 글자색으로 잘못 고르지 않게)
+    return [float(v) for v in best]
+
+
+def _flat_around(rgb, l, km):
+    """번역 안 하는 글씨(영어 띠 등)가 놓인 단색 바탕을 이어진 데까지 전부 → 마스크 (같은 색 띠가 글자로 잘못 지워지지 않게)"""
+    px = rgb[km > 0].astype(np.float32)
+    if len(px) < 30:
+        return np.zeros(km.shape, np.uint8)
+    crit = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 20, 1.0)
+    _, lab, cen = cv2.kmeans(px, 2, None, crit, 3, cv2.KMEANS_PP_CENTERS)
+    cnt = np.bincount(lab.ravel(), minlength=2)
+    bi = int(cnt.argmax())
+    if cnt[bi] < 0.5 * len(px) or px[lab.ravel() == bi].std(0).max() > 24:
+        return np.zeros(km.shape, np.uint8)
+    nearc = (np.linalg.norm(rgb.astype(np.float32) - cen[bi], axis=-1) < 30).astype(np.uint8)
+    k = max(3, int(l["size"] * 0.4)) | 1
+    nearc = cv2.morphologyEx(nearc, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)))
+    n, lab2 = cv2.connectedComponents(nearc)
+    ids = np.unique(lab2[(km > 0) & (nearc > 0)])
+    ids = ids[ids > 0]
+    if not len(ids):
+        return np.zeros(km.shape, np.uint8)
+    m = np.isin(lab2, ids).astype(np.uint8)
+    ys, xs = np.nonzero(km)                                # 그 글씨 줄 높이(±글자 크기) 안의 띠만 (위아래 다른 글씨 바탕까지 막지 않게)
+    s = int(l["size"])
+    strip = np.zeros_like(m)
+    if l.get("vert"):
+        strip[:, max(0, xs.min() - s):xs.max() + s + 1] = 1
+    else:
+        strip[max(0, ys.min() - s):ys.max() + s + 1, :] = 1
+    return m & strip
+
+
 def analyze(path):
     """글자 찾기 → 지우기 → 줄마다 글자색 → 덩어리로 묶기 → 덩어리 모양 읽기 → 글자 획만 다시 지우기 (번역 전까지)
     → (원본, 지운 그림, 블록들). 배경을 최대한 살리려고, 마지막엔 글자 상자 전체가 아니라 글자 획(+테두리) 자리만 새로 채움"""
@@ -1020,7 +1079,7 @@ def analyze(path):
     used = [l for b in pre for l in b["lines"]]
     for l in used:
         l.pop("tail", None)
-        l["col"] = line_color(rgb, clean, l)
+        l["col"] = _poly_text_color(rgb, l, line_color(rgb, clean, l))   # 1차로 읽은 색과 상자 안 색들 중 글자다운 것
     for l in lines:                                        # 판 위 글씨: 글자색 = 판이 아닌 색, 글자 크기 = 글자 픽셀 높이
         pl = l.get("plate")
         if not pl:
@@ -1059,17 +1118,28 @@ def analyze(path):
             if tall and not b.get("tail"):
                 b["tail"] = "!"
     # 2차: 글자 모양대로만 도려냄 (글자색·글자 테두리색 픽셀만. 뱃지·스티커 테두리·글상자는 남김) → 그 자리만 원본에서 새로 채움
-    tcols = []
-    for b in blocks:
-        if not (b.get("plate") or b.get("soft")):
-            tcols += [l["col"] for l in b["lines"] if l.get("col") is not None]
-    if tcols:
-        px = rgb.astype(np.float32)
-        dist = lambda cs: np.min(np.stack([np.linalg.norm(px - np.array(c, np.float32), axis=-1) for c in cs]), 0)
-        dfill = dist(tcols)
+    px = rgb.astype(np.float32)
+    dist = lambda cs: np.min(np.stack([np.linalg.norm(px - np.array(c, np.float32), axis=-1) for c in cs]), 0)
+
+    def near(a, c):                                        # 두 덩어리가 붙어 있나 (로고처럼 한 덩어리 안에 다른 색 글자가 섞일 때 색을 같이 씀)
+        g = 0.5 * max(a["size"], c["size"])
+        return not (a["x1"] + g < c["x0"] or c["x1"] + g < a["x0"] or a["y1"] + g < c["y0"] or c["y1"] + g < a["y0"])
+    if True:
         for i, b in enumerate(blocks):
             if b.get("plate") or b.get("soft"):
                 continue
+            tcols = [l["col"] for c in blocks if (c is b or near(b, c)) and not (c.get("plate") or c.get("soft"))
+                     for l in c["lines"] if l.get("col") is not None]
+            stb = b.get("style") or {}
+            if stb.get("how") in ("outline", "interior"):   # 두 색 글씨(흰 글자+검은 테두리 등): 둘레 배경에 거의 없는 색만 글자로
+                rg = (cv2.dilate(polys[i], np.ones((25, 25), np.uint8)) > 0) & (polys[i] == 0)
+                rp = px[rg]
+                for c in [stb["fill"]] + list(stb.get("cols") or []):
+                    if len(rp) and (np.linalg.norm(rp - np.array(c, np.float32), axis=1) < 40).mean() < 0.05:
+                        tcols.append(c)
+            if not tcols:
+                continue
+            dfill = dist(tcols)
             st = b.get("style") or {}                      # 글자 테두리 후보 = 글자에 쓰인 색 중 글자색이 아닌 것
             lc = [np.array(l["col"], np.float32) for l in b["lines"] if l.get("col") is not None]
             ocs = [c for c in list(st.get("cols") or []) + ([st["outline"]] if st.get("outline") else [])
@@ -1079,15 +1149,17 @@ def analyze(path):
             ink = np.maximum(ink, gm * 255)
             b["_gm"] = gm
     inb = {id(l) for b in blocks for l in b["lines"]}
-    for l in lines:                                        # 번역 안 하는 글씨(영어 등)와 그 둘레는 건드리지 않음
+    keep = np.zeros(rgb.shape[:2], bool)                   # 번역 안 하는 글씨(영어 로고·띠 등)와 그 둘레: 끝까지 안 건드림
+    for l in lines:
         if id(l) not in inb:
             km = np.zeros(rgb.shape[:2], np.uint8)
             cv2.fillPoly(km, [np.array(l["poly"], np.int32)], 1)
-            if allp is not None and (allp[km > 0] > 0).mean() > 0.2:
-                continue                                   # 번역 글씨에 붙은 조각(！ 등)은 같이 지움
+            if len(re.sub(r"\s", "", l["text"])) <= 3 and allp is not None and (allp[km > 0] > 0).mean() > 0.2:
+                continue                                   # 번역 글씨에 붙은 짧은 조각(！ 등)은 같이 지움
             g = max(2, int(l["size"] * 0.5))
-            ink[cv2.dilate(km, np.ones((2 * g + 1, 2 * g + 1), np.uint8)) > 0] = 0
-    ink[protect > 0] = 0
+            fl = (cv2.dilate(km, np.ones((2 * g + 1, 2 * g + 1), np.uint8)) > 0) | (_flat_around(rgb, l, km) > 0)
+            keep |= fl & ~((allp > 0) if allp is not None else False)   # 그 글씨 둘레 + 놓인 단색 띠·바탕 (번역할 글자 상자 안은 빼고)
+    ink[keep] = 0
     for b in blocks:                                       # 한글 넣을 자리 = 실제로 도려낸 자리
         gm = b.pop("_gm", None)
         if gm is not None:
@@ -1099,10 +1171,11 @@ def analyze(path):
         if pl:
             pc, tc = np.array(pl["color"], np.float32), np.array(pl["text"], np.float32)
             px = rgb.astype(np.float32)                    # 글자색 쪽에 더 가까운 픽셀(글자 획 + 가장자리)만
-            tm = ((pl["region"] > 0) & (np.linalg.norm(px - tc, axis=-1) < np.linalg.norm(px - pc, axis=-1) * 1.6)
-                  & (np.linalg.norm(px - pc, axis=-1) > 20)).astype(np.uint8)
-            kp = max(3, int(l.get("fs", l["size"]) * 0.12) | 1)    # 글자 가장자리 섞인 색까지
+            dt, dp = np.linalg.norm(px - tc, axis=-1), np.linalg.norm(px - pc, axis=-1)
+            tm = ((pl["region"] > 0) & (dt < dp * 1.6) & (dp > 20) & (dt < max(GLYPH_TH, 0.5 * float(np.linalg.norm(tc - pc))))).astype(np.uint8)
+            kp = 2 * min(6, max(1, int(round(l.get("fs", l["size"]) * 0.08)))) + 1   # 글자 가장자리 섞인 색까지 (큰 글씨도 몇 칸만)
             ink = np.maximum(ink, cv2.dilate(tm, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kp, kp))) * 255)
+    ink[keep] = 0
     if ink.any():
         clean = inpaint(rgb, ink)
     else:
