@@ -24,6 +24,13 @@ def run_setup():
         imgtr.lama()
         setup["msg"] = "휜 글씨 찾기 모델 받는 중 (처음 한 번만 약 80MB)"
         craftnet.net(os.path.join(BASE, "cache", "craft"))
+        if not os.path.isfile(imgtr.SERIF):
+            setup["msg"] = "명조 글꼴 받는 중 (처음 한 번만 약 25MB)"
+            os.makedirs(os.path.dirname(imgtr.SERIF), exist_ok=True)
+            try:
+                llm._download(imgtr.SERIF_URL, imgtr.SERIF, setup, "명조 글꼴")
+            except Exception as e:                         # 못 받으면 명조 대신 고딕으로 (다음에 켤 때 다시)
+                print("명조 글꼴 받기 실패:", e)
         setup["msg"] = "번역 모델 받는 중 (처음 한 번만 약 5GB)"
         llm.ensure_translator(setup)
         setup["msg"] = "준비 끝"
@@ -263,17 +270,18 @@ def imgtr_edit(iid, name):
     for b, e in zip(bl, (request.get_json(silent=True) or {}).get("blocks", [])):
         b["ko"] = e.get("ko", b.get("ko", ""))
         b["skip"] = bool(e.get("skip"))
-        for k in ("fill", "outline", "grad", "weight"):
+        for k in ("fill", "outline", "grad", "weight", "glow"):
             if k in e:
                 b["style"][k] = e[k]
-        for k, lo, hi in (("scale", 0.2, 5.0), ("dx", -1e5, 1e5), ("dy", -1e5, 1e5), ("ow", 0.0, 0.4)):
+        for k, lo, hi in (("scale", 0.2, 5.0), ("dx", -1e5, 1e5), ("dy", -1e5, 1e5), ("ow", 0.0, 0.4),
+                          ("gs", 0.02, 1.0), ("ga", 0.0, 1.0), ("op", 0.05, 1.0)):
             if k in e:
                 try:
                     b["style"][k] = min(hi, max(lo, float(e[k])))
                 except (TypeError, ValueError):
                     pass
         if "font" in e:                                    # 이 PC 글꼴 목록에 있는 것만 (아니면 기본)
-            b["style"]["font"] = e["font"] if e["font"] and (e["font"] in ok_fonts or e["font"] == b["style"].get("font")) else None
+            b["style"]["font"] = e["font"] if e["font"] and (e["font"] in ok_fonts or e["font"] in ("@serif",) or e["font"] == b["style"].get("font")) else None
     _img_render(iid, name, bl)
     return jsonify(ok=True, drawn=[b.get("drawn") for b in bl])
 
