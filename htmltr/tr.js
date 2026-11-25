@@ -89,7 +89,14 @@
       if (getComputedStyle(el).position === "static") { el.style.position = "relative"; s.posSet = true; }
       el.appendChild(o);
     }
-    const cs = getComputedStyle(el), fe = getComputedStyle(firstTextEl(el));
+    const cs = getComputedStyle(el);
+    // 원문 글자 모양은 우리가 투명하게 만들기 전에 읽어 둔 것을 씀 (투명하게 만든 뒤에 읽으면 한국어도 투명해짐)
+    const had = el.classList.contains("__trh");
+    if (had) el.classList.remove("__trh");
+    const f_ = getComputedStyle(firstTextEl(el));
+    const fe = { fontFamily: f_.fontFamily, fontSize: f_.fontSize, fontWeight: f_.fontWeight, fontStyle: f_.fontStyle, lineHeight: f_.lineHeight,
+                 color: f_.color, textShadow: f_.textShadow, webkitTextStrokeWidth: f_.webkitTextStrokeWidth, webkitTextStrokeColor: f_.webkitTextStrokeColor };
+    if (had) el.classList.add("__trh");
     const bx = textBox(el) || { l: 0, t: 0, w: el.clientWidth, h: el.clientHeight };
     s.size = el.clientWidth + "x" + el.clientHeight;
     Object.assign(o.style, {
