@@ -52,7 +52,106 @@ def _safe_name(n):
 
 def _img_blocks_public(bl):
     return [{"text": b["text"], "ko": b.get("ko", ""), "vert": b["vert"], "skip": bool(b.get("skip")),
-             "box": [b["x0"], b["y0"], b["x1"], b["y1"]], "style": b["style"]} for b in bl]
+             "box": [b["x0"], b["y0"], b["x1"], b["y1"]], "drawn": b.get("drawn"), "curve": bool(b.get("curve")),
+             "style": b["style"]} for b in bl]
+
+
+# ---------------- 이 PC 글꼴 (한글 되는 것만) ----------------
+fonts = {"list": [], "scanning": False}
+FONT_CACHE = os.path.join(BASE, "cache", "fonts.json")
+
+
+def _font_dirs():
+    if os.name == "nt":
+        ds = [os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts"),
+              os.path.join(os.environ.get("LOCALAPPDATA", ""), "Microsoft", "Windows", "Fonts")]
+    else:
+        ds = ["/usr/share/fonts", os.path.expanduser("~/.fonts"), os.path.expanduser("~/.local/share/fonts")]
+    return [d for d in ds if d and os.path.isdir(d)]
+
+
+def _font_name(f):
+    """글꼴 이름 (한국어 이름이 있으면 그것)"""
+    nm = f["name"]
+    best = {}
+    for r in nm.names:
+        if r.nameID in (4, 1, 2):
+            try:
+                s = r.toUnicode().strip()
+            except Exception:
+                continue
+            ko = r.platformID == 3 and r.langID == 0x412
+            best.setdefault((r.nameID, ko), s)
+    full = best.get((4, True)) or best.get((4, False))
+    if not full:
+        fam = best.get((1, True)) or best.get((1, False)) or "?"
+        sub = best.get((2, True)) or best.get((2, False)) or ""
+        full = f"{fam} {sub}".strip()
+    return full
+
+
+def scan_fonts():
+    """이 PC 에 설치된 글꼴 중 한글이 되는 것 → [{id, name}]. 한 번 읽은 파일은 기억해 둠 (다음부터 빠름)"""
+    from fontTools.ttLib import TTFont, TTCollection
+    fonts["scanning"] = True
+    try:
+        try:
+            memo = json.load(open(FONT_CACHE, encoding="utf-8"))
+        except Exception:
+            memo = {}
+        out, new = [], {}
+        for d in _font_dirs():
+            for root, _, fs in os.walk(d):
+                for fn in fs:
+                    if not fn.lower().endswith((".ttf", ".otf", ".ttc", ".otc")):
+                        continue
+                    p = os.path.join(root, fn)
+                    try:
+                        sig = f"{os.path.getsize(p)}:{int(os.path.getmtime(p))}"
+                    except OSError:
+                        continue
+                    m = memo.get(p)
+                    if not m or m.get("sig") != sig:
+                        faces = []
+                        try:
+                            if fn.lower().endswith((".ttc", ".otc")):
+                                col = TTCollection(p, lazy=True)
+                                fl = list(col.fonts)
+                            else:
+                                fl = [TTFont(p, lazy=True)]
+                            for i, f in enumerate(fl):
+                                cm = f.getBestCmap() or {}
+                                if 0xAC00 in cm and 0xD55C in cm:      # '가' '한' 이 있으면 한글 글꼴
+                                    faces.append([i, _font_name(f)])
+                        except Exception:
+                            pass
+                        m = {"sig": sig, "faces": faces}
+                    new[p] = m
+                    for i, name in m["faces"]:
+                        out.append({"id": f"{p}|{i}", "name": name})
+        try:
+            os.makedirs(os.path.dirname(FONT_CACHE), exist_ok=True)
+            json.dump(new, open(FONT_CACHE, "w", encoding="utf-8"), ensure_ascii=False)
+        except Exception:
+            pass
+        seen, lst = set(), []
+        for x in sorted(out, key=lambda x: x["name"]):
+            if x["name"] not in seen:
+                seen.add(x["name"])
+                lst.append(x)
+        fonts["list"] = lst
+    except Exception:
+        traceback.print_exc()
+    finally:
+        fonts["scanning"] = False
+
+
+@app.get("/imgtr/fonts")
+def font_list():
+    if not fonts["list"] and not fonts["scanning"]:
+        threading.Thread(target=scan_fonts, daemon=True).start()
+        fonts["scanning"] = True
+    return jsonify(fonts)
 
 
 def _img_job(iid):
@@ -160,14 +259,23 @@ def imgtr_edit(iid, name):
     if not os.path.exists(p):
         return jsonify(error="없는 이미지"), 404
     bl = json.load(open(p, encoding="utf-8"))
+    ok_fonts = {x["id"] for x in fonts["list"]}
     for b, e in zip(bl, (request.get_json(silent=True) or {}).get("blocks", [])):
         b["ko"] = e.get("ko", b.get("ko", ""))
         b["skip"] = bool(e.get("skip"))
         for k in ("fill", "outline", "grad", "weight"):
             if k in e:
                 b["style"][k] = e[k]
+        for k, lo, hi in (("scale", 0.2, 5.0), ("dx", -1e5, 1e5), ("dy", -1e5, 1e5), ("ow", 0.0, 0.4)):
+            if k in e:
+                try:
+                    b["style"][k] = min(hi, max(lo, float(e[k])))
+                except (TypeError, ValueError):
+                    pass
+        if "font" in e:                                    # 이 PC 글꼴 목록에 있는 것만 (아니면 기본)
+            b["style"]["font"] = e["font"] if e["font"] and (e["font"] in ok_fonts or e["font"] == b["style"].get("font")) else None
     _img_render(iid, name, bl)
-    return jsonify(ok=True)
+    return jsonify(ok=True, drawn=[b.get("drawn") for b in bl])
 
 
 @app.get("/imgtr/zip/<iid>")
@@ -182,4 +290,5 @@ def imgtr_zip(iid):
 
 if __name__ == "__main__":
     threading.Thread(target=run_setup, daemon=True).start()
+    threading.Thread(target=scan_fonts, daemon=True).start()
     app.run(host="127.0.0.1", port=7870, threaded=True)

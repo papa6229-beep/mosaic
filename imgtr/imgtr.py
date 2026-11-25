@@ -534,13 +534,37 @@ def line_color(rgb, clean, l):
     return [float(v) for v in np.median(o[core], 0)]
 
 
-def _font(size, weight):
-    f = ImageFont.truetype(FONT, max(8, int(size)))
-    try:
-        f.set_variation_by_axes([weight])
-    except Exception:
-        pass
-    return f
+_FONTS = {}
+
+
+def _font_file(fid):
+    """글꼴 id ("경로|번호") → (경로, 번호). 없거나 못 쓰면 기본 본고딕"""
+    if fid:
+        p, _, i = str(fid).rpartition("|")
+        if p and os.path.isfile(p) and p.lower().endswith((".ttf", ".otf", ".ttc", ".otc")):
+            return p, int(i or 0)
+    return FONT, 0
+
+
+def _font(size, weight, fid=None):
+    """글꼴 + 가짜 굵게 두께. 굵기 조절이 되는 글꼴(기본 본고딕)은 진짜 굵기, 안 되는 글꼴은 획을 조금 덧칠해서 굵게"""
+    p, idx = _font_file(fid)
+    key = (p, idx, max(8, int(size)), int(weight))
+    if key not in _FONTS:
+        try:
+            f = ImageFont.truetype(p, key[2], index=idx)
+        except Exception:
+            f = ImageFont.truetype(FONT, key[2])
+        fb = 0
+        try:
+            f.set_variation_by_axes([weight])
+        except Exception:
+            if weight >= 700:
+                fb = max(1, int(round(key[2] * (0.025 if weight < 900 else 0.045))))
+        if len(_FONTS) > 300:
+            _FONTS.clear()
+        _FONTS[key] = (f, fb)
+    return _FONTS[key]
 
 
 def _wrap(text, f, maxw, draw):
@@ -571,7 +595,7 @@ def layout(b, ko, st):
     tmp = ImageDraw.Draw(Image.new("L", (1, 1)))
     base = b["fs"]                                          # 원래 글자 크기
     for s in np.linspace(base, base * 0.35, 25):
-        f = _font(s, st["weight"])
+        f = _font(s, st["weight"], st.get("font"))[0]
         if not b["vert"]:
             lines = _wrap(ko, f, W * 1.02, tmp)
             lh = s * 1.22
@@ -611,12 +635,16 @@ def _render_curve(img, b, ko, st):
     adv = [0.55 if ch == " " else 0.6 if ch in ",.!?~…、。，！？" else 1.0 for ch in ko]
     total = sum(adv)
     s = min(b["fs"], (L + c["cs"]) / max(1.0, total * 1.02))
-    f = _font(s, st["weight"])
-    sw = max(1, int(round(s * 0.09))) if st.get("outline") else 0
+    k = float(st.get("scale") or 1.0)                      # 화면에서 키우고 옮긴 것: 길 가운데를 기준으로 글자·간격 같이 커짐 + 통째로 옮김
+    dx, dy = float(st.get("dx") or 0), float(st.get("dy") or 0)
+    s0 = s = s * k
     start = e + L / 2 - total * s * 1.02 / 2               # 가운데 맞춤 (글자 폭을 다 더한 길이 기준)
+    f, fb = _font(s, st["weight"], st.get("font"))
+    sw = max(1, int(round(s * float(st.get("ow") or 0.09)))) if st.get("outline") else 0
+    box = None
     cum = 0.0
     for ch, a in zip(ko, adv):
-        pos = start + (cum + a / 2) * s * 1.02             # 이 글자 가운데
+        pos = start + (cum + a / 2) * s0 * 1.02            # 이 글자 가운데
         cum += a
         if ch != " ":
             if pos < 0:                                    # 길 밖으로 나가면 끝 방향대로 이어서 (한 자리에 겹치지 않게)
@@ -628,12 +656,13 @@ def _render_curve(img, b, ko, st):
             else:
                 t = int(pos)
                 cx, cy = P[t]
+            cx, cy = cx + dx, cy + dy
             ang = math.degrees(math.atan2(T[t][1], T[t][0])) if c["mode"] == "rot" else 0.0
             R = int(s * 1.8)
             fm, om = Image.new("L", (R, R), 0), Image.new("L", (R, R), 0)
-            ImageDraw.Draw(fm).text((R / 2, R / 2), ch, font=f, fill=255, anchor="mm")
+            ImageDraw.Draw(fm).text((R / 2, R / 2), ch, font=f, fill=255, anchor="mm", stroke_width=fb, stroke_fill=255)
             if sw:
-                ImageDraw.Draw(om).text((R / 2, R / 2), ch, font=f, fill=255, anchor="mm", stroke_width=sw, stroke_fill=255)
+                ImageDraw.Draw(om).text((R / 2, R / 2), ch, font=f, fill=255, anchor="mm", stroke_width=sw + fb, stroke_fill=255)
             tile = Image.new("RGBA", (R, R), (0, 0, 0, 0))
             if sw:
                 tile.paste(Image.new("RGBA", (R, R), tuple(st["outline"]) + (255,)), (0, 0), om)
@@ -644,14 +673,40 @@ def _render_curve(img, b, ko, st):
             else:
                 tile.paste(Image.new("RGBA", (R, R), tuple(st["fill"]) + (255,)), (0, 0), fm)
             tile = tile.rotate(-ang, resample=Image.BICUBIC, expand=True)
-            img.paste(tile, (int(cx - tile.width / 2), int(cy - tile.height / 2)), tile)
+            px, py = int(cx - tile.width / 2), int(cy - tile.height / 2)
+            img.paste(tile, (px, py), tile)
+            tb = tile.getbbox()
+            if tb:
+                r = [px + tb[0], py + tb[1], px + tb[2], py + tb[3]]
+                box = r if box is None else [min(box[0], r[0]), min(box[1], r[1]), max(box[2], r[2]), max(box[3], r[3])]
+    if box:
+        W, H = img.size
+        b["drawn"] = [max(0, box[0]), max(0, box[1]), min(W, box[2]), min(H, box[3])]
     return img
 
 
+def _paint(img, st, fill_m, out_m):
+    """글자 모양(fill_m)·테두리 모양(out_m)을 색칠해서 붙임"""
+    W, H = img.size
+    if out_m is not None:
+        img.paste(Image.new("RGBA", (W, H), tuple(st["outline"]) + (255,)), (0, 0), out_m)
+    if st.get("grad"):
+        bb = fill_m.getbbox() or (0, 0, W, H)
+        t = np.clip((np.arange(H) - bb[1]) / max(1, bb[3] - bb[1]), 0, 1)[:, None]
+        c0, c1 = np.array(st["grad"][0], np.float32), np.array(st["grad"][1], np.float32)
+        g = (c0 * (1 - t) + c1 * t).astype(np.uint8)
+        img.paste(Image.fromarray(np.repeat(g[:, None, :], W, 1)).convert("RGBA"), (0, 0), fill_m)
+    else:
+        img.paste(Image.new("RGBA", (W, H), tuple(st["fill"]) + (255,)), (0, 0), fill_m)
+
+
 def render(clean, blocks):
-    """지운 그림 위에 블록마다 한국어를 그려 넣음"""
+    """지운 그림 위에 블록마다 한국어를 그려 넣음.
+    화면에서 고친 것: 글꼴(font) · 크기 배율(scale) · 위치 옮김(dx, dy) · 테두리 두께(ow) 도 반영.
+    그린 자리는 b["drawn"] 에 남김 (화면에서 마우스로 잡을 상자)"""
     img = Image.fromarray(clean).convert("RGBA")
     for b in blocks:
+        b["drawn"] = None
         ko = (b.get("ko") or "").strip()
         if not ko or b.get("skip"):
             continue
@@ -662,28 +717,25 @@ def render(clean, blocks):
         items, s = layout(b, ko, st)
         if not items:
             continue
-        f = _font(s, st["weight"])
-        sw = max(1, int(round(s * 0.09))) if st.get("outline") else 0
+        k = float(st.get("scale") or 1.0)
+        dx, dy = float(st.get("dx") or 0), float(st.get("dy") or 0)
+        cx, cy = (b["x0"] + b["x1"]) / 2, (b["y0"] + b["y1"]) / 2
+        s2 = s * k
+        f, fb = _font(s2, st["weight"], st.get("font"))
+        sw = max(1, int(round(s2 * float(st.get("ow") or 0.09)))) if st.get("outline") else 0
         W, H = img.size
         fill_m = Image.new("L", (W, H), 0)
-        out_m = Image.new("L", (W, H), 0)
-        df, do = ImageDraw.Draw(fill_m), ImageDraw.Draw(out_m)
+        out_m = Image.new("L", (W, H), 0) if sw else None
+        df = ImageDraw.Draw(fill_m)
+        do = ImageDraw.Draw(out_m) if sw else None
         for x, y, t in items:
-            df.text((x, y), t, font=f, fill=255)
+            x, y = cx + (x - cx) * k + dx, cy + (y - cy) * k + dy
+            df.text((x, y), t, font=f, fill=255, stroke_width=fb, stroke_fill=255)
             if sw:
-                do.text((x, y), t, font=f, fill=255, stroke_width=sw, stroke_fill=255)
-        if sw:
-            img.paste(Image.new("RGBA", (W, H), tuple(st["outline"]) + (255,)), (0, 0), out_m)
-        if st.get("grad"):
-            ys = np.linspace(0, 1, H)[:, None]
-            bb = fill_m.getbbox() or (0, 0, W, H)
-            t = np.clip((np.arange(H) - bb[1]) / max(1, bb[3] - bb[1]), 0, 1)[:, None]
-            c0, c1 = np.array(st["grad"][0], np.float32), np.array(st["grad"][1], np.float32)
-            g = (c0 * (1 - t) + c1 * t).astype(np.uint8)
-            grad = np.repeat(g[:, None, :], W, 1)
-            img.paste(Image.fromarray(grad).convert("RGBA"), (0, 0), fill_m)
-        else:
-            img.paste(Image.new("RGBA", (W, H), tuple(st["fill"]) + (255,)), (0, 0), fill_m)
+                do.text((x, y), t, font=f, fill=255, stroke_width=sw + fb, stroke_fill=255)
+        _paint(img, st, fill_m, out_m)
+        bb = (out_m or fill_m).getbbox()
+        b["drawn"] = [int(v) for v in bb] if bb else None
     return np.asarray(img.convert("RGB"))
 
 

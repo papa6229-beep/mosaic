@@ -11,3 +11,4 @@ colorlog
 pyyaml
 tqdm
 requests
+fonttools

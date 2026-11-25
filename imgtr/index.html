@@ -21,7 +21,7 @@
   .bar{height:8px;border-radius:99px;background:var(--panel2);overflow:hidden;margin-top:12px} .bar i{display:block;height:100%;width:0;background:var(--acc);transition:.3s}
   #msg{color:var(--sub);margin-top:8px;min-height:24px} .bad{color:var(--bad)!important}
   .card{background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:18px;margin-bottom:18px}
-  .card h3{margin:0 0 12px;font-size:17px;display:flex;gap:10px;align-items:center} .card h3 span{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .card h3{margin:0 0 12px;font-size:17px;display:flex;gap:10px;align-items:center} .card h3 .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .pics{display:grid;grid-template-columns:1fr 1fr;gap:14px}
   .pic{position:relative;background:#000;border-radius:10px;overflow:hidden}
   .pic img{width:100%;display:block}
@@ -36,6 +36,21 @@
   select{font:inherit;padding:5px 6px;border-radius:8px;border:1px solid var(--line2);background:var(--panel2);color:var(--ink)}
   label.ck{display:inline-flex;gap:4px;align-items:center;font-size:14px;color:var(--sub);white-space:nowrap}
   .muted{color:var(--dim);font-size:14px}
+  .ov{position:absolute;inset:0;pointer-events:none}
+  .bx{position:absolute;border:1.5px dashed rgba(243,194,122,.0);border-radius:3px;pointer-events:auto;cursor:move;touch-action:none}
+  .pic:hover .bx{border-color:rgba(243,194,122,.75)}
+  .bx.sel{border:2px solid var(--acc)!important;background:rgba(232,165,75,.08)}
+  .bx i{position:absolute;width:12px;height:12px;background:var(--acc);border:2px solid #1a120a;border-radius:3px;display:none}
+  .bx.sel i{display:block}
+  .bx i.tl{left:-7px;top:-7px;cursor:nwse-resize}.bx i.tr{right:-7px;top:-7px;cursor:nesw-resize}
+  .bx i.bl{left:-7px;bottom:-7px;cursor:nesw-resize}.bx i.br{right:-7px;bottom:-7px;cursor:nwse-resize}
+  tr.sel td{background:rgba(232,165,75,.09)}
+  .ctl{display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center}
+  .ctl .g{display:inline-flex;gap:4px;align-items:center;font-size:13px;color:var(--dim);white-space:nowrap}
+  input[type=number]{width:64px;font:inherit;padding:5px 6px;border-radius:8px;border:1px solid var(--line2);background:var(--panel2);color:var(--ink)}
+  select.fn{max-width:190px}
+  .tip{color:var(--dim);font-size:13px;margin-top:8px}
+  .busy{opacity:.55;transition:opacity .2s}
   @media (max-width:900px){.pics{grid-template-columns:1fr}}
 </style></head>
 <body>
@@ -88,41 +103,154 @@ function poll() {
     if (s.running) setTimeout(poll, 1200); else $("go").disabled = !files.length;
   }).catch(() => setTimeout(poll, 3000));
 }
+// 이 PC 글꼴 목록 (한글 되는 것만)
+let FONTS = [], fontWait = [];
+function loadFonts() {
+  fetch("/imgtr/fonts").then(r => r.json()).then(f => {
+    FONTS = f.list || [];
+    fontWait.forEach(fn => fn()); 
+    if (f.scanning) setTimeout(loadFonts, 2500);
+  }).catch(() => setTimeout(loadFonts, 4000));
+}
+loadFonts();
+const fontOpts = cur => `<option value="">기본 (본고딕)</option>` + FONTS.map(f => `<option value="${esc(f.id)}" ${f.id === cur ? "selected" : ""}>${esc(f.name)}</option>`).join("")
+  + (cur && !FONTS.some(f => f.id === cur) ? `<option value="${esc(cur)}" selected>${esc(cur.split(/[\\/]/).pop().split("|")[0])}</option>` : "");
+const WT = { 400: "보통", 500: "중간", 700: "굵게", 900: "아주 굵게" };
+const OW = [[0.05, "얇게"], [0.09, "보통"], [0.15, "두껍게"], [0.22, "아주 두껍게"]];
+
 function card(n, bl) {
-  const id = "c" + Math.random().toString(36).slice(2, 8);
-  const el = document.createElement("div"); el.className = "card"; el.id = id;
-  const rows = bl.map((b, i) => `<tr data-i="${i}">
+  const el = document.createElement("div"); el.className = "card";
+  const u = encodeURIComponent(n);
+  const rows = bl.map((b, i) => { const s = b.style; const ow = s.ow || 0.09; return `<tr data-i="${i}">
     <td class="src">${b.vert ? "<span class='muted'>세로</span> " : ""}${esc(b.text)}</td>
-    <td style="width:34%"><input type="text" class="ko" value="${esc(b.ko)}"></td>
-    <td><input type="color" class="fill" value="${hex(b.style.grad ? b.style.grad[0] : b.style.fill)}" title="글자색${b.style.grad ? " (위)" : ""}">${b.style.grad ? `<input type="color" class="fill2" value="${hex(b.style.grad[1])}" title="글자색 (아래)">` : ""}</td>
-    <td><label class="ck"><input type="checkbox" class="ol" ${b.style.outline ? "checked" : ""}>테두리</label> <input type="color" class="olc" value="${hex(b.style.outline || [255, 255, 255])}"></td>
-    <td><select class="wt">${[400, 500, 700, 900].map(w => `<option value="${w}" ${w == b.style.weight ? "selected" : ""}>${{ 400: "보통", 500: "중간", 700: "굵게", 900: "아주 굵게" }[w]}</option>`).join("")}</select></td>
-    <td><label class="ck"><input type="checkbox" class="skip" ${b.skip ? "checked" : ""}>원문 그대로</label></td></tr>`).join("");
-  el.innerHTML = `<h3><span>${esc(n)}</span><button class="rd">고친 대로 다시 그리기</button><a href="/imgtr/img/${cur}/out/${encodeURIComponent(n)}" download="${esc(n)}"><button>이미지 받기</button></a></h3>
-    <div class="pics"><div class="pic"><span class="lab">원본</span><img src="/imgtr/img/${cur}/in/${encodeURIComponent(n)}"></div>
-    <div class="pic"><span class="lab">한국어</span><img class="out" src="/imgtr/img/${cur}/out/${encodeURIComponent(n)}?t=${Date.now()}"><div class="hl"></div></div></div>
-    ${bl.length ? `<table><tr><th>원문</th><th>한국어 (고쳐도 돼요)</th><th>글자색</th><th>테두리</th><th>굵기</th><th></th></tr>${rows}</table>` : `<p class="muted">일본어·중국어 글자를 못 찾았어요.</p>`}`;
+    <td style="width:26%"><input type="text" class="ko" value="${esc(b.ko)}"></td>
+    <td><div class="ctl">
+      <span class="g">글꼴 <select class="fn">${fontOpts(s.font)}</select></span>
+      <span class="g">크기 <input type="number" class="sc" min="20" max="500" step="5" value="${Math.round((s.scale || 1) * 100)}">%</span>
+      <span class="g">색 <input type="color" class="fill" value="${hex(s.grad ? s.grad[0] : s.fill)}" title="글자색${s.grad ? " (위)" : ""}">${s.grad ? `<input type="color" class="fill2" value="${hex(s.grad[1])}" title="글자색 (아래)">` : ""}</span>
+      <span class="g"><label class="ck"><input type="checkbox" class="ol" ${s.outline ? "checked" : ""}>테두리</label><input type="color" class="olc" value="${hex(s.outline || [255, 255, 255])}">
+        <select class="ow">${OW.map(([v, t]) => `<option value="${v}" ${Math.abs(v - ow) < 0.01 ? "selected" : ""}>${t}</option>`).join("")}</select></span>
+      <span class="g">굵기 <select class="wt">${[400, 500, 700, 900].map(w => `<option value="${w}" ${w == s.weight ? "selected" : ""}>${WT[w]}</option>`).join("")}</select></span>
+      <label class="ck"><input type="checkbox" class="skip" ${b.skip ? "checked" : ""}>원문 그대로</label>
+      <button class="rs" title="옮긴 위치·크기를 처음대로" style="padding:4px 10px">↺</button>
+    </div></td></tr>`; }).join("");
+  el.innerHTML = `<h3><span class="nm">${esc(n)}</span>
+      ${bl.length ? `<span class="g muted" style="flex:none">모든 글씨 글꼴 <select class="fnall fn"><option value="-">— 골라서 한 번에 —</option></select></span>` : ""}
+      <a href="/imgtr/img/${cur}/out/${u}" download="${esc(n)}"><button>이미지 받기</button></a></h3>
+    <div class="pics"><div class="pic"><span class="lab">원본</span><img src="/imgtr/img/${cur}/in/${u}"></div>
+    <div class="pic"><span class="lab">한국어</span><img class="out" draggable="false" src="/imgtr/img/${cur}/out/${u}?t=${Date.now()}"><div class="ov"></div></div></div>
+    ${bl.length ? `<div class="tip">오른쪽 그림에서 글씨를 끌면 옮겨지고, 모서리 네모를 끌면 크기가 바뀌어요 · 고른 글씨는 방향키로 1칸씩 (Shift 누르면 10칸)</div>
+      <table><tr><th>원문</th><th>한국어 (고쳐도 돼요)</th><th>모양</th></tr>${rows}</table>` : `<p class="muted">일본어·중국어 글자를 못 찾았어요.</p>`}`;
   $("list").appendChild(el);
-  const img = el.querySelector("img.out"), hl = el.querySelector(".hl");
-  el.querySelectorAll("tr[data-i]").forEach(tr => {
-    const b = bl[+tr.dataset.i];
-    tr.onmouseenter = () => { if (!img.naturalWidth) return; const sx = img.clientWidth / img.naturalWidth, sy = img.clientHeight / img.naturalHeight;
-      Object.assign(hl.style, { display: "block", left: b.box[0] * sx - 4 + "px", top: b.box[1] * sy - 4 + "px", width: (b.box[2] - b.box[0]) * sx + 8 + "px", height: (b.box[3] - b.box[1]) * sy + 8 + "px" }); };
-    tr.onmouseleave = () => hl.style.display = "none";
-    tr.querySelectorAll("input[type=text]").forEach(inp => inp.addEventListener("keydown", e => { if (e.key === "Enter") el.querySelector(".rd").click(); }));
+  const img = el.querySelector("img.out"), ov = el.querySelector(".ov");
+  const trs = [...el.querySelectorAll("tr[data-i]")];
+  let sel = -1, timer = null, seq = 0;
+
+  // 결과 그림 위 상자 (글씨 잡는 곳)
+  const bxs = bl.map((b, i) => {
+    const d = document.createElement("div"); d.className = "bx";
+    d.innerHTML = `<i class="tl"></i><i class="tr"></i><i class="bl"></i><i class="br"></i>`;
+    ov.appendChild(d); d.dataset.i = i; return d;
   });
-  el.querySelector(".rd").onclick = () => {
-    const blocks = [...el.querySelectorAll("tr[data-i]")].map(tr => {
-      const f2 = tr.querySelector(".fill2");
-      return { ko: tr.querySelector(".ko").value, skip: tr.querySelector(".skip").checked,
-        fill: rgb(tr.querySelector(".fill").value), grad: f2 ? [rgb(tr.querySelector(".fill").value), rgb(f2.value)] : null,
-        outline: tr.querySelector(".ol").checked ? rgb(tr.querySelector(".olc").value) : null, weight: +tr.querySelector(".wt").value };
-    });
-    const btn = el.querySelector(".rd"); btn.disabled = true; btn.textContent = "그리는 중…";
-    fetch(`/imgtr/edit/${cur}/${encodeURIComponent(n)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ blocks }) })
-      .then(r => r.json()).then(r => { img.src = `/imgtr/img/${cur}/out/${encodeURIComponent(n)}?t=${Date.now()}`; })
-      .finally(() => { btn.disabled = false; btn.textContent = "고친 대로 다시 그리기"; });
+  const ratio = () => img.naturalWidth ? img.clientWidth / img.naturalWidth : 1;
+  function place(i, mv = [0, 0], k = 1) {
+    const b = bl[i], r = b.drawn || b.box, q = ratio(), d = bxs[i];
+    if (b.skip || !(b.ko || "").trim()) { d.style.display = "none"; return; }
+    const cx = (r[0] + r[2]) / 2 * q + mv[0], cy = (r[1] + r[3]) / 2 * q + mv[1];
+    const w = Math.max(14, (r[2] - r[0]) * q * k), h = Math.max(14, (r[3] - r[1]) * q * k);
+    Object.assign(d.style, { display: "block", left: cx - w / 2 - 3 + "px", top: cy - h / 2 - 3 + "px", width: w + 6 + "px", height: h + 6 + "px" });
+  }
+  const placeAll = () => bl.forEach((_, i) => place(i));
+  img.addEventListener("load", placeAll); window.addEventListener("resize", placeAll);
+  function select(i) {
+    sel = i;
+    bxs.forEach((d, j) => d.classList.toggle("sel", j === i));
+    trs.forEach((tr, j) => tr.classList.toggle("sel", j === i));
+  }
+  // 끌어 옮기기 / 모서리로 크기
+  bxs.forEach((d, i) => d.addEventListener("pointerdown", e => {
+    e.preventDefault(); select(i); d.setPointerCapture(e.pointerId);
+    const b = bl[i], q = ratio(), r = b.drawn || b.box;
+    const rect = ov.getBoundingClientRect();
+    const c = [(r[0] + r[2]) / 2 * q + rect.left, (r[1] + r[3]) / 2 * q + rect.top];
+    const corner = e.target.tagName === "I", sx = e.clientX, sy = e.clientY;
+    const d0 = Math.hypot(sx - c[0], sy - c[1]) || 1;
+    let mv = [0, 0], k = 1, moved = false;
+    const move = ev => {
+      moved = true;
+      if (corner) { k = Math.max(0.15, Math.hypot(ev.clientX - c[0], ev.clientY - c[1]) / d0); place(i, [0, 0], k); }
+      else { mv = [ev.clientX - sx, ev.clientY - sy]; place(i, mv, 1); }
+    };
+    const up = () => {
+      d.removeEventListener("pointermove", move); d.removeEventListener("pointerup", up); d.removeEventListener("pointercancel", up);
+      if (!moved) return;
+      if (corner) {
+        b.style.scale = Math.min(5, Math.max(0.2, (b.style.scale || 1) * k));
+        trs[i].querySelector(".sc").value = Math.round(b.style.scale * 100);
+      } else { b.style.dx = (b.style.dx || 0) + mv[0] / q; b.style.dy = (b.style.dy || 0) + mv[1] / q; }
+      redraw(0);
+    };
+    d.addEventListener("pointermove", move); d.addEventListener("pointerup", up); d.addEventListener("pointercancel", up);
+  }));
+  // 방향키로 조금씩
+  document.addEventListener("keydown", e => {
+    if (sel < 0 || !el.isConnected || /INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)) return;
+    const st = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key];
+    if (!st) { if (e.key === "Escape") select(-1); return; }
+    e.preventDefault();
+    const m = e.shiftKey ? 10 : 1, b = bl[sel];
+    b.style.dx = (b.style.dx || 0) + st[0] * m; b.style.dy = (b.style.dy || 0) + st[1] * m;
+    if (b.drawn) b.drawn = [b.drawn[0] + st[0] * m, b.drawn[1] + st[1] * m, b.drawn[2] + st[0] * m, b.drawn[3] + st[1] * m];
+    place(sel); redraw(350);
+  });
+  ov.parentElement.addEventListener("pointerdown", e => { if (!e.target.closest(".bx")) select(-1); });
+
+  // 표에서 고친 것 → 바로 다시 그림
+  function readRow(i) {
+    const tr = trs[i], s = bl[i].style, f2 = tr.querySelector(".fill2");
+    bl[i].ko = tr.querySelector(".ko").value; bl[i].skip = tr.querySelector(".skip").checked;
+    s.fill = rgb(tr.querySelector(".fill").value);
+    s.grad = f2 ? [rgb(tr.querySelector(".fill").value), rgb(f2.value)] : null;
+    s.outline = tr.querySelector(".ol").checked ? rgb(tr.querySelector(".olc").value) : null;
+    s.ow = +tr.querySelector(".ow").value; s.weight = +tr.querySelector(".wt").value;
+    s.font = tr.querySelector(".fn").value || null;
+    s.scale = Math.min(5, Math.max(0.2, (+tr.querySelector(".sc").value || 100) / 100));
+  }
+  trs.forEach((tr, i) => {
+    tr.addEventListener("change", () => { readRow(i); redraw(150); });
+    tr.querySelector(".ko").addEventListener("keydown", e => { if (e.key === "Enter") { readRow(i); redraw(0); } });
+    tr.querySelector(".sc").addEventListener("input", () => { readRow(i); redraw(500); });
+    tr.querySelector(".rs").onclick = () => { const s = bl[i].style; s.dx = 0; s.dy = 0; s.scale = 1; tr.querySelector(".sc").value = 100; redraw(0); };
+    tr.addEventListener("click", e => { if (e.target.tagName !== "SELECT") select(i); });
+  });
+  const all = el.querySelector(".fnall");
+  const fillFonts = () => {
+    if (all) all.innerHTML = `<option value="-">— 골라서 한 번에 —</option><option value="">기본 (본고딕)</option>` + FONTS.map(f => `<option value="${esc(f.id)}">${esc(f.name)}</option>`).join("");
+    trs.forEach((tr, i) => { const s = tr.querySelector(".fn"); if (document.activeElement !== s) s.innerHTML = fontOpts(bl[i].style.font); });
   };
+  fillFonts(); fontWait.push(fillFonts);
+  if (all) all.onchange = () => {
+    if (all.value === "-") return;
+    trs.forEach((tr, i) => { tr.querySelector(".fn").value = all.value; readRow(i); });
+    all.value = "-"; redraw(0);
+  };
+
+  function redraw(wait) {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      const my = ++seq;
+      const blocks = bl.map(b => ({ ko: b.ko, skip: b.skip, ...b.style }));
+      img.classList.add("busy");
+      fetch(`/imgtr/edit/${cur}/${u}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ blocks }) })
+        .then(r => r.json()).then(r => {
+          if (my !== seq) return;
+          (r.drawn || []).forEach((d, i) => { if (bl[i]) bl[i].drawn = d; });
+          const pre = new Image();
+          pre.onload = () => { if (my === seq) { img.src = pre.src; img.classList.remove("busy"); } };
+          pre.src = `/imgtr/img/${cur}/out/${u}?t=${Date.now()}`;
+        }).catch(() => img.classList.remove("busy"));
+    }, wait);
+  }
 }
 // 처음 준비 (모델 받기) 상태
 function setupPoll() {
