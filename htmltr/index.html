@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HTML 번역 실행기</title>
+<style>
+  :root { --bg:#16130f; --panel:#201b15; --panel2:#2a231b; --line:#3a3026; --ink:#f2ebe1; --dim:#a99c8a; --acc:#e8a54b; --bad:#ff8a7a; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.6 "Malgun Gothic", "Apple SD Gothic Neo", sans-serif; }
+  main { max-width: 860px; margin: 0 auto; padding: 32px 16px 60px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .sub { color: var(--dim); margin: 0 0 24px; }
+  .open { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px; }
+  button { font: inherit; background: var(--panel2); color: var(--ink); border: 1px solid var(--line); border-radius: 10px; padding: 9px 16px; cursor: pointer; }
+  button:hover { border-color: var(--acc); }
+  button.big { background: var(--acc); color: #1a120a; border: 0; font-weight: 700; padding: 12px 22px; font-size: 16px; }
+  input[type=text] { flex: 1; min-width: 220px; font: inherit; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel2); color: var(--ink); }
+  #msg { margin: 14px 2px; color: var(--dim); min-height: 1.6em; }
+  #msg.bad { color: var(--bad); }
+  h2 { font-size: 16px; margin: 30px 0 10px; color: var(--dim); font-weight: 600; }
+  .g { display: flex; gap: 12px; align-items: center; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; margin-bottom: 8px; }
+  .g .t { flex: 1; min-width: 0; }
+  .g .n { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .g .p { color: var(--dim); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tips { color: var(--dim); font-size: 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px 16px; }
+  .tips li { margin: 3px 0; }
+</style>
+</head>
+<body>
+<main>
+  <h1>HTML 번역 실행기</h1>
+  <p class="sub">일본어 HTML 실행기를 열면, 화면에 뜨는 일본어를 그 자리에서 한국어로 바꿔 보여 줘요.</p>
+  <div class="open">
+    <button class="big" id="pick">HTML 파일 열기</button>
+    <input type="text" id="path" placeholder="또는 HTML 파일 경로를 붙여 넣고 엔터 (예: D:\게임\index.html)">
+  </div>
+  <div id="msg"></div>
+  <h2>최근에 연 것</h2>
+  <div id="list"><p class="sub">아직 없어요.</p></div>
+  <h2>쓰는 법</h2>
+  <ul class="tips">
+    <li>열면 새 탭에서 실행기가 켜져요. 대사가 다 찍히면 잠깐 뒤 한국어로 바뀌어요.</li>
+    <li>한 번 번역한 대사는 기억해 둬서 다음부터는 바로 바뀌어요.</li>
+    <li>오른쪽 아래 작은 표시를 누르면 원문 ↔ 한국어를 바꿔 볼 수 있어요.</li>
+    <li>이 창(검은 창 포함)을 닫으면 번역이 멈춰요.</li>
+  </ul>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+function msg(t, bad) { $("msg").textContent = t; $("msg").classList.toggle("bad", !!bad); }
+async function open_(path) {
+  msg(path ? "여는 중…" : "파일 고르는 창을 띄웠어요 (작업 표시줄에 숨어 있을 수도 있어요)");
+  try {
+    const r = await (await fetch("/open", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path }) })).json();
+    if (r.cancel) { msg(""); return; }
+    if (r.error) { msg(r.error, true); return; }
+    window.open(r.url, "_blank"); msg("새 탭에서 열었어요."); list();
+  } catch (e) { msg("프로그램과 연결이 안 돼요. 검은 창이 켜져 있는지 봐 주세요.", true); }
+}
+$("pick").onclick = () => open_("");
+$("path").addEventListener("keydown", e => { if (e.key === "Enter" && e.target.value.trim()) open_(e.target.value.trim().replace(/^"|"$/g, "")); });
+async function list() {
+  const gs = await (await fetch("/games")).json();
+  if (!gs.length) return;
+  $("list").innerHTML = gs.map(g => `<div class="g"><div class="t"><div class="n">${esc(g.name)}</div><div class="p">${esc(g.dir)}\\${esc(g.entry)} · 번역해 둔 문장 ${g.n}개</div></div>
+    <button onclick="window.open('${g.url}','_blank')">열기</button><button onclick="forget('${g.gid}')" title="목록에서만 빼기">✕</button></div>`).join("");
+}
+async function forget(g) { await fetch("/forget/" + g, { method: "POST" }); location.reload(); }
+function setupPoll() {
+  fetch("/setup").then(r => r.json()).then(s => {
+    if (s.running) { msg("처음 준비 중 — " + s.msg); setTimeout(setupPoll, 2000); }
+    else if (s.error) msg("준비 중 문제: " + s.error, true);
+    else if (!$("msg").textContent || $("msg").textContent.startsWith("처음 준비")) msg("준비됐어요. HTML 파일을 열어 주세요.");
+  }).catch(() => setTimeout(setupPoll, 3000));
+}
+setupPoll(); list();
+</script>
+</body>
+</html>

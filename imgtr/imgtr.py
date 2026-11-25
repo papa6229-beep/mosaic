@@ -27,6 +27,10 @@ def ocr():
     if _ocr is None:
         from rapidocr import RapidOCR
         _ocr = RapidOCR()
+        import logging                                     # "글자 없음" 같은 정상 기록은 검은 창에 안 찍히게
+        for n in list(logging.root.manager.loggerDict) + ["RapidOCR"]:
+            if "rapidocr" in n.lower():
+                logging.getLogger(n).setLevel(logging.ERROR)
     return _ocr
 
 
