@@ -56,7 +56,9 @@ async function open_(path) {
     const r = await (await fetch("/open", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path }) })).json();
     if (r.cancel) { msg(""); return; }
     if (r.error) { msg(r.error, true); return; }
-    window.open(r.url, "_blank"); msg("새 탭에서 열었어요."); list();
+    const w = window.open(r.url, "_blank");                 // 파일 고르는 사이 시간이 지나 브라우저가 새 탭을 막을 수 있음 → 막히면 이 탭에서 바로 열기
+    if (!w) { location.href = r.url; return; }
+    msg("새 탭에서 열었어요."); list();
   } catch (e) { msg("프로그램과 연결이 안 돼요. 검은 창이 켜져 있는지 봐 주세요.", true); }
 }
 $("pick").onclick = () => open_("");
