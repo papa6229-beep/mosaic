@@ -25,6 +25,8 @@ def ensure_translator(job=None):
         _borrow(gguf, job)
     if not os.path.exists(gguf):
         _download(f"https://huggingface.co/{TR_REPO}/resolve/main/{TR_FILE}", gguf, job, f"번역 모델(약 {TR_MB / 1000:.1f}GB)")
+    if os.name == "nt" and _has_nvidia() and not _find_server(LLAMA_CUDA_DIR):
+        _borrow_tools(job)
     exe = _find_server()
     if os.name == "nt" and _has_nvidia() and not _find_server(LLAMA_CUDA_DIR):
         for cv in ("13.1", "12.4"):            # 엔비디아면 CUDA판 (13.1: RTX 50 지원, 드라이버 580 이상)
@@ -56,6 +58,24 @@ def _borrow(gguf, job):
                     shutil.copyfile(src, gguf + ".part")
                     os.replace(gguf + ".part", gguf)
                 return
+
+
+def _borrow_tools(job):
+    """옆 폴더(이미지 번역기·모자이크 생성기)에 이미 받아 둔 그래픽카드용 번역 실행 도구가 있으면 복사해 옴"""
+    up = os.path.dirname(ROOT)
+    try:
+        sibs = [os.path.join(up, d) for d in os.listdir(up)]
+    except OSError:
+        return
+    for d in sibs:
+        src = os.path.join(d, "tools", "llama-cuda")
+        if os.path.abspath(src) != os.path.abspath(LLAMA_CUDA_DIR) and _find_server(src):
+            _log(job, "옆 프로그램의 번역 실행 도구를 가져오는 중")
+            try:
+                shutil.copytree(src, LLAMA_CUDA_DIR, dirs_exist_ok=True)
+                return
+            except Exception as e:
+                print("가져오기 실패:", e)
 
 
 def _download(url, dst, job, label):
@@ -179,6 +199,16 @@ class Translator:
             self._start(vk, gguf)
         self.where = self._where()
         print("번역 모델 위치:", self.where)
+        if self.where == "CPU" and _has_nvidia():          # 그래픽카드가 있는데 CPU로 돌면 아주 느림 → 원인 기록을 보여 줌
+            try:
+                s = open(os.path.join(TR_DIR, "server.log"), encoding="utf-8", errors="ignore").read()
+                keep = [l for l in s.splitlines() if re.search(r"cuda|vulkan|gpu|device|error|fail|offload|ggml", l, re.I)]
+                print("[알림] 그래픽카드를 못 쓰고 CPU로 돌고 있어요. 이 창을 캡처해서 보내 주세요:")
+                print("  실행 도구:", exe)
+                for l in keep[:25]:
+                    print("  ", l[:160])
+            except Exception:
+                pass
 
     def _start(self, exe, gguf):
         flags = 0x08000000 if os.name == "nt" else 0          # 윈도우에서 검은 창이 따로 안 뜨게
