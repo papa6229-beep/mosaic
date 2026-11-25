@@ -139,6 +139,7 @@
   async function settle(el) {
     const s = st.get(el); if (!s) return;
     if (!el.isConnected) { st.delete(el); return; }
+    if (!visible(el)) { hide(el, s); s.src = ""; s.ko = ""; return; }
     const src = textOf(el);
     if (!src || !JP.test(src)) { hide(el, s); s.src = ""; return; }
     if (src === s.src && s.ko) { if (on) show(el, s); return; }
@@ -153,19 +154,45 @@
 
   function touch(el) {
     let s = st.get(el);
-    if (!s) { s = { src: "", ko: "", ov: null, t: null }; st.set(el, s); }
+    if (!s) { s = { src: "", ko: "", ov: null, t: null }; st.set(el, s); try { io.observe(el); } catch (e) {} }
     if (s.ov && textOf(el) !== s.src) { hide(el, s); }   // 새 대사가 찍히기 시작하면 이전 번역은 바로 치움
     clearTimeout(s.t); s.t = setTimeout(() => settle(el), WAIT);
   }
 
+  // 바뀐 글자 조각은 모아 두었다가 조금씩 처리 (글자가 아주 많은 화면에서도 버벅이지 않게)
+  const todoNodes = new Set(); let todoT = null;
+  const boxMemo = new WeakMap();
+  function queueNode(n) { todoNodes.add(n); if (!todoT) todoT = setTimeout(drain, 30); }
+  function drain() {
+    todoT = null;
+    const t0 = performance.now();
+    for (const n of todoNodes) {
+      todoNodes.delete(n);
+      const pe = n.parentElement;
+      if (!pe || !n.isConnected || SKIP.has(pe.tagName) || isOurs(n) || !JP.test(n.nodeValue)) continue;
+      let b = boxMemo.get(pe);
+      if (!b || !b.isConnected) { b = boxOf(n); boxMemo.set(pe, b); }
+      touch(b);
+      if (performance.now() - t0 > 12) break;              // 한 번에 너무 오래 붙잡지 않음
+    }
+    if (todoNodes.size) todoT = setTimeout(drain, 16);
+  }
   function scan(root) {
     if (!root || isOurs(root)) return;
-    if (root.nodeType === 3) { if (JP.test(root.nodeValue) && root.parentElement && !SKIP.has(root.parentElement.tagName)) touch(boxOf(root)); return; }
+    if (root.nodeType === 3) { queueNode(root); return; }
     if (root.nodeType !== 1 || SKIP.has(root.tagName)) return;
     const w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-    let n; while ((n = w.nextNode())) {
-      if (JP.test(n.nodeValue) && n.parentElement && !SKIP.has(n.parentElement.tagName) && !isOurs(n)) touch(boxOf(n));
-    }
+    let n; while ((n = w.nextNode())) if (JP.test(n.nodeValue)) queueNode(n);
+  }
+
+  const io = new IntersectionObserver(es => { for (const e of es) if (e.isIntersecting && st.has(e.target)) touch(e.target); });   // 화면에 나타나면 그때 번역
+
+  // 지금 화면에 보이는 상자만 번역 (숨겨 둔 대본·지난 대사 기록 등은 안 건드림 → 보일 때 번역)
+  function visible(el) {
+    const r = el.getBoundingClientRect();
+    if (r.width < 2 || r.height < 2 || r.bottom < 0 || r.right < 0 || r.top > innerHeight || r.left > innerWidth) return false;
+    const cs = getComputedStyle(el);
+    return cs.visibility !== "hidden" && cs.display !== "none" && parseFloat(cs.opacity || "1") > 0.05;
   }
 
   const mo = new MutationObserver(ms => {
