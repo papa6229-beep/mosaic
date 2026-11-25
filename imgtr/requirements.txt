@@ -12,3 +12,9 @@ pyyaml
 tqdm
 requests
 fonttools
+# 정밀 다시 그리기 (RORem) — 서로 맞는 판으로 고정
+diffusers==0.43.0
+transformers==5.24.1
+accelerate==1.16.0
+huggingface_hub==2.4.0
+safetensors

@@ -431,6 +431,119 @@ def inpaint(rgb, mask):
     return out
 
 
+# ---------------- 4-2. 정밀 다시 그리기 (RORem: 지우기 전용으로 훈련된 그림 AI) ----------------
+RE_REPO = "LetsThink/RORem"
+RE_DIR = os.path.join(ROOT, "cache", "rorem")
+RE_STEPS = 25
+_re = {"pipe": None, "tried": False}
+_re_lock = threading.Lock()
+
+
+def rorem_download(job=None):
+    """처음 켤 때 한 번 받음 (약 7GB). 이미 있으면 그냥 넘어감"""
+    if os.path.exists(os.path.join(RE_DIR, "model_index.json")) and os.path.exists(os.path.join(RE_DIR, ".done")):
+        return
+    from huggingface_hub import snapshot_download
+    snapshot_download(RE_REPO, local_dir=RE_DIR)
+    open(os.path.join(RE_DIR, ".done"), "w").write("ok")
+
+
+def rorem():
+    """정밀 다시 그리기 모델. 없거나(안 받았거나) 그래픽카드가 없으면 None → 기존 지우개만 씀"""
+    with _re_lock:
+        if _re["tried"]:
+            return _re["pipe"]
+        if not os.path.exists(os.path.join(RE_DIR, ".done")):
+            return None                                    # 아직 받는 중이면 이번엔 기존 지우개로 (받고 나면 다음 작업부터 씀)
+        _re["tried"] = True
+        try:
+            import torch
+            if not torch.cuda.is_available():
+                return None
+            from diffusers import StableDiffusionXLInpaintPipeline
+            pipe = StableDiffusionXLInpaintPipeline.from_pretrained(RE_DIR, torch_dtype=torch.float16)
+            pipe.set_progress_bar_config(disable=True)
+            vram = torch.cuda.get_device_properties(0).total_memory / 1024 ** 3
+            if vram < 14:                                  # 8GB 그래픽카드: 쓰는 부분만 그래픽카드에 올림
+                pipe.enable_model_cpu_offload()
+            else:
+                pipe.to("cuda")
+            _re["pipe"] = pipe
+        except Exception as e:
+            print("정밀 다시 그리기 모델을 못 켰어요 (기존 지우개로 계속):", e)
+            _re["pipe"] = None
+        return _re["pipe"]
+
+
+def _textured(crop, mk):
+    """도려낸 자리 둘레가 무늬·그림인가 (단색·완만한 그라데이션이면 기존 지우개로 충분)"""
+    ring = (cv2.dilate(mk, np.ones((15, 15), np.uint8)) > 0) & (mk == 0)
+    if ring.sum() < 50:
+        return False
+    g = cv2.Laplacian(cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY), cv2.CV_32F)
+    return float(np.abs(g[ring]).mean()) > RE_TEX
+
+
+RE_TEX = 4.0
+
+
+def regen(rgb, base, mask, pipe=None):
+    """무늬·그림 위를 도려낸 자리만 RORem 으로 다시 그림 (나머지는 base 그대로).
+    도려낸 덩어리마다 둘레를 넉넉히 잘라 1024 크기로 그린 뒤, 도려낸 자리만 부드럽게 붙임"""
+    pipe = pipe or rorem()
+    if pipe is None or not mask.any():
+        return base
+    import torch
+    out = base.copy()
+    H, W = mask.shape
+    n, lab, st, _ = cv2.connectedComponentsWithStats((mask > 0).astype(np.uint8))
+    rects = []
+    for i in range(1, n):
+        x, y, w, h, _ = st[i]
+        pad = max(64, int(max(w, h) * 0.6))
+        rects.append([max(0, x - pad), max(0, y - pad), min(W, x + w + pad), min(H, y + h + pad)])
+    merged = True
+    while merged:
+        merged = False
+        for i in range(len(rects)):
+            for j in range(i + 1, len(rects)):
+                a, c = rects[i], rects[j]
+                if a[0] < c[2] and c[0] < a[2] and a[1] < c[3] and c[1] < a[3]:
+                    rects[i] = [min(a[0], c[0]), min(a[1], c[1]), max(a[2], c[2]), max(a[3], c[3])]
+                    rects.pop(j)
+                    merged = True
+                    break
+            if merged:
+                break
+    for X0, Y0, X1, Y1 in rects:
+        crop, mk = rgb[Y0:Y1, X0:X1], (mask[Y0:Y1, X0:X1] > 0).astype(np.uint8) * 255
+        if not mk.any() or not _textured(crop, mk):
+            continue
+        h, w = crop.shape[:2]
+        s = 1024 / max(h, w)                               # 그림 AI 가 잘 그리는 크기 (긴 쪽 1024, 8의 배수)
+        tw, th = max(512, int(round(w * s / 8)) * 8), max(512, int(round(h * s / 8)) * 8)
+        tw, th = min(tw, 1536), min(th, 1536)
+        src = out[Y0:Y1, X0:X1]                            # 기존 지우개로 먼저 채운 그림을 바탕으로 (밑그림이 자연스러워 결과가 안정적)
+        im = Image.fromarray(src).resize((tw, th), Image.LANCZOS)
+        mm = Image.fromarray(cv2.dilate(mk, np.ones((5, 5), np.uint8))).resize((tw, th), Image.NEAREST)
+        try:
+            with torch.inference_mode():
+                r = pipe(prompt="", image=im, mask_image=mm, width=tw, height=th, strength=1.0,
+                         num_inference_steps=RE_STEPS, guidance_scale=1.0,
+                         generator=torch.Generator("cpu").manual_seed(0)).images[0]
+        except Exception as e:
+            print("정밀 다시 그리기 실패 (이 자리는 기존 결과 그대로):", e)
+            continue
+        r = np.asarray(r.convert("RGB").resize((w, h), Image.LANCZOS))
+        # 붙이는 자리: 도려낸 곳 + 살짝 바깥까지 부드럽게 (경계선 안 보이게). 색이 조금 틀어졌으면 둘레 색에 맞춤
+        ring = (cv2.dilate(mk, np.ones((9, 9), np.uint8)) > 0) & (mk == 0)
+        if ring.sum() > 30:
+            r = np.clip(r.astype(np.float32) + (src[ring].astype(np.float32).mean(0) - r[ring].astype(np.float32).mean(0)), 0, 255)
+        a = cv2.GaussianBlur(cv2.dilate(mk, np.ones((5, 5), np.uint8)).astype(np.float32) / 255, (0, 0), 1.5)[..., None]
+        out[Y0:Y1, X0:X1] = (r * a + src * (1 - a)).astype(np.uint8)
+    return out
+
+
 # ---------------- 5. 글자 모양 읽기 + 한국어 쓰기 ----------------
 def style(rgb, clean, b, pal=True, others=None):
     """원래 글자의 색·테두리·위아래 그라데이션·굵기"""
@@ -1178,6 +1291,7 @@ def analyze(path):
     ink[keep] = 0
     if ink.any():
         clean = inpaint(rgb, ink)
+        clean = regen(rgb, clean, ink)                     # 무늬·그림 위 자리는 정밀 다시 그리기 (모델이 있을 때만)
     else:
         clean = rgb.copy()
     for i, b in enumerate(blocks):                         # 글자 획 자리만 새로 채운 그림과 비교하면 글자 픽셀이 정확 → 색·테두리 다시 읽기

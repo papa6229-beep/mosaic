@@ -31,6 +31,11 @@ def run_setup():
                 llm._download(imgtr.SERIF_URL, imgtr.SERIF, setup, "명조 글꼴")
             except Exception as e:                         # 못 받으면 명조 대신 고딕으로 (다음에 켤 때 다시)
                 print("명조 글꼴 받기 실패:", e)
+        setup["msg"] = "정밀 다시 그리기 모델 받는 중 (처음 한 번만 약 7GB)"
+        try:
+            imgtr.rorem_download(setup)
+        except Exception as e:                             # 못 받으면 기존 지우개만 씀 (다음에 켤 때 다시)
+            print("정밀 다시 그리기 모델 받기 실패:", e)
         setup["msg"] = "번역 모델 받는 중 (처음 한 번만 약 5GB)"
         llm.ensure_translator(setup)
         setup["msg"] = "준비 끝"
