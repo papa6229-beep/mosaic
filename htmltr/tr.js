@@ -9,7 +9,7 @@
   const SKIP = new Set(["SCRIPT", "STYLE", "NOSCRIPT", "TEXTAREA", "INPUT", "SELECT", "OPTION", "RT", "RP", "TITLE", "CODE", "PRE", "TEMPLATE", "XMP", "SVG", "CANVAS", "IFRAME"]);
   const MAXLEN = 1500;                   // 화면 대사는 길어야 몇백 자. 이보다 긴 글자 덩어리(숨겨 둔 대본 등)는 아예 안 봄
   const okText = n => n.nodeValue.length <= MAXLEN && JP.test(n.nodeValue);
-  const WAIT = 280;                      // 글자가 한 자씩 찍히는 동안은 기다렸다가, 멈추면 번역
+  const WAIT = 150;                      // 글자가 한 자씩 찍히는 동안은 기다렸다가, 멈추면 번역
   const st = new Map();                  // 글자 상자 → 상태
   const ctx = [];                        // 앞 대사 (말투·이름 맞추기용)
   const mem = new Map();                 // 이 화면에서 이미 받은 번역
@@ -149,7 +149,26 @@
     s.src = src; s.ko = "";
     if (!on) return;
     let ko = mem.get(src);
-    if (ko === undefined) { pending++; bar(); ko = await request(src); pending--; bar(); }
+    if (ko === undefined) {                               // 번역 글자가 만들어지는 대로 바로바로 찍음
+      pending++; bar();
+      ko = "";
+      try {
+        const r = await fetch(`/__trs/${GID}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ item: src, ctx: ctx.slice(-3) }) });
+        const rd = r.body.getReader(), dec = new TextDecoder();
+        let last = 0;
+        for (;;) {
+          const { done, value } = await rd.read();
+          if (done) break;
+          ko += dec.decode(value, { stream: true });
+          if (s.src !== src || !el.isConnected) { try { rd.cancel(); } catch (e) {} break; }
+          const now = performance.now();
+          if (on && ko.trim() && now - last > 40) { s.ko = ko; show(el, s); last = now; }
+        }
+      } catch (e) { bar("번역 서버와 연결이 끊겼어요"); }
+      pending--; bar();
+      ko = ko.trim();
+      if (ko) { mem.set(src, ko); if (src.length > 6) { ctx.push([src, ko]); if (ctx.length > 16) ctx.shift(); } }
+    }
     if (s.src !== src || !el.isConnected) return;           // 그 사이 다음 대사로 넘어갔으면 버림
     s.ko = ko;
     if (ko && on) show(el, s); else hide(el, s);

@@ -306,6 +306,27 @@ class Translator:
             return f"그래픽카드 {a}/{b}층" + (f" ({dev})" if dev else "")
         return "CPU" if not dev else dev
 
+    def stream(self, messages, max_tokens):
+        """번역 글자를 만들어지는 대로 조금씩 돌려줌 (화면에 바로바로 찍으려고)"""
+        body = json.dumps({"messages": messages, "max_tokens": max_tokens, "temperature": 0.3, "top_p": 0.8, "top_k": 20,
+                           "min_p": 0, "stream": True, "cache_prompt": True,
+                           "chat_template_kwargs": {"enable_thinking": False}}).encode("utf-8")
+        req = urllib.request.Request(self.url + "/v1/chat/completions", data=body, headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=300) as r:
+            for raw in r:
+                line = raw.decode("utf-8", "ignore").strip()
+                if not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    piece = json.loads(data)["choices"][0]["delta"].get("content") or ""
+                except Exception:
+                    continue
+                if piece:
+                    yield piece
+
     def chat(self, messages, max_tokens):
         body = json.dumps({"messages": messages, "max_tokens": max_tokens, "temperature": 0.3, "top_p": 0.8, "top_k": 20,
                            "min_p": 0, "chat_template_kwargs": {"enable_thinking": False}}).encode("utf-8")

@@ -303,6 +303,58 @@ def pre_state(gid):
     return jsonify(pre.get(gid) or {})
 
 
+@app.post("/__trs/<gid>")
+def tr_stream(gid):
+    """대사 한 덩어리 → 한국어를 만들어지는 대로 흘려보냄. 번역해 둔 게 있으면 통째로 바로"""
+    d = request.get_json(silent=True) or {}
+    item = str(d.get("item") or "")[:2000]
+    ctx = [(str(a)[:300], str(b)[:300]) for a, b in (d.get("ctx") or [])][-3:]
+    c = _cache(gid)
+    whole = norm(item)
+    ss = sentences(item) or [item]
+    if whole in c:
+        return Response(c[whole], mimetype="text/plain; charset=utf-8")
+    if all(norm(s_) in c or not JPC.search(s_) for s_ in ss):
+        return Response(" ".join(c.get(norm(s_), s_) for s_ in ss), mimetype="text/plain; charset=utf-8")
+    src = "".join(ss)                                      # 화면 줄바꿈은 빼고 한 줄로
+
+    def gen():
+        t_ = _translator()
+        u = ""
+        if ctx:
+            u += "Earlier lines (context only, do not translate):\n" + "\n".join(f"- {a} → {b}" for a, b in ctx) + "\n\n"
+        u += "Translate:\n1. " + src
+        out, head = "", True
+        urgent["n"] += 1
+        t0 = time.time()
+        try:
+            with tr_lock:
+                for piece in t_.stream([{"role": "system", "content": SYSTEM}, {"role": "user", "content": u}], len(src) * 3 + 64):
+                    out += piece
+                    if head:                                   # 앞의 "1. " 은 떼고 보냄
+                        m = re.match(r"\s*1?[.)]?\s*", out)
+                        if len(out) < 4 and not re.search(r"[^\s\d.)]", out):
+                            continue
+                        piece = out[m.end():] if m else out
+                        head = False
+                    if "\n" in out[3:]:
+                        piece = piece.split("\n")[0]
+                        yield piece
+                        break
+                    yield piece
+        finally:
+            urgent["n"] -= 1
+        ko = re.sub(r"^\s*1[.)]\s*", "", out).split("\n")[0].strip()
+        print(f"  번역 {time.time() - t0:.1f}초", flush=True)
+        if ko:
+            c[whole] = ko
+            _save_cache(gid)
+    r = Response(gen(), mimetype="text/plain; charset=utf-8")
+    r.headers["X-Accel-Buffering"] = "no"
+    r.headers["Cache-Control"] = "no-store"
+    return r
+
+
 @app.post("/__tr/<gid>")
 def tr_api(gid):
     d = request.get_json(silent=True) or {}
