@@ -198,17 +198,47 @@ class Translator:
             print("CUDA판으로 못 띄움 → Vulkan판으로")          # 드라이버가 너무 옛날이면
             self._start(vk, gguf)
         self.where = self._where()
-        print("번역 모델 위치:", self.where)
-        if self.where == "CPU" and _has_nvidia():          # 그래픽카드가 있는데 CPU로 돌면 아주 느림 → 원인 기록을 보여 줌
-            try:
-                s = open(os.path.join(TR_DIR, "server.log"), encoding="utf-8", errors="ignore").read()
-                keep = [l for l in s.splitlines() if re.search(r"cuda|vulkan|gpu|device|error|fail|offload|ggml", l, re.I)]
-                print("[알림] 그래픽카드를 못 쓰고 CPU로 돌고 있어요. 이 창을 캡처해서 보내 주세요:")
-                print("  실행 도구:", exe)
-                for l in keep[:25]:
-                    print("  ", l[:160])
-            except Exception:
-                pass
+        if _has_nvidia() and not self._on_gpu():           # 그래픽카드가 있는데 CPU로 돌면 아주 느림
+            self._diag(exe)
+            if os.name == "nt" and exe.startswith(LLAMA_CUDA_DIR):
+                try:                                       # CUDA판이 이 PC 드라이버와 안 맞을 때가 많음 → 어느 드라이버에서나 도는 Vulkan판으로
+                    print("그래픽카드용 다른 실행 도구(Vulkan)로 다시 띄워 볼게요…")
+                    vk = _find_server(LLAMA_DIR) or _get_llama(LLAMA_DIR, "bin-win-vulkan-x64.zip", job)
+                    self.close()
+                    self._start(vk, gguf)
+                    self.where = self._where()
+                except Exception as e:
+                    print("Vulkan판도 실패:", e)
+        print("번역 모델 위치:", "그래픽카드" if self._on_gpu() else self.where)
+
+    def _on_gpu(self):
+        """이 번역 프로그램이 실제로 그래픽카드 메모리를 쓰고 있나 (nvidia-smi 로 직접 확인)"""
+        if "그래픽카드" in (self.where or ""):
+            return True
+        try:
+            smi = shutil.which("nvidia-smi") or os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "System32", "nvidia-smi.exe")
+            out = subprocess.run([smi, "--query-compute-apps=pid", "--format=csv,noheader"], capture_output=True, text=True, timeout=15).stdout
+            return str(self.p.pid) in out.split()
+        except Exception:
+            return False
+
+    def _diag(self, exe):
+        print("[알림] 그래픽카드를 못 쓰고 CPU로 돌고 있어요. 이 창을 캡처해서 보내 주세요:")
+        print("  실행 도구:", exe)
+        try:
+            smi = shutil.which("nvidia-smi") or os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "System32", "nvidia-smi.exe")
+            print("  그래픽카드:", subprocess.run([smi, "--query-gpu=name,driver_version,memory.used,memory.total", "--format=csv,noheader"],
+                                               capture_output=True, text=True, timeout=15).stdout.strip())
+        except Exception as e:
+            print("  그래픽카드 확인 실패:", e)
+        try:
+            d = os.path.dirname(exe)
+            print("  도구 폴더 dll:", ", ".join(f for f in os.listdir(d) if f.lower().endswith(".dll") and re.search(r"cuda|cublas|cudart|vulkan|ggml", f, re.I)))
+            s = open(os.path.join(TR_DIR, "server.log"), encoding="utf-8", errors="ignore").read().splitlines()
+            for l in [l for l in s if re.search(r"cuda|vulkan|gpu|device|backend|error|fail|offload|ggml", l, re.I)][:15] or s[:15]:
+                print("   ", l[:170])
+        except Exception as e:
+            print("  기록 읽기 실패:", e)
 
     def _start(self, exe, gguf):
         flags = 0x08000000 if os.name == "nt" else 0          # 윈도우에서 검은 창이 따로 안 뜨게
