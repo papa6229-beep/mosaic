@@ -37,8 +37,6 @@ venv\Scripts\python -m pip install torch torchvision --index-url https://downloa
 if errorlevel 1 goto fail
 venv\Scripts\python -m pip install -r requirements.txt
 if errorlevel 1 goto fail
-venv\Scripts\python -m pip install --no-deps rapidocr==3.10.0
-if errorlevel 1 goto fail
 echo ok> venv\ready.txt
 copy /y requirements.txt venv\req.txt >nul
 

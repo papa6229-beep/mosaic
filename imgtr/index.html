@@ -40,7 +40,7 @@
 </style></head>
 <body>
 <header><div class="mark">가</div><div><h1>이미지 번역</h1><small>상품·광고 이미지 속 일본어·중국어 → 한국어 (가로는 가로, 세로는 세로 그대로)</small></div>
-  <a class="back" href="/">← 모자이크·자막 생성기</a></header>
+</header>
 
 <div class="panel">
   <div id="drop"><b>이미지를 끌어다 놓거나 눌러서 고르기</b><br>여러 장 한 번에 · png, jpg, webp</div>
@@ -124,6 +124,15 @@ function card(n, bl) {
       .finally(() => { btn.disabled = false; btn.textContent = "고친 대로 다시 그리기"; });
   };
 }
+// 처음 준비 (모델 받기) 상태
+function setupPoll() {
+  fetch("/setup").then(r => r.json()).then(s => {
+    if (s.running) { if (!cur) $("msg").textContent = "처음 준비 중 — " + s.msg; setTimeout(setupPoll, 2000); }
+    else if (s.error && !cur) { $("msg").textContent = "준비 중 문제: " + s.error; $("msg").classList.add("bad"); }
+    else if (!cur) $("msg").textContent = "준비됐어요. 이미지를 넣어 주세요.";
+  }).catch(() => setTimeout(setupPoll, 3000));
+}
+setupPoll();
 // 마지막 작업 다시 보기
 try { const last = localStorage.getItem("imgtr_last"); if (last) { cur = last; poll(); } } catch (e) {}
 </script>

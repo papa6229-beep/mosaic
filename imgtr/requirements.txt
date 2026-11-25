@@ -1,0 +1,13 @@
+flask
+opencv-python<5
+numpy
+pillow
+# 글자 읽기 (rapidocr 는 opencv 판이 겹치지 않게 tools/update.py 에서 --no-deps 로 따로 설치)
+onnxruntime
+omegaconf
+pyclipper
+shapely
+colorlog
+pyyaml
+tqdm
+requests
