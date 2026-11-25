@@ -59,9 +59,24 @@
 
   // 원래 글자 모양 (첫 글자 조각 기준)
   function firstTextEl(el) {
-    const w = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, { acceptNode: n => (JP.test(n.nodeValue) && !isOurs(n)) ? 1 : 3 });
+    const w = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, { acceptNode: n => (JP.test(n.nodeValue) && !isOurs(n) && !n.parentElement.closest("rt,rp")) ? 1 : 3 });
     const n = w.nextNode();
     return n ? n.parentElement : el;
+  }
+
+  // 원문 글자가 실제로 차지한 자리 (상자 안 좌표). 실행기가 화면을 확대·축소해 둔 것도 맞춰서
+  function textBox(el) {
+    const er = el.getBoundingClientRect();
+    const ratio = (er.width / (el.offsetWidth || er.width)) || 1;
+    let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+    const w = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, { acceptNode: n => (n.nodeValue.trim() && !isOurs(n) && !n.parentElement.closest("rt,rp,script,style")) ? 1 : 3 });
+    const rg = document.createRange();
+    let n; while ((n = w.nextNode())) {
+      rg.selectNodeContents(n);
+      for (const r of rg.getClientRects()) { if (r.width < 0.5) continue; x0 = Math.min(x0, r.left); y0 = Math.min(y0, r.top); x1 = Math.max(x1, r.right); y1 = Math.max(y1, r.bottom); }
+    }
+    if (x1 < x0) return null;
+    return { l: (x0 - er.left) / ratio - el.clientLeft, t: (y0 - er.top) / ratio - el.clientTop, w: (x1 - x0) / ratio, h: (y1 - y0) / ratio };
   }
 
   function show(el, s) {
@@ -72,9 +87,11 @@
       el.appendChild(o);
     }
     const cs = getComputedStyle(el), fe = getComputedStyle(firstTextEl(el));
+    const bx = textBox(el) || { l: 0, t: 0, w: el.clientWidth, h: el.clientHeight };
+    s.size = el.clientWidth + "x" + el.clientHeight;
     Object.assign(o.style, {
-      left: "0px", top: "0px", width: el.clientWidth + "px", height: el.clientHeight + "px",
-      padding: cs.padding, textAlign: cs.textAlign, writingMode: cs.writingMode,
+      left: bx.l + "px", top: bx.t + "px", width: Math.max(bx.w, 8) + "px", height: "auto", padding: "0",
+      textAlign: cs.textAlign, writingMode: cs.writingMode,
       fontFamily: fe.fontFamily + ', "Malgun Gothic", "Apple SD Gothic Neo", sans-serif',
       fontSize: fe.fontSize, fontWeight: fe.fontWeight, fontStyle: fe.fontStyle, lineHeight: fe.lineHeight,
       letterSpacing: "normal", color: fe.color, textShadow: fe.textShadow,
@@ -82,8 +99,18 @@
     });
     o.textContent = s.ko;
     el.classList.add("__trh");
-    let fsz = parseFloat(fe.fontSize) || 16, k = 0;          // 한국어가 길어 넘치면 조금씩 줄임
-    while (k++ < 8 && el.clientHeight > 0 && o.scrollHeight > el.clientHeight * 1.04 && fsz > 9) { fsz *= 0.92; o.style.fontSize = fsz + "px"; }
+    // 원문이 차지했던 줄 수 안에 들어가게: 넘치면 먼저 옆으로 조금 넓혀 보고, 그래도 넘치면 글자를 조금씩 줄임 (원래의 55%까지)
+    const f0 = parseFloat(fe.fontSize) || 16;
+    const lh0 = parseFloat(fe.lineHeight) || f0 * 1.4;
+    const budget = Math.max(1, Math.round(bx.h / lh0)) * lh0 * 1.05;
+    if (o.offsetHeight > budget) {
+      const avail = Math.max(bx.w, el.clientWidth - bx.l);
+      o.style.width = Math.min(avail, bx.w * 1.25) + "px";
+    }
+    let fsz = f0, k = 0;
+    while (k++ < 12 && o.offsetHeight > budget && fsz > f0 * 0.55) {
+      fsz *= 0.93; o.style.fontSize = fsz + "px"; o.style.lineHeight = (lh0 * fsz / f0) + "px";
+    }
   }
 
   function hide(el, s) {
@@ -170,7 +197,7 @@
     mo.observe(document.body, { childList: true, subtree: true, characterData: true });
     scan(document.body);
     bar();
-    setInterval(() => { for (const [el, s] of st) { if (!el.isConnected) { st.delete(el); continue; } if (s.ov && s.ko && on) { if (s.ov.style.width !== el.clientWidth + "px" || s.ov.style.height !== el.clientHeight + "px") show(el, s); } } }, 500);
+    setInterval(() => { for (const [el, s] of st) { if (!el.isConnected) { st.delete(el); continue; } if (s.ov && s.ko && on && s.size !== el.clientWidth + "x" + el.clientHeight) show(el, s); } }, 500);
   }
   start();
 })();

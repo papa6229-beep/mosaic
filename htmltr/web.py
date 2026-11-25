@@ -91,31 +91,216 @@ def _save_cache(gid):
         os.replace(p + ".new", p)
 
 
+# ---- 문장 단위로 나누고 맞춰 보기 (화면 글자와 대본 글자는 꾸밈 기호가 달라서, 글자·숫자만 남겨 비교) ----
+_END = "。！？!?…"
+_OPEN, _CLOSE = "「『（(【〈《", "」』）)】〉》"
+_KEEP = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uff10-\uff19\uff21-\uff3a\uff41-\uff5a\uff66-\uff9f0-9A-Za-z]")
+JPC = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uff66-\uff9f]")
+
+
+def norm(s):
+    return "".join(_KEEP.findall(s or ""))
+
+
+def sentences(text):
+    """문장으로 나눔 (괄호 「」 안에서는 안 나눔). 줄바꿈은 화면 줄바꿈일 뿐이라 이어 붙임"""
+    text = re.sub(r"\s*\n\s*", "", text or "").strip()
+    out, cur, depth = [], "", 0
+    for i, ch in enumerate(text):
+        cur += ch
+        if ch in _OPEN:
+            depth += 1
+        elif ch in _CLOSE:
+            depth = max(0, depth - 1)
+            if depth == 0:
+                out.append(cur); cur = ""
+        elif ch in _END and depth == 0:
+            nxt = text[i + 1] if i + 1 < len(text) else ""
+            if nxt not in _END and nxt not in _CLOSE:
+                out.append(cur); cur = ""
+    if cur.strip():
+        out.append(cur)
+    return [x.strip() for x in out if x.strip()]
+
+
+urgent = {"n": 0}
+
+
+def _tr_batch(sents, ctx):
+    """문장 여러 개 → 한국어 (번호 붙여 한 번에)"""
+    t_ = _translator()
+    u = ""
+    if ctx:
+        u += "Earlier lines (context only, do not translate):\n" + "\n".join(f"- {a} → {b}" for a, b in ctx[-6:]) + "\n\n"
+    u += "Translate:\n" + "\n".join(f"{i + 1}. {t}" for i, t in enumerate(sents))
+    with tr_lock:
+        t0 = time.time()
+        txt = t_.chat([{"role": "system", "content": SYSTEM}, {"role": "user", "content": u}],
+                      sum(len(t) for t in sents) * 3 + 64 * len(sents))
+        print(f"  번역 {len(sents)}문장 {time.time() - t0:.1f}초", flush=True)
+    got = {}
+    for line in txt.splitlines():
+        m = re.match(r"\s*(\d+)[.)]\s*(.*)", line)
+        if m and 1 <= int(m.group(1)) <= len(sents):
+            got[int(m.group(1)) - 1] = m.group(2).strip()
+    return [got.get(i, "") for i in range(len(sents))]
+
+
 def translate(gid, items, ctx):
-    """일본어 여러 조각 → 한국어 (한 번 번역한 건 기억해 두고 바로 돌려줌)"""
+    """화면 글자 여러 덩어리 → 한국어. 문장마다 미리 번역해 둔 게 있으면 바로, 없는 문장만 번역"""
     c = _cache(gid)
-    todo = [t for t in dict.fromkeys(items) if t not in c]
-    if todo:
-        t_ = _translator()
-        for k in range(0, len(todo), 12):
-            part = todo[k:k + 12]
-            u = ""
-            if ctx:
-                u += "Earlier lines (context only, do not translate):\n" + "\n".join(f"- {a} → {b}" for a, b in ctx[-8:]) + "\n\n"
-            u += "Translate:\n" + "\n".join(f"{i + 1}. {t.replace(chr(10), ' ')}" for i, t in enumerate(part))
-            with tr_lock:
-                txt = t_.chat([{"role": "system", "content": SYSTEM}, {"role": "user", "content": u}],
-                              sum(len(t) for t in part) * 3 + 64 * len(part))
-            got = {}
-            for line in txt.splitlines():
-                m = re.match(r"\s*(\d+)[.)]\s*(.*)", line)
-                if m and 1 <= int(m.group(1)) <= len(part):
-                    got[int(m.group(1)) - 1] = m.group(2).strip()
-            for i, t in enumerate(part):
-                if got.get(i):
-                    c[t] = got[i]
+    per = []
+    miss = []
+    for it in items:
+        ss = sentences(it) or [it]
+        per.append(ss)
+        for s_ in ss:
+            k = norm(s_)
+            if k and JPC.search(s_) and k not in c and s_ not in miss:
+                miss.append(s_)
+    if miss:
+        urgent["n"] += 1
+        try:
+            for k0 in range(0, len(miss), 10):
+                part = miss[k0:k0 + 10]
+                for s_, ko in zip(part, _tr_batch(part, ctx)):
+                    if ko:
+                        c[norm(s_)] = ko
+        finally:
+            urgent["n"] -= 1
         _save_cache(gid)
-    return [c.get(t, "") for t in items]
+    out = []
+    for it, ss in zip(items, per):
+        ko = [c.get(norm(s_), s_ if not JPC.search(s_) else "") for s_ in ss]
+        out.append(" ".join(k for k in ko if k))
+    return out
+
+
+# ---- 미리 번역: 실행기 폴더의 대본 파일에서 일본어 문장을 모두 뽑아 차례로 번역해 둠 (화면에 뜨면 바로 나오게) ----
+TEXT_EXT = (".ks", ".txt", ".json", ".js", ".csv", ".tsv", ".xml", ".ini", ".tjs", ".scn", ".yaml", ".yml", ".html", ".htm", ".rpy", ".lua", ".dat")
+pre = {}                                                   # gid → {"total", "done", "running"}
+
+
+def _read_text(p):
+    b = open(p, "rb").read()
+    for enc in ("utf-8-sig", "cp932", "utf-16"):
+        try:
+            s = b.decode(enc)
+            if enc == "utf-16" and not b[:2] in (b"\xff\xfe", b"\xfe\xff"):
+                continue
+            return s
+        except UnicodeDecodeError:
+            continue
+    return b.decode("utf-8", "ignore")
+
+
+_TAG = re.compile(r"\[(?:r|br|l|p|cm|er|wt|wait[^\]]*|ruby[^\]]*)\]|<br\s*/?>|\\[nr]", re.I)
+_CODE = re.compile(r"\[[^\]\n]*\]|<[^>\n]*>|\\[A-Za-z]+\[[^\]]*\]|\\[A-Za-z{}|.!<>^$]|\{[^}\n]*\}")
+_RUN = re.compile(r"[^\x00-\x1f\"'`<>\[\]{}=;\\|/]+")
+
+
+def extract(dirp, limit=80000):
+    """폴더 안 대본 파일들 → 일본어 문장 목록 (파일·줄 순서대로)"""
+    out, seen = [], set()
+    files = []
+    for root, ds, fs in os.walk(dirp):
+        ds[:] = sorted(d for d in ds if d.lower() not in ("node_modules", ".git", "save", "saves"))
+        for f in sorted(fs):
+            if f.lower().endswith(TEXT_EXT):
+                p = os.path.join(root, f)
+                try:
+                    if os.path.getsize(p) < 30 * 1024 ** 2:
+                        files.append(p)
+                except OSError:
+                    pass
+    for p in files:
+        try:
+            s = _read_text(p)
+        except Exception:
+            continue
+        if not JPC.search(s):
+            continue
+        unit, units = "", []
+        for line in s.splitlines():
+            st_ = line.strip()
+            if not st_ or st_[0] in ";@*" or st_.startswith("//"):
+                if unit:
+                    units.append(unit); unit = ""
+                continue
+            if st_.startswith("#"):                          # 말하는 사람 이름 줄 (#이름)
+                if unit:
+                    units.append(unit); unit = ""
+                if JPC.search(st_[1:]):
+                    units.append(st_[1:].strip())
+                continue
+            raw = _CODE.sub("\x00", _TAG.sub("", st_))
+            runs = [r_.strip() for r_ in _RUN.findall(raw.replace("\x00", "|")) if JPC.search(r_)]
+            pure = len(runs) == 1 and len(runs[0]) >= len(raw.replace("\x00", "").strip()) * 0.9
+            if not runs:
+                if unit:
+                    units.append(unit); unit = ""
+                continue
+            if pure and unit and unit[-1] not in _END + _CLOSE:
+                unit += runs[0]                               # 대본 한 문장이 여러 줄에 걸친 것
+                continue
+            if unit:
+                units.append(unit); unit = ""
+            if pure:
+                unit = runs[0]
+            else:
+                units += runs
+        if unit:
+            units.append(unit)
+        for u_ in units:
+            for s_ in sentences(u_):
+                k = norm(s_)
+                if k and JPC.search(s_) and k not in seen and len(s_) <= 300:
+                    seen.add(k); out.append(s_)
+                    if len(out) >= limit:
+                        return out
+    return out
+
+
+def pretranslate(gid):
+    g = games.get(gid)
+    if not g or pre.get(gid, {}).get("running"):
+        return
+    pre[gid] = {"total": 0, "done": 0, "running": True}
+    try:
+        sents = extract(g["dir"])
+        c = _cache(gid)
+        todo = [s_ for s_ in sents if norm(s_) not in c]
+        pre[gid].update(total=len(sents), done=len(sents) - len(todo))
+        print(f"미리 번역: 대본에서 {len(sents)}문장, 남은 {len(todo)}문장", flush=True)
+        ctx = []
+        for k0 in range(0, len(todo), 10):
+            while urgent["n"] > 0 or setup["running"]:       # 화면에 지금 뜬 대사가 먼저
+                time.sleep(0.2)
+            part = todo[k0:k0 + 10]
+            try:
+                kos = _tr_batch(part, ctx)
+            except Exception as e:
+                print("미리 번역 오류:", e)
+                time.sleep(5)
+                continue
+            for s_, ko in zip(part, kos):
+                if ko:
+                    c[norm(s_)] = ko
+                    ctx.append((s_, ko))
+            ctx = ctx[-6:]
+            pre[gid]["done"] += len(part)
+            if (k0 // 10) % 5 == 0:
+                _save_cache(gid)
+        _save_cache(gid)
+    except Exception:
+        traceback.print_exc()
+    finally:
+        pre[gid]["running"] = False
+
+
+@app.get("/__pre/<gid>")
+def pre_state(gid):
+    return jsonify(pre.get(gid) or {})
 
 
 @app.post("/__tr/<gid>")
@@ -164,12 +349,13 @@ def open_game():
     if not os.path.isfile(p):
         return jsonify(error="그 파일을 못 찾았어요"), 400
     gid = _register(p)
+    threading.Thread(target=pretranslate, args=(gid,), daemon=True).start()
     return jsonify(gid=gid, url=f"/g/{gid}/" + games[gid]["entry"])
 
 
 @app.get("/games")
 def game_list():
-    out = [dict(gid=k, url=f"/g/{k}/" + v["entry"], n=len(_cache(k)), **v) for k, v in games.items() if os.path.isdir(v["dir"])]
+    out = [dict(gid=k, url=f"/g/{k}/" + v["entry"], n=len(_cache(k)), pre=pre.get(k) or {}, **v) for k, v in games.items() if os.path.isdir(v["dir"])]
     return jsonify(sorted(out, key=lambda x: -x["t"]))
 
 
@@ -188,6 +374,9 @@ def serve(gid, sub):
     g = games.get(gid)
     if not g:
         abort(404)
+    if gid not in pre:                                     # 목록에서 다시 연 것도 미리 번역 이어서
+        pre[gid] = {"running": False}
+        threading.Thread(target=pretranslate, args=(gid,), daemon=True).start()
     root = os.path.realpath(g["dir"])
     p = os.path.realpath(os.path.join(root, *sub.split("/")))
     if not (p == root or p.startswith(root + os.sep)) or not os.path.isfile(p):
