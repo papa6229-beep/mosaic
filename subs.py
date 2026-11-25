@@ -710,6 +710,23 @@ def _find_server(*dirs):
     return None
 
 
+def _kill_orphans():
+    """예전에 켰다가 검은 창을 닫으며 남겨진 번역 프로그램(llama-server)을 정리 — 주인(파이썬)이 없는데 그래픽카드 메모리만 붙잡고 있는 것들"""
+    if os.name != "nt":
+        return
+    ps = ("Get-CimInstance Win32_Process -Filter \"name='llama-server.exe'\" | "
+          "Where-Object { -not (Get-Process -Id $_.ParentProcessId -ErrorAction SilentlyContinue) } | "
+          "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue; $_.ProcessId }")
+    try:
+        out = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True, timeout=60,
+                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout.split()
+        if out:
+            print(f"남아 있던 번역 프로그램 {len(out)}개를 정리했어요 (그래픽카드 메모리 비움)")
+            time.sleep(2)
+    except Exception as e:
+        print("남은 번역 프로그램 정리 실패:", e)
+
+
 class Translator:
     """llama-server를 띄워 두고 한 줄씩 번역"""
 
@@ -731,6 +748,7 @@ class Translator:
 
     def _start(self, exe, gguf):
         flags = 0x08000000 if os.name == "nt" else 0          # 윈도우에서 검은 창이 따로 안 뜨게
+        _kill_orphans()
         logp = os.path.join(TR_DIR, "server.log")
         self.log = open(logp, "w", encoding="utf-8", errors="ignore") if os.path.isdir(TR_DIR) else subprocess.DEVNULL
         import models
