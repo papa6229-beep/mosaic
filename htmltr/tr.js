@@ -6,7 +6,9 @@
   if (!GID) return;
   const JP = /[぀-ヿ㐀-鿿ｦ-ﾟ]/;          // 히라가나·가타카나·한자
   const KANA = /[぀-ヿｦ-ﾟ]/;
-  const SKIP = new Set(["SCRIPT", "STYLE", "NOSCRIPT", "TEXTAREA", "INPUT", "SELECT", "OPTION", "RT", "RP", "TITLE", "CODE", "PRE"]);
+  const SKIP = new Set(["SCRIPT", "STYLE", "NOSCRIPT", "TEXTAREA", "INPUT", "SELECT", "OPTION", "RT", "RP", "TITLE", "CODE", "PRE", "TEMPLATE", "XMP", "SVG", "CANVAS", "IFRAME"]);
+  const MAXLEN = 1500;                   // 화면 대사는 길어야 몇백 자. 이보다 긴 글자 덩어리(숨겨 둔 대본 등)는 아예 안 봄
+  const okText = n => n.nodeValue.length <= MAXLEN && JP.test(n.nodeValue);
   const WAIT = 280;                      // 글자가 한 자씩 찍히는 동안은 기다렸다가, 멈추면 번역
   const st = new Map();                  // 글자 상자 → 상태
   const ctx = [];                        // 앞 대사 (말투·이름 맞추기용)
@@ -37,7 +39,7 @@
     const p = e.parentElement;
     if (p && p !== document.body && p.children.length > 1 && p.children.length <= 12 && !inlineish(p)) {
       const kids = [...p.children];
-      const textKids = kids.filter(k => JP.test(textOf(k)));
+      const textKids = kids.filter(k => (k.textContent || "").length <= MAXLEN * 2 && JP.test(textOf(k)));
       const avg = textKids.reduce((a, k) => a + textOf(k).length, 0) / Math.max(1, textKids.length);
       if (textKids.length > 1 && avg >= 8 && kids.every(k => !k.querySelector("img,canvas,video,button,input") && (k.children.length < 200))) return p;
     }
@@ -48,7 +50,8 @@
   function textOf(el) {
     let s = "";
     const walk = n => {
-      if (n.nodeType === 3) { s += n.nodeValue; return; }
+      if (s.length > MAXLEN * 2) return;
+      if (n.nodeType === 3) { if (n.nodeValue.length <= MAXLEN) s += n.nodeValue; return; }
       if (n.nodeType !== 1 || SKIP.has(n.tagName) || (n.classList && n.classList.contains("__tro"))) return;
       if (n.tagName === "BR") { s += "\n"; return; }
       for (const c of n.childNodes) walk(c);
@@ -169,7 +172,7 @@
     for (const n of todoNodes) {
       todoNodes.delete(n);
       const pe = n.parentElement;
-      if (!pe || !n.isConnected || SKIP.has(pe.tagName) || isOurs(n) || !JP.test(n.nodeValue)) continue;
+      if (!pe || !n.isConnected || SKIP.has(pe.tagName) || !okText(n) || isOurs(n)) continue;
       let b = boxMemo.get(pe);
       if (!b || !b.isConnected) { b = boxOf(n); boxMemo.set(pe, b); }
       touch(b);
@@ -182,7 +185,7 @@
     if (root.nodeType === 3) { queueNode(root); return; }
     if (root.nodeType !== 1 || SKIP.has(root.tagName)) return;
     const w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-    let n; while ((n = w.nextNode())) if (JP.test(n.nodeValue)) queueNode(n);
+    let n, k = 0; while ((n = w.nextNode()) && k < 3000) if (okText(n)) { queueNode(n); k++; }
   }
 
   const io = new IntersectionObserver(es => { for (const e of es) if (e.isIntersecting && st.has(e.target)) touch(e.target); });   // 화면에 나타나면 그때 번역
