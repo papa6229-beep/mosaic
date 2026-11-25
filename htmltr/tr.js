@@ -142,8 +142,9 @@
   async function settle(el) {
     const s = st.get(el); if (!s) return;
     if (!el.isConnected) { st.delete(el); return; }
-    if (!visible(el)) { hide(el, s); s.src = ""; s.ko = ""; return; }
     const src = textOf(el);
+    if (src && src === s.src && s.ko) { if (on) show(el, s); return; }   // 같은 대사면 번역 그대로 (다시 붙이기만)
+    if (!visible(el)) return;
     if (!src || !JP.test(src)) { hide(el, s); s.src = ""; return; }
     if (src === s.src && s.ko) { if (on) show(el, s); return; }
     s.src = src; s.ko = "";
@@ -177,7 +178,7 @@
   function touch(el) {
     let s = st.get(el);
     if (!s) { s = { src: "", ko: "", ov: null, t: null }; st.set(el, s); try { io.observe(el); } catch (e) {} }
-    if (s.ov && textOf(el) !== s.src) { hide(el, s); }   // 새 대사가 찍히기 시작하면 이전 번역은 바로 치움
+    if (s.ov) { const now = textOf(el); if (now && now !== s.src && JP.test(now)) hide(el, s); }   // 다른 일본어 대사가 찍히기 시작할 때만 이전 번역을 치움
     clearTimeout(s.t); s.t = setTimeout(() => settle(el), WAIT);
   }
 
@@ -217,13 +218,23 @@
     return cs.visibility !== "hidden" && cs.display !== "none" && parseFloat(cs.opacity || "1") > 0.05;
   }
 
+  let el_keep = 0;
   const mo = new MutationObserver(ms => {
     for (const m of ms) {
       if (isOurs(m.target)) continue;
       if (m.type === "characterData") { scan(m.target); continue; }
       for (const n of m.addedNodes) scan(n);
       if (m.removedNodes.length) {                        // 글자가 지워졌으면 (다음 장) 그 상자 다시 보기
-        for (let e = m.target; e && e !== document.body; e = e.parentElement) if (st.has(e)) { touch(e); break; }
+        for (let e = m.target; e && e !== document.body; e = e.parentElement) if (st.has(e)) {
+          const s = st.get(e);
+          if (on && s.ko && textOf(e) === s.src) { show(e, s); el_keep++; }   // 실행기가 같은 대사를 다시 그리며 한국어를 지웠으면 바로 다시 붙임
+          else touch(e);
+          break;
+        }
+      }
+      if (m.type === "attributes" && st.has(m.target)) {   // 실행기가 대사창 class 를 바꿔 우리 표시가 빠졌으면 다시
+        const s = st.get(m.target);
+        if (on && s.ko && !m.target.classList.contains("__trh") && textOf(m.target) === s.src) m.target.classList.add("__trh");
       }
     }
   });
@@ -243,10 +254,18 @@
 
   function start() {
     if (!document.body) { setTimeout(start, 50); return; }
-    mo.observe(document.body, { childList: true, subtree: true, characterData: true });
+    mo.observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ["class"] });
     scan(document.body);
     bar();
-    setInterval(() => { for (const [el, s] of st) { if (!el.isConnected) { st.delete(el); continue; } if (s.ov && s.ko && on && s.size !== el.clientWidth + "x" + el.clientHeight) show(el, s); } }, 500);
+    setInterval(() => {                                   // 실행기가 대사창을 다시 그리며 한국어를 지워 버려도, 같은 대사면 다시 붙임
+      for (const [el, s] of st) {
+        if (!el.isConnected) { st.delete(el); continue; }
+        if (!on || !s.ko) continue;
+        if (!s.ov || !s.ov.isConnected || !el.classList.contains("__trh") || s.size !== el.clientWidth + "x" + el.clientHeight) {
+          if (textOf(el) === s.src) show(el, s);
+        }
+      }
+    }, 300);
   }
   start();
 })();
