@@ -189,6 +189,15 @@ class Translator:
             exe, gguf = ensure_translator(job)
         self.url = f"http://127.0.0.1:{LLAMA_PORT}"
         _log(job, "번역 모델 띄우는 중")
+        try:                                               # 그래픽카드 메모리가 이미 차 있으면 번역 모델이 못 올라가고 CPU로 돎
+            smi = shutil.which("nvidia-smi") or os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "System32", "nvidia-smi.exe")
+            free = int(subprocess.run([smi, "--query-gpu=memory.free", "--format=csv,noheader,nounits"], capture_output=True,
+                                      text=True, timeout=15).stdout.split()[0])
+            if free < 6000:
+                print(f"[알림] 그래픽카드 메모리가 {free}MB밖에 안 남았어요. 이미지 번역기·모자이크 생성기 같은 다른 프로그램을 끄고 다시 켜 주세요.")
+                _log(job, "그래픽카드 메모리 부족 — 다른 프로그램(이미지 번역기 등)을 끄고 다시 켜 주세요")
+        except Exception:
+            pass
         try:
             self._start(exe, gguf)
         except RuntimeError:
