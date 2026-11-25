@@ -598,12 +598,14 @@ def layout(b, ko, st):
     W, H = b["x1"] - b["x0"], b["y1"] - b["y0"]
     tmp = ImageDraw.Draw(Image.new("L", (1, 1)))
     base = b["fs"]                                          # 원래 글자 크기
+    nl = max(1, len([l for l in b["lines"] if not l.get("tail")]))   # 원래 줄 수: 되도록 그 줄 수 그대로 (줄이 늘면 자리 밖으로 넘침)
     for s in np.linspace(base, base * 0.35, 25):
+        keep = s > base * 0.45                              # 많이 작아지기 전까지는 줄 수를 늘리지 않음
         f = _font(s, st["weight"], st.get("font"))[0]
         if not b["vert"]:
             lines = _wrap(ko, f, W * 1.02, tmp)
             lh = s * 1.22
-            if len(lines) * lh <= H * 1.08 or s <= base * 0.36:
+            if (len(lines) * lh <= H * 1.08 and not (keep and len(lines) > nl)) or s <= base * 0.36:
                 y = b["y0"] + (H - len(lines) * lh) / 2 + (lh - s) / 2 - s * 0.12
                 items = []
                 for i, l in enumerate(lines):
@@ -616,7 +618,7 @@ def layout(b, ko, st):
             step = s * 1.08
             per = max(1, int(H // step))
             cols = math.ceil(len(chars) / per)
-            if cols * s * 1.15 <= W * 1.08 or s <= base * 0.36:
+            if (cols * s * 1.15 <= W * 1.08 and not (keep and cols > nl)) or s <= base * 0.36:
                 items = []
                 total_w = cols * s * 1.15
                 xr = b["x0"] + (W + total_w) / 2 - s * 1.15        # 오른쪽 단부터
@@ -963,6 +965,21 @@ def _curve_style(b, clean):
         b["style"]["weight"] = max(b["style"]["weight"], 700)
 
 
+def _fit_box(b, gm):
+    """한글을 넣을 자리 = 실제로 도려낸 글자 자리 (글자 찾기 상자는 잎사귀·뱃지까지 넉넉히 잡힐 때가 있음).
+    한 줄짜리는 글자 크기도 실제 글자 높이(세로줄은 너비)로"""
+    if b.get("curve") or not gm.any():
+        return
+    ys, xs = np.nonzero(gm)
+    x0, y0, x1, y1 = float(xs.min()), float(ys.min()), float(xs.max() + 1), float(ys.max() + 1)
+    if (x1 - x0) * (y1 - y0) < 0.25 * (b["x1"] - b["x0"]) * (b["y1"] - b["y0"]):
+        return                                             # 너무 작게 잡혔으면 (글자를 다 못 찾은 것) 원래 상자 그대로
+    b["x0"], b["y0"], b["x1"], b["y1"] = max(b["x0"], x0), max(b["y0"], y0), min(b["x1"], x1), min(b["y1"], y1)
+    if len([l for l in b["lines"] if not l.get("tail")]) == 1:
+        h = (b["x1"] - b["x0"]) if b["vert"] else (b["y1"] - b["y0"])
+        b["fs"] = min(b["fs"], h / 0.92)
+
+
 def analyze(path):
     """글자 찾기 → 지우기 → 줄마다 글자색 → 덩어리로 묶기 → 덩어리 모양 읽기 → 글자 획만 다시 지우기 (번역 전까지)
     → (원본, 지운 그림, 블록들). 배경을 최대한 살리려고, 마지막엔 글자 상자 전체가 아니라 글자 획(+테두리) 자리만 새로 채움"""
@@ -1058,7 +1075,9 @@ def analyze(path):
             ocs = [c for c in list(st.get("cols") or []) + ([st["outline"]] if st.get("outline") else [])
                    if lc and min(np.linalg.norm(np.array(c, np.float32) - x) for x in lc) > 80] \
                 if (st.get("how") == "outline" or st.get("outline")) else []   # 테두리가 있는 글씨만 (꾸밈 스티커·뱃지는 그대로)
-            ink = np.maximum(ink, glyph_mask(dfill, polys[i], b, dist(ocs) if ocs else None) * 255)
+            gm = glyph_mask(dfill, polys[i], b, dist(ocs) if ocs else None)
+            ink = np.maximum(ink, gm * 255)
+            b["_gm"] = gm
     inb = {id(l) for b in blocks for l in b["lines"]}
     for l in lines:                                        # 번역 안 하는 글씨(영어 등)와 그 둘레는 건드리지 않음
         if id(l) not in inb:
@@ -1069,6 +1088,10 @@ def analyze(path):
             g = max(2, int(l["size"] * 0.5))
             ink[cv2.dilate(km, np.ones((2 * g + 1, 2 * g + 1), np.uint8)) > 0] = 0
     ink[protect > 0] = 0
+    for b in blocks:                                       # 한글 넣을 자리 = 실제로 도려낸 자리
+        gm = b.pop("_gm", None)
+        if gm is not None:
+            _fit_box(b, ((gm > 0) & (ink > 0)).astype(np.uint8))
     for l in lines:                                        # 판·무늬 판 위 글씨: 글자 획 자리만 (판 보호 구역이어도)
         if l.get("soft"):
             ink = np.maximum(ink, cv2.dilate(l["soft"]["mask"] * 255, np.ones((5, 5), np.uint8)))
