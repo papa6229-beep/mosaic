@@ -325,7 +325,9 @@ def lama():
             urllib.request.urlretrieve(LAMA_URL, p + ".part")
             os.replace(p + ".part", p)
         dev = "cuda" if torch.cuda.is_available() else "cpu"
-        m = torch.jit.load(p, map_location=dev)
+        import io
+        with open(p, "rb") as fh:                          # 경로에 한글이 있으면 torch 가 파일을 못 열어서, 파이썬으로 읽어 넘김
+            m = torch.jit.load(io.BytesIO(fh.read()), map_location=dev)
         m.eval()
         _lama = (m, dev)
     return _lama

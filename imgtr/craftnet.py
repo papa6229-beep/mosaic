@@ -80,7 +80,8 @@ def net(cache_dir):
                     f.write(z.read("craft_mlt_25k.pth"))
             os.replace(p + ".part", p)
         dev = "cuda" if torch.cuda.is_available() else "cpu"
-        sd = torch.load(p, map_location=dev, weights_only=False)
+        with open(p, "rb") as fh:                          # 경로에 한글이 있어도 열리게 파이썬으로 읽어 넘김
+            sd = torch.load(io.BytesIO(fh.read()), map_location=dev, weights_only=False)
         sd = OrderedDict((k[7:] if k.startswith("module.") else k, v) for k, v in sd.items())
         m = CRAFT()
         m.load_state_dict(sd)
