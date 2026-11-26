@@ -390,7 +390,7 @@ function draw() {
     mctx.clearRect(0, 0, sw, sh);
     for (const e of one) {
       const a = axesOf(e.A);
-      const fe = e.fe ?? 1, F = Math.min(Math.max(a.ry * (M.params.FEATHER_W ?? 0.5) * fe, 20), (M.params.FEATHER_MAX ?? 150) * fe);
+      const fe = e.fe ?? 1, F = Math.min(Math.max(a.ry * 1.0 * fe, 20), 2000);   // 생성기 새 블러와 같은 번짐 폭 (짧은 반지름의 1배)
       const outer = 1 + F / Math.sqrt(a.rx * a.ry);
       mctx.save(); mctx.translate(e.cx * k, e.cy * k); mctx.rotate(a.ang); mctx.scale(a.rx * k, a.ry * k);
       const g = mctx.createRadialGradient(0, 0, 0, 0, 0, outer);

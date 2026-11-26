@@ -881,7 +881,8 @@ def paint_save(src, ells, polys, dst, job, n, W, H, fps, params, p0=77, p1=99, t
     bounds = [(s_, min(PART, n - s_)) for s_ in range(0, n, PART)]
     paths = [os.path.join(pd, f"part{k:05d}.nut") for k in range(len(bounds))]
     pk = {k: params.get(k) for k in ("SCALE", "BLUR_FRAC", "FEATHER_W", "HAIR", "HAIR_REACH")}   # 그리기에 쓰는 설정 (처음 만들 때와 수정본에서 같은 것만)
-    sig = json.dumps([desc, enc, pk, W, H, n, PART, WARMUP], default=str)
+    import cover2
+    sig = json.dumps([desc, enc, pk, W, H, n, PART, WARMUP, cover2.BLUR_V2, cover2.FEATHER_W2], default=str)   # 블러 방식이 바뀌면 예전 조각을 다시 쓰지 않음
 
     def _j(o):
         return o.tolist() if hasattr(o, "tolist") else str(o)
@@ -1961,25 +1962,28 @@ def review_frame(jid, f):
             if k in ("BLUR_FRAC", "FEATHER_W", "FEATHER_MAX", "FILL_KEEP"):
                 setattr(cover2, k, v)
         W, H = r["W"], r["H"]
-        fsz = W * H * 3
+        if "info" not in c:                           # 저장 때와 똑같이: 원본 형식(YUV) 그대로 풀어서 같은 함수로 블러를 칠함
+            c["info"] = media.probe(r["src"])
+            c["fmt"] = media.compose_fmt(c["info"])
+            c["t0"] = c["info"].get("t0", 0.0)
+            c["table"] = _load_table(d)
+        info, fmt = c["info"], c["fmt"]
+        fsz = media.frame_bytes(fmt, W, H)
         if c["cap"] is None or f != c["pos"] + 1:   # 바로 다음 프레임이 아니면 그 자리부터 다시 풂 (그리기 단계와 같은 방식)
             if c["cap"] is not None:
                 c["cap"].close()
-            if "t0" not in c:
-                c["t0"] = media.probe(r["src"]).get("t0", 0.0)
-                c["table"] = _load_table(d)
-            c["cap"] = Dec(r["src"], f, max(1, r["n"] - f), W, H, r["fps"], t0=c["t0"], table=c["table"])
+            c["cap"] = Dec(r["src"], f, max(1, r["n"] - f), W, H, r["fps"], fmt, fsz, t0=c["t0"], table=c["table"])
         got = c["cap"].read()
         ok = got is not None and got[0] == f
         buf = got[1] if ok else b""
-        frame = np.frombuffer(buf, np.uint8).reshape(H, W, 3).copy() if ok else None
         c["pos"] = f if ok else -1
         if not ok:
             c["cap"] = None
     if not ok:
         return "프레임을 못 읽음", 500
-    P = cover2.Painter()
-    out, _ = P.paint(frame, [tuple(e) for e in ells], c["polys"][f] if f < len(c["polys"]) else [])
+    yf = media.YuvFrame(buf, fmt, W, H, info["matrix"], info["range"])
+    cover2.Painter().paint_yuv(yf, [tuple(e) for e in ells], c["polys"][f] if f < len(c["polys"]) else [])
+    out = yf.bgr(0, 0, W, H)
     ok, buf = cv2.imencode(".jpg", out, [cv2.IMWRITE_JPEG_QUALITY, 85])
     return Response(buf.tobytes(), mimetype="image/jpeg", headers={"Cache-Control": "no-store"})
 
