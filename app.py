@@ -1823,7 +1823,7 @@ def _proxy_job(jid, src, dst, n):
     """브라우저가 바로 못 트는 영상(MXF 등)은 검수용 가벼운 미리보기 영상(소리 포함)을 만듦 (프레임 수·속도는 그대로)"""
     tmp = dst + ".part.mp4"
     try:
-        p = subprocess.Popen([ffmpeg_exe(), "-y", "-loglevel", "error", "-progress", "pipe:1", "-i", src, "-map", "0:v:0",
+        p = subprocess.Popen([ffmpeg_exe(), "-y", "-loglevel", "error", "-progress", "pipe:1", "-hwaccel", "auto", "-i", src, "-map", "0:v:0",
                               "-vf", "scale=-2:540", "-c:v", "libx264", "-preset", "veryfast", "-crf", "26", "-g", "15",
                               "-pix_fmt", "yuv420p"] + _audio_args(src, 0) + [tmp],
                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)

@@ -1174,7 +1174,7 @@ fetch(`/review/${JID}/data`).then(r => r.json()).then(d => {
   const waitProxy = () => fetch(`/review/${JID}/video-status`).then(r => r.json()).then(s => {
     if (s.ready) { startVideo(false); if (s.audio === "pending") { msg("미리보기에 소리를 붙이는 중이에요. 검수는 그대로 하셔도 되고, 끝나면 자동으로 소리가 나와요"); setTimeout(waitAudio, 3000); } return; }
     if (s.pct < 0) return msg("미리보기 영상을 만들지 못했어요", "bad");
-    msg(`이 영상 형식은 브라우저가 바로 못 열어서 검수용 미리보기를 만드는 중 ${s.pct}% (처음 한 번만)`);
+    msg(`검수용 가벼운 미리보기를 만드는 중 ${s.pct}% (처음 한 번만)`);
     setTimeout(waitProxy, 1500);
   });
   waitProxy();
