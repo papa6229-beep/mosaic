@@ -415,6 +415,7 @@ function draw() {
   for (const e of es) {
     const on = isSel(e.sid), primary = sel != null && String(e.sid) === String(sel);
     if (!showOutline) continue;                           // 테두리 끄면 선택한 블러도 테두리·손잡이 안 그림 (잡고 끄는 건 그대로 됨)
+    if (selSet.size && !on) continue;                     // 블러를 고른 동안은 고른 블러의 테두리만 (사라지는·나타나는 점선 등은 안 그림)
     const a = axesOf(e.A);
     octx.save(); octx.translate(ox + e.cx * s, oy + e.cy * s); octx.rotate(a.ang);
     octx.beginPath(); octx.ellipse(0, 0, a.rx * s, a.ry * s, 0, 0, Math.PI * 2);
