@@ -298,13 +298,22 @@ def hair_mask(frame, box, near, faces=()):
 
 
 # ======================= 4. 블러 재료 =======================
+def _small_size(w, h):
+    f = max(1.0, min(h, w) / FILL_RES)
+    return f, max(8, int(w / f)), max(8, int(h / f))
+
+
 def natural_fill(sub, need, sigma, cov):
     h, w = need.shape
-    f = max(1.0, min(h, w) / FILL_RES)
-    sw, sh = max(8, int(w / f)), max(8, int(h / f))
+    f, sw, sh = _small_size(w, h)
     small = cv2.resize(sub, (sw, sh), interpolation=cv2.INTER_AREA)
     nd = cv2.resize(need * 255, (sw, sh), interpolation=cv2.INTER_NEAREST)
     cv_ = cv2.resize((cov > 0.05).astype(np.uint8) * 255, (sw, sh), interpolation=cv2.INTER_NEAREST) > 0
+    return cv2.resize(fill_small(small, nd, cv_, sigma, f), (w, h), interpolation=cv2.INTER_CUBIC)
+
+
+def fill_small(small, nd, cv_, sigma, f):
+    """작은 크기(짧은 변 FILL_RES)에서 블러 재료 계산: 털·검은 곳 메우고 흐리게"""
     lab = cv2.cvtColor(small, cv2.COLOR_BGR2LAB).astype(np.float32)
     L = lab[..., 0]
     Cc = np.hypot(lab[..., 1] - 128, lab[..., 2] - 128)
@@ -323,7 +332,7 @@ def natural_fill(sub, need, sigma, cov):
         small = cv2.stackBlur(small, (k2, k2))
     else:
         small = cv2.GaussianBlur(small, (k, k), s2)
-    return cv2.resize(small, (w, h), interpolation=cv2.INTER_CUBIC)
+    return small
 
 
 # ======================= 5. 프레임 처리 =======================
@@ -972,11 +981,14 @@ class Painter:
         self.akey = None
         self.alpha = None
         self.a3 = None
+        self.fill_s = None
+        self.alpha_c = self.alpha_s = None
 
     def cut_check(self, small):
         """화면이 바뀌면 블러 속 색을 이어 쓰지 않음 (small: 64x36 흑백)"""
         if self.prev_small is not None and np.abs(small - self.prev_small).mean() > CUT_DIFF:
             self.fill = None
+            self.fill_s = None
         self.prev_small = small
 
     def core(self, W, H, ells, polys, get_sub, align=None):
@@ -1045,14 +1057,106 @@ class Painter:
         out[Y0:Y1, X0:X1] = np.clip(cv2.add(sf, cv2.multiply(cv2.subtract(soft, sf), self.a3)), 0, 255).astype(np.uint8)
         return out, (X0, Y0, alpha)
 
-    def paint_yuv(self, yf, ells, polys):
-        """원본 형식(YUV) 프레임에 바로 블러를 섞음. 블러 밖 픽셀은 원본 그대로"""
+    def paint_yuv_old(self, yf, ells, polys):
+        """(예전 방식: 4K면 블러 영역 전체를 큰 크기로 계산 — 비교 시험용)"""
         self.cut_check(yf.small_gray())
         r = self.core(yf.W, yf.H, ells, polys, yf.bgr, align=yf.align)
         if r is None:
             return False
         X0, Y0, X1, Y1, sub, soft, alpha = r
         yf.blend(X0, Y0, soft, alpha)
+        return True
+
+    def paint_yuv(self, yf, ells, polys):
+        """원본 형식(YUV) 프레임에 바로 블러를 섞음. 블러 밖 픽셀은 원본 그대로.
+        블러 재료는 원래도 작은 크기(짧은 변 120)에서 계산하므로, 큰 크기로 키우는 건 맨 마지막 섞을 때 한 번만 함
+        (예전엔 4K 블러 영역 전체를 BGR로 바꾸고·키우고·이전 프레임과 섞고·다시 YUV로 바꾸느라 한 장에 0.1초씩 걸렸음)"""
+        self.cut_check(yf.small_gray())
+        if not ells:
+            self.fill = self.fill_s = None
+            return False
+        W, H = yf.W, yf.H
+        boxes, ws = [], []
+        for e in ells:
+            c, A = np.asarray(e[0], float), np.asarray(e[1], float)
+            ws.append(float(e[2]) if len(e) > 2 else 1.0)
+            r, _ = _axes(A)
+            fe = float(e[5]) if len(e) > 5 and e[5] else 1.0
+            F = float(np.clip(min(r) * FEATHER_W * fe, 20, FEATHER_MAX * fe))
+            boxes.append((c, A, r, F, max(r) + F))
+        X0 = int(max(0, min(c[0] - R for c, _, _, _, R in boxes)))
+        Y0 = int(max(0, min(c[1] - R for c, _, _, _, R in boxes)))
+        X1 = int(min(W, max(c[0] + R for c, _, _, _, R in boxes) + 1))
+        Y1 = int(min(H, max(c[1] + R for c, _, _, _, R in boxes) + 1))
+        if X1 - X0 < 4 or Y1 - Y0 < 4:
+            self.fill_s = None
+            return False
+        X0, Y0, X1, Y1 = yf.align(X0, Y0, X1, Y1)
+        w, h = X1 - X0, Y1 - Y0
+        sx, sy = yf.sx, yf.sy
+        wc, hc = w // sx, h // sy
+        f, sw, sh = _small_size(w, h)
+        key = (X0, Y0, X1, Y1, tuple(np.round(np.concatenate([np.ravel(c) for c, A, _, _, _ in boxes] +
+                                                             [np.ravel(A) * 1e6 for c, A, _, _, _ in boxes] + [np.array(ws), np.array([F for _, _, _, F, _ in boxes])]), 3)))
+        if self.akey != key:
+            # 투명도: 가장자리 번짐(최소 20픽셀)이 8칸 이상 되는 범위에서 줄인 크기로 계산 → 부드럽게 키움
+            q = float(np.clip(min(F for _, _, _, F, _ in boxes) / 8.0, 1.0, 4.0))
+            aw, ah = max(2, int(np.ceil(w / q))), max(2, int(np.ceil(h / q)))
+            xs = (X0 + (np.arange(aw, dtype=np.float32) + 0.5) * (w / aw) - 0.5).astype(np.float32)
+            ys = (Y0 + (np.arange(ah, dtype=np.float32) + 0.5) * (h / ah) - 0.5).astype(np.float32)
+            xx, yy = np.meshgrid(xs, ys)
+            a_ = np.zeros((ah, aw), np.float32)
+            for (c, A, r, F, R), wt in zip(boxes, ws):
+                dx, dy = xx - np.float32(c[0]), yy - np.float32(c[1])
+                qq = A[0, 0] * dx * dx + 2 * A[0, 1] * dx * dy + A[1, 1] * dy * dy
+                rr = np.sqrt(np.maximum(qq, 0))
+                t = np.clip(1 - (rr - 1) * np.sqrt(r[0] * r[1]) / F, 0, 1)
+                a_ = np.maximum(a_, wt * np.where(rr <= 1, 1.0, t * t * (3 - 2 * t)))
+            a_ = a_.astype(np.float32)
+            self.akey = key
+            self.alpha = cv2.resize(a_, (w, h), interpolation=cv2.INTER_LINEAR) if (aw, ah) != (w, h) else a_
+            self.alpha_c = self.alpha if (sx, sy) == (1, 1) else cv2.resize(a_, (wc, hc), interpolation=cv2.INTER_LINEAR)
+            self.alpha_s = cv2.resize(a_, (sw, sh), interpolation=cv2.INTER_AREA)
+        alpha, alpha_c = self.alpha, self.alpha_c
+        # 원본 블러 영역을 바로 작은 크기로 (Y·U·V 각각 줄인 뒤 BGR로)
+        Ys = cv2.resize(yf.Y[Y0:Y1, X0:X1].astype(np.float32), (sw, sh), interpolation=cv2.INTER_AREA)
+        Us = cv2.resize(yf.U[Y0 // sy:Y0 // sy + hc, X0 // sx:X0 // sx + wc].astype(np.float32), (sw, sh), interpolation=cv2.INTER_AREA)
+        Vs = cv2.resize(yf.V[Y0 // sy:Y0 // sy + hc, X0 // sx:X0 // sx + wc].astype(np.float32), (sw, sh), interpolation=cv2.INTER_AREA)
+        fwd, back = yf._mats()
+        small = np.clip(cv2.transform(cv2.merge([Ys, Us, Vs]), back) + 0.5, 0, 255).astype(np.uint8)
+        nd = np.zeros((sh, sw), np.uint8)
+        for p in polys:
+            if p is not None and len(p) >= 3:
+                pp = (np.asarray(p, np.float32) - (X0, Y0)) * (sw / w, sh / h)
+                cv2.fillPoly(nd, [np.round(pp).astype(np.int32)], 255)
+        cv_ = self.alpha_s > 0.05
+        minr = min(min(r) for _, _, r, _, _ in boxes)
+        kmax = max([float(e[4]) if len(e) > 4 and e[4] else 1.0 for e in ells] or [1.0])
+        soft = fill_small(small, nd, cv_, max(15.0, 2 * minr * BLUR_FRAC) * kmax, f).astype(np.float32)
+        fs = getattr(self, "fill_s", None)
+        if fs is not None:                           # 블러 속은 이전 프레임과 섞어 천천히만 바뀜 (작은 크기에서, 위치를 맞춰서)
+            (pX0, pY0, pw, ph), ps = fs
+            psh, psw = ps.shape[:2]
+            ax, ay = (w / sw) * (psw / pw), (h / sh) * (psh / ph)
+            bx = (X0 - pX0 + 0.5 * w / sw) * (psw / pw) - 0.5
+            by = (Y0 - pY0 + 0.5 * h / sh) * (psh / ph) - 0.5
+            M = np.float32([[ax, 0, bx], [0, ay, by]])
+            prev = cv2.warpAffine(ps, M, (sw, sh), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+            ok = cv2.warpAffine(np.ones((psh, psw), np.float32), M, (sw, sh), flags=cv2.INTER_NEAREST, borderValue=0)
+            k3 = (ok * FILL_KEEP)[..., None]
+            soft = soft + (prev - soft) * k3
+        self.fill_s = ((X0, Y0, w, h), soft)
+        yuv = cv2.transform(soft, fwd)
+        ys_, us_, vs_ = cv2.split(yuv)
+        def mix(P, src, a):
+            o = P.astype(np.float32)
+            r_ = cv2.add(o, cv2.multiply(cv2.subtract(src, o), a))
+            np.clip(r_, 0, yf.maxv, out=r_)
+            r_ += 0.5
+            P[...] = r_.astype(P.dtype)
+        mix(yf.Y[Y0:Y1, X0:X1], cv2.resize(ys_, (w, h), interpolation=cv2.INTER_CUBIC), alpha)
+        mix(yf.U[Y0 // sy:Y0 // sy + hc, X0 // sx:X0 // sx + wc], cv2.resize(us_, (wc, hc), interpolation=cv2.INTER_CUBIC), alpha_c)
+        mix(yf.V[Y0 // sy:Y0 // sy + hc, X0 // sx:X0 // sx + wc], cv2.resize(vs_, (wc, hc), interpolation=cv2.INTER_CUBIC), alpha_c)
         return True
 
 
