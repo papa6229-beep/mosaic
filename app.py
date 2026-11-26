@@ -753,7 +753,7 @@ def render(src, boxes_json, dst, job, n, times=None):
             ex = None
     sc = _scan_scale(W, H) if cover2.FAST_SCAN else 1.0
     K = _mem_workers(_cpu_workers(n), int(W / sc), int(H / sc))
-    params = {k: getattr(cover2, k) for k in ("SCALE", "BLUR_FRAC", "FEATHER_W", "HAIR", "HAIR_REACH", "FAST_SCAN")}
+    params = {k: getattr(cover2, k) for k in ("SCALE", "BLUR_FRAC", "FEATHER_W", "HAIR", "HAIR_REACH", "FAST_SCAN", "FAST_SAVE")}
     d = os.path.dirname(dst)
 
     # 1단계: 훑기 (덮을 곳 모으기)
@@ -792,7 +792,7 @@ def render(src, boxes_json, dst, job, n, times=None):
         pass
 
     # 검수 화면에서 다시 쓸 수 있게 저장
-    params_save = {k: getattr(cover2, k) for k in ("SCALE", "BLUR_FRAC", "FEATHER_W", "HAIR", "HAIR_REACH", "FEATHER_MAX", "FILL_KEEP")}
+    params_save = {k: getattr(cover2, k) for k in ("SCALE", "BLUR_FRAC", "FEATHER_W", "HAIR", "HAIR_REACH", "FEATHER_MAX", "FILL_KEEP", "FAST_SAVE")}
     try:
         json.dump(segtab, open(os.path.join(d, "segments.json"), "w"))
         json.dump(polys, open(os.path.join(d, "polys.json"), "w"), separators=(",", ":"))
@@ -817,6 +817,39 @@ def _load_table(d):
         return json.load(open(os.path.join(d, "pts.json")))
     except Exception:
         return None
+
+
+INTRA_CODECS = ("prores", "dnxhd")    # 장면마다 따로 저장되는 형식 (아무 장면에서나 잘라 그대로 복사해도 됨)
+
+
+def _count_frames(p):
+    """영상 장수 (풀지 않고 묶음 수만 셈)"""
+    r = subprocess.run([ffmpeg_exe(), "-hide_banner", "-v", "error", "-i", p, "-map", "0:v:0", "-c", "copy", "-f", "framecrc", "-"],
+                       capture_output=True, text=True)
+    return sum(1 for l in r.stdout.splitlines() if l and not l.startswith("#")) if r.returncode == 0 else -1
+
+
+def _copy_part(src, s, c, table, fps, out, tag=None):
+    """원본의 s번째 장면부터 c장을 다시 압축하지 않고 그대로 복사해 조각 파일로. 장수가 정확히 맞을 때만 True"""
+    t = (table[s] - table[0]) if table and s < len(table) else s / fps
+    try:
+        r = subprocess.run([ffmpeg_exe(), "-y", "-hide_banner", "-loglevel", "error",
+                            *(["-ss", f"{t + 0.25 / fps:.6f}"] if s > 0 else []), "-i", src,
+                            "-map", "0:v:0", "-frames:v", str(c), "-c", "copy", *(["-tag:v", tag] if tag else []), "-f", "nut", out],
+                           capture_output=True)
+        if r.returncode != 0:
+            raise RuntimeError(r.stderr.decode("utf-8", "ignore")[-200:])
+        got = _count_frames(out)                           # 복사한 장수 세기 (풀지 않고 세기만)
+        if got == c:
+            return True
+        raise RuntimeError(f"장수가 안 맞음 ({got} / {c})")
+    except Exception as e:
+        print("원본 그대로 복사 실패 → 다시 압축:", e, flush=True)
+        try:
+            os.remove(out)
+        except OSError:
+            pass
+        return False
 
 
 def paint_save(src, ells, polys, dst, job, n, W, H, fps, params, p0=77, p1=99, times=None, subs=None):
@@ -870,6 +903,23 @@ def paint_save(src, ells, polys, dst, job, n, W, H, fps, params, p0=77, p1=99, t
             pass
     times["parts"] = len(bounds)
     times["reused"] = len(bounds) - len(dirty)
+    if params.get("FAST_SAVE") and (info.get("codec") or "").lower() in INTRA_CODECS and dirty:
+        # 블러 없는 조각은 다시 압축하지 않고 원본을 그대로 복사 (장면마다 따로 저장되는 형식만: 잘라도 화질·장면이 그대로)
+        cues = (subs or {}).get("cues", [])
+        def blank(k):
+            s_, c_ = bounds[k]
+            if any(ells[i] for i in range(s_, min(n, s_ + c_))):
+                return False
+            return not any(c["end"] * fps >= s_ - 1 and c["start"] * fps <= s_ + c_ + 1 for c in cues)
+        cand = [k for k in dirty if blank(k)]
+        copied = []
+        for j, k in enumerate(cand):
+            job["msg"] = f"블러 없는 구간은 원본 그대로 복사 중 {j + 1}/{len(cand)}"
+            if _copy_part(src, *bounds[k], mi["table"], fps, paths[k],
+                          "AVdn" if (info.get("codec") or "").lower() == "dnxhd" else None):   # MXF 의 DNxHD 는 이름표가 비어 있어서 붙여 줌
+                copied.append(k)
+        dirty = [k for k in dirty if k not in copied]
+        times["copied"] = len(copied)
     total = sum(bounds[k][1] for k in dirty)
     K = max(1, min(_mem_workers(_cpu_workers(total), W, H), len(dirty), 6 if genc else 99))   # 그래픽카드 압축은 동시에 쓸 수 있는 개수가 정해져 있어서 6개까지
     KP = K
@@ -989,6 +1039,7 @@ def run_job(jid, src, params):
             cover2.FEATHER_W = float(params.get("feather", cover2.FEATHER_W))
             cover2.HAIR = params.get("hair", "1") == "1"
             cover2.FAST_SCAN = params.get("fast", "0") == "1"
+            cover2.FAST_SAVE = params.get("copy", "0") == "1"
             cover2.HAIR_REACH = float(params.get("reach", cover2.HAIR_REACH))
             ensure_model(job)
             job["hwdec"] = _set_hw(src, job)

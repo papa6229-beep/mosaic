@@ -18,6 +18,7 @@ FEATHER_W = 0.5     # 가장자리 투명해지는 폭 (타원 짧은 반지름 
 FEATHER_MAX = 150   # 번짐 폭 최대 (픽셀)
 BLUR_FRAC = 0.20    # 블러 세기 (타원 짧은 지름 대비)
 HAIR = True         # 음모 찾아서 같이 덮기
+FAST_SAVE = False   # 블러 없는 구간은 원본 그대로 복사(시험): ProRes·DNxHD 원본만
 FAST_SCAN = False   # 빠른 훑기(시험): 4K 등 큰 영상은 1080p 크기로 줄여 훑고, 털 판단 통계(중간값 등)는 그래픽카드로
 HAIR_REACH = 0.8    # 음모 인정 거리 (원본 모자이크 짧은 변 대비)
 REACH_MIN, REACH_MAX = 40, 250   # 음모 인정 거리 최소/최대 (픽셀)
