@@ -1751,8 +1751,7 @@ def review_data(jid):
                                                                     "mode": r.get("mode", "blur")},
                    segments=json.load(open(sg)) if os.path.exists(sg) else {},
                    plan=json.load(open(bp)) if os.path.exists(bp) else [],
-                   edits=json.load(open(ep)) if os.path.exists(ep) else {"segs": {}, "added": []},
-                   mos=_mosaic_hulls(d))
+                   edits=json.load(open(ep)) if os.path.exists(ep) else {"segs": {}, "added": []})
 
 
 def _mosaic_hulls(d):
