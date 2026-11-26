@@ -998,10 +998,10 @@ def paint_save(src, ells, polys, dst, job, n, W, H, fps, params, p0=77, p1=99, t
             vin = ["-i", tmpv]
         else:
             vin = ["-f", "concat", "-safe", "0", "-i", lst]
-        r = subprocess.run([ffmpeg_exe(), "-y", "-loglevel", "error", *vin, "-i", src,
-                            "-map", "0:v", "-map", "1:a?", "-c", "copy",
-                            *(["-r", info["fps_str"]] if out.lower().endswith(".mxf") else []),   # 이어 붙인 영상의 초당 프레임을 MXF에 정확히 적음 (안 적으면 2배로 적혀 길이가 반이 됨)
-                            *media.mux_args(info, out), out], capture_output=True)
+        r = _run_prog([ffmpeg_exe(), "-y", "-loglevel", "error", *vin, "-i", src,
+                       "-map", "0:v", "-map", "1:a?", "-c", "copy",
+                       *(["-r", info["fps_str"]] if out.lower().endswith(".mxf") else []),   # 이어 붙인 영상의 초당 프레임을 MXF에 정확히 적음 (안 적으면 2배로 적혀 길이가 반이 됨)
+                       *media.mux_args(info, out), out], float(n / fr), job, "조각 이어 붙이고 원본 소리 트랙 붙이는 중")
         if r.returncode == 0:
             break
         err = r.stderr.decode("utf-8", "ignore")[-400:]
@@ -1024,6 +1024,24 @@ def paint_save(src, ells, polys, dst, job, n, W, H, fps, params, p0=77, p1=99, t
     except Exception:
         pass
     return [(0, n)], KP
+
+
+def _run_prog(cmd, dur, job, label):
+    """ffmpeg를 돌리면서 몇 % 했는지 화면 글자에 보여 줌 (멈춘 건지 하는 중인지 알 수 있게)"""
+    cmd = cmd[:1] + ["-progress", "pipe:1", "-nostats"] + cmd[1:]
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    import threading
+    err = []
+    th = threading.Thread(target=lambda: err.append(p.stderr.read()), daemon=True); th.start()
+    for ln in p.stdout:
+        if ln.startswith(b"out_time_us=") and dur > 0:
+            try:
+                pc = min(99, int(int(ln.split(b"=")[1]) / 1e6 / dur * 100))
+                job["msg"] = f"{label} (이 단계 {pc}%)"
+            except ValueError:
+                pass
+    p.wait(); th.join()
+    return subprocess.CompletedProcess(cmd, p.returncode, b"", err[0] if err else b"")
 
 
 def run_job(jid, src, params):
