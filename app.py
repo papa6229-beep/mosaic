@@ -524,6 +524,32 @@ def _cpu_workers(n):
     return max(1, min(cores - 2, 8, n // 60))
 
 
+def _scan_scale(W, H):
+    """빠른 훑기: 이 배만큼 줄이면 1080p 크기 (작은 영상은 1 = 그대로)"""
+    return max(1.0, min(W / 1920, H / 1080)) if W > 2000 else 1.0
+
+
+def _scale_in(entries, ex, k):
+    """원본 크기 좌표(모자이크 상자·윤곽, 노출 상자) → 줄인 크기"""
+    out = []
+    for e in entries:
+        e = list(e)
+        e[1] = [v * k for v in e[1]]
+        if e[2]:
+            e[2] = [[x * k, y * k] for x, y in e[2]]
+        out.append(tuple(e))
+    if ex is not None:
+        ex = {"must": [[v * k for v in b] for b in ex.get("must", [])],
+              "faces": [(c, [v * k for v in b]) for c, b in ex.get("faces", [])]}
+    return out, ex
+
+
+def _scale_out(r, s):
+    """줄인 크기에서 찾은 '덮을 곳' → 원본 크기 좌표"""
+    return {"req": {k: [[x * s, y * s] for x, y in v] for k, v in r["req"].items()},
+            "loose": [[v * s for v in b] for b in r["loose"]], "cut": r["cut"]}
+
+
 def _scan_worker(src, start, count, W, H, fps, mi, table, entries, exps, params, outp, counter, q):
     """1단계(훑기): 이 조각의 프레임마다 '반드시 덮을 곳'을 모아 파일로 저장"""
     _low_priority()
@@ -533,7 +559,10 @@ def _scan_worker(src, start, count, W, H, fps, mi, table, entries, exps, params,
             setattr(cover2, k, v)
         w0 = max(0, start - WARMUP)
         total = start + count - w0
-        dec = Dec(src, w0, total, W, H, fps, t0=mi.get("t0", 0.0), table=table, mi=mi)
+        s = _scan_scale(W, H) if params.get("FAST_SCAN") else 1.0   # 빠른 훑기: 큰 영상은 1080p 크기로 줄여서 훑음
+        W2, H2 = (int(round(W / s / 2)) * 2, int(round(H / s / 2)) * 2) if s > 1 else (W, H)
+        dec = Dec(src, w0, total, W2, H2, fps, t0=mi.get("t0", 0.0), table=table, mi=mi,
+                  vf=f"scale={W2}:{H2}:flags=area" if s > 1 else None)
         A = cover2.Analyzer()
         res = [None] * count
         while True:
@@ -542,8 +571,14 @@ def _scan_worker(src, start, count, W, H, fps, mi, table, entries, exps, params,
                 break
             i, buf, _ = got
             j = i - w0
-            f = np.frombuffer(buf, np.uint8).reshape(H, W, 3)
-            r = A.analyze(f, i, entries[j] if j < len(entries) else [], exps[j] if exps is not None and j < len(exps) else None)
+            f = np.frombuffer(buf, np.uint8).reshape(H2, W2, 3)
+            ent = entries[j] if j < len(entries) else []
+            ex = exps[j] if exps is not None and j < len(exps) else None
+            if s > 1:
+                ent, ex = _scale_in(ent, ex, 1 / s)
+            r = A.analyze(f, i, ent, ex)
+            if s > 1:
+                r = _scale_out(r, s)
             if i >= start:
                 res[i - start] = r
                 with counter.get_lock():
@@ -716,8 +751,9 @@ def render(src, boxes_json, dst, job, n, times=None):
             ex = [ed.get(str(i), {"must": [], "faces": []}) for i in range(n)]
         except Exception:
             ex = None
-    K = _mem_workers(_cpu_workers(n), W, H)
-    params = {k: getattr(cover2, k) for k in ("SCALE", "BLUR_FRAC", "FEATHER_W", "HAIR", "HAIR_REACH")}
+    sc = _scan_scale(W, H) if cover2.FAST_SCAN else 1.0
+    K = _mem_workers(_cpu_workers(n), int(W / sc), int(H / sc))
+    params = {k: getattr(cover2, k) for k in ("SCALE", "BLUR_FRAC", "FEATHER_W", "HAIR", "HAIR_REACH", "FAST_SCAN")}
     d = os.path.dirname(dst)
 
     # 1단계: 훑기 (덮을 곳 모으기)
@@ -952,6 +988,7 @@ def run_job(jid, src, params):
             cover2.BLUR_FRAC = float(params.get("blur", cover2.BLUR_FRAC))
             cover2.FEATHER_W = float(params.get("feather", cover2.FEATHER_W))
             cover2.HAIR = params.get("hair", "1") == "1"
+            cover2.FAST_SCAN = params.get("fast", "0") == "1"
             cover2.HAIR_REACH = float(params.get("reach", cover2.HAIR_REACH))
             ensure_model(job)
             job["hwdec"] = _set_hw(src, job)

@@ -157,6 +157,7 @@
     </details>
 
     <div class="opts">
+      <div class="opt blurOnly" id="o_fast"><div class="t"><b>빠른 훑기 (시험)</b><small>4K 같은 큰 영상을 1080p 크기로 줄여서 훑어요. 훨씬 빠르지만 털 찾는 결과가 조금 달라질 수 있어요</small></div><div class="sw"></div></div>
       <div class="opt on blurOnly" id="o_hair"><div class="t"><b>밖으로 나온 털까지 같이 덮기</b><small>원본 모자이크 밖의 음모를 찾아서 함께 가려요</small></div><div class="sw"></div></div>
       <div class="modes"><div class="t"><b>무엇을 만들까요</b><small id="modeHelp"></small></div>
         <div class="seg" id="mode"><button data-m="both" class="on">블러 + 자막</button><button data-m="blur">블러만</button><button data-m="subs">자막만</button></div></div>
@@ -204,6 +205,8 @@ const post = (u, b) => fetch(u, { method: "POST", headers: { "Content-Type": "ap
 
 // ---------- 옵션 ----------
 $("o_hair").onclick = () => $("o_hair").classList.toggle("on");
+$("o_fast").onclick = () => { $("o_fast").classList.toggle("on"); try { localStorage.setItem("fastScan", $("o_fast").classList.contains("on") ? "1" : "0"); } catch (e) {} };
+try { if (localStorage.getItem("fastScan") === "1") $("o_fast").classList.add("on"); } catch (e) {}
 const MODE_HELP = { both: "블러를 먼저 시작하고, 자막은 메모리가 넉넉하면 같이 · 빠듯하면 블러가 끝난 뒤에 자동으로",
   blur: "블러만 만들어요 (자막은 나중에 자막 화면에서 만들 수도 있어요)", subs: "블러 없이 일본어·영어 대사를 받아 적고 한국어로 번역만 해요" };
 let mode = "both";
@@ -241,6 +244,7 @@ function form() {
   const fd = new FormData();
   ["scale", "blur", "feather", "reach"].forEach(k => fd.append(k, $(k).value));
   fd.append("hair", $("o_hair").classList.contains("on") ? "1" : "0");
+  fd.append("fast", $("o_fast").classList.contains("on") ? "1" : "0");
   fd.append("subs", mode === "both" ? "1" : "0");
   fd.append("mode", mode);
   fd.append("profile", $("profile").value || "");

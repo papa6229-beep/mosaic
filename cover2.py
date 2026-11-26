@@ -18,6 +18,7 @@ FEATHER_W = 0.5     # 가장자리 투명해지는 폭 (타원 짧은 반지름 
 FEATHER_MAX = 150   # 번짐 폭 최대 (픽셀)
 BLUR_FRAC = 0.20    # 블러 세기 (타원 짧은 지름 대비)
 HAIR = True         # 음모 찾아서 같이 덮기
+FAST_SCAN = False   # 빠른 훑기(시험): 4K 등 큰 영상은 1080p 크기로 줄여 훑고, 털 판단 통계(중간값 등)는 그래픽카드로
 HAIR_REACH = 0.8    # 음모 인정 거리 (원본 모자이크 짧은 변 대비)
 REACH_MIN, REACH_MAX = 40, 250   # 음모 인정 거리 최소/최대 (픽셀)
 HAIR_TEX = 2.2      # 음모: 가닥 결이 맨살의 이 배수보다 큼
@@ -183,6 +184,49 @@ def lerp(e1, e2, t):
 
 
 # ======================= 3. 음모 찾기 =======================
+_GPU = {"dev": None, "tried": False}
+
+
+def _gpu():
+    """빠른 훑기에서 쓸 그래픽카드 (없거나 못 쓰면 None → 원래대로 CPU)"""
+    if not _GPU["tried"]:
+        _GPU["tried"] = True
+        try:
+            import torch
+            if torch.cuda.is_available():
+                _GPU["dev"] = torch.device("cuda")
+        except Exception:
+            _GPU["dev"] = None
+    return _GPU["dev"]
+
+
+class _Stats:
+    """털 판단에 쓰는 중간값·백분위를 한 번에 계산 (그래픽카드가 있으면 거기서, 없으면 numpy 와 같은 계산).
+    numpy 의 percentile·median(직선 보간)과 같은 방식"""
+    def __init__(self, dev, **arrs):
+        self.dev = dev
+        if dev is not None:
+            import torch
+            self.t = torch
+            self.a = {k: torch.from_numpy(np.ascontiguousarray(v)).to(dev, non_blocking=True) for k, v in arrs.items()}
+        else:
+            self.a = arrs
+
+    def q(self, name, mask, p):
+        if self.dev is None:
+            return float(np.percentile(self.a[name][self.a[mask] if isinstance(mask, str) else mask], p))
+        t = self.t
+        m = self.a[mask] if isinstance(mask, str) else t.from_numpy(np.ascontiguousarray(mask)).to(self.dev)
+        v = self.a[name][m].double()
+        return float(t.quantile(v, p / 100.0)) if v.numel() < 16_000_000 else float(np.percentile(v.cpu().numpy(), p))
+
+    def mean_lt(self, name, mask, thr):
+        if self.dev is None:
+            return float((self.a[name][self.a[mask] if isinstance(mask, str) else mask] < thr).mean())
+        m = self.a[mask] if isinstance(mask, str) else self.t.from_numpy(np.ascontiguousarray(mask)).to(self.dev)
+        return float((self.a[name][m] < thr).double().mean())
+
+
 def hair_mask(frame, box, near, faces=()):
     """원본 모자이크 주변에서 음모(가닥 결이 많고 살색이 빠진 덩어리)만 찾음. 얼굴 근처는 제외"""
     H, W = frame.shape[:2]
@@ -198,14 +242,17 @@ def hair_mask(frame, box, near, faces=()):
     valid = cv2.erode((L > 25).astype(np.uint8), np.ones((31, 31), np.uint8)) > 0
     if valid.sum() < 100:
         return None, (0, 0)
-    skinL = np.percentile(L[valid], 80)
+    dev = _gpu() if FAST_SCAN else None
+    S0 = _Stats(dev, L=L, valid=valid) if dev is not None else None
+    skinL = S0.q("L", "valid", 80) if S0 else np.percentile(L[valid], 80)
     skin = valid & (L > skinL * 0.85)
     if skin.sum() < 50:
         return None, (0, 0)
-    skinC = np.median(C[skin])
     hp = L - cv2.GaussianBlur(L, (0, 0), 2)
     sd = np.sqrt(np.maximum(cv2.blur(hp * hp, (9, 9)), 0))
-    base = np.median(sd[skin]) + 1e-3
+    S = _Stats(dev, L=L, C=C, sd=sd, skin=skin)
+    skinC = S.q("C", "skin", 50)
+    base = S.q("sd", "skin", 50) + 1e-3
     m = (valid & (L < skinL * 0.8) & (C < skinC * 0.9)).astype(np.uint8)
     m = (cv2.blur(m.astype(np.float32), (15, 15)) > 0.5).astype(np.uint8)
     m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (21, 21)))
@@ -232,10 +279,10 @@ def hair_mask(frame, box, near, faces=()):
         if k == 0 or st[k, cv2.CC_STAT_AREA] < min_area:
             continue
         comp = lab_ == k
-        tx = np.median(sd[comp]) / base                 # 가닥 결 (맨살 대비)
-        cr = np.median(C[comp]) / skinC                 # 색 진하기 (살색 대비)
-        lr = np.median(L[comp]) / skinL                 # 밝기 (살 대비)
-        dk = float((L[comp] < skinL * 0.5).mean())       # 확실히 검은 가닥 비율
+        tx = S.q("sd", comp, 50) / base                 # 가닥 결 (맨살 대비)
+        cr = S.q("C", comp, 50) / skinC                 # 색 진하기 (살색 대비)
+        lr = S.q("L", comp, 50) / skinL                 # 밝기 (살 대비)
+        dk = S.mean_lt("L", comp, skinL * 0.5)          # 확실히 검은 가닥 비율
         # 음모 = 가닥 결이 많고 + 살색이 빠지고 + 검은 가닥이 실제로 있음
         # (레이스·땀·피부결은 결은 있어도 밝고 검은 가닥이 없음 / 다리털은 살색이 남음 / 그림자는 결이 없음)
         # 검은 옷(니트 등)은 결·어두움은 비슷해도 색이 거의 없음(살색의 절반 미만) → 제외
