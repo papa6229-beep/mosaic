@@ -14,7 +14,7 @@ import cv2
 # ---------- 조절 값 ----------
 SCALE = 1.15        # 감싸는 타원을 이만큼 키움
 PAD_PX = 12         # 추가 여유 (픽셀)
-FEATHER_W = 0.5     # 가장자리 투명해지는 폭 (타원 짧은 반지름 대비)
+FEATHER_W = 0.6     # 가장자리 번짐 폭 (타원 짧은 반지름 대비). 새 블러는 크기 제한 없음, 예전 블러는 FEATHER_MAX 까지
 FEATHER_MAX = 150   # 번짐 폭 최대 (픽셀)
 BLUR_FRAC = 0.20    # 블러 세기 (타원 짧은 지름 대비)
 HAIR = True         # 음모 찾아서 같이 덮기
@@ -44,7 +44,6 @@ OVER_AFTER = 30     # 이 프레임 수(1초) 넘게 이어지면 새 키프레�
 FILL_RES = 120      # 블러 재료 계산 크기
 FILL_KEEP = 0.65    # 블러 속 이전 프레임 비율 (클수록 속 색이 천천히 바뀜)
 BLUR_V2 = True      # 새 블러 (방송본부 편집본처럼): 가장자리로 갈수록 '점점 흐려지게'(흐린 그림을 겹치지 않음) + 넓은 번짐 + 블러 속에 바깥 어두움이 덜 묻어남
-FEATHER_W2 = 0.75   # 새 블러의 번짐 폭 (타원 짧은 반지름 대비, 크기 제한 없음)
 CUT_DIFF = 28       # 화면 전환 판단 (작은 화면 밝기 차이)
 
 
@@ -1151,7 +1150,7 @@ class Painter:
             ws.append(float(e[2]) if len(e) > 2 else 1.0)
             r, _ = _axes(A)
             fe = float(e[5]) if len(e) > 5 and e[5] else 1.0
-            F = float(np.clip(min(r) * FEATHER_W2 * fe, 20, 2000)) if BLUR_V2 else float(np.clip(min(r) * FEATHER_W * fe, 20, FEATHER_MAX * fe))
+            F = float(np.clip(min(r) * FEATHER_W * fe, 20, 2000)) if BLUR_V2 else float(np.clip(min(r) * FEATHER_W * fe, 20, FEATHER_MAX * fe))
             boxes.append((c, A, r, F, max(r) + F))
         X0 = int(max(0, min(c[0] - R for c, _, _, _, R in boxes)))
         Y0 = int(max(0, min(c[1] - R for c, _, _, _, R in boxes)))

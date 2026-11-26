@@ -137,7 +137,7 @@ def main():
             c, A = np.asarray(e[0], float), np.asarray(e[1], float)
             Ai = np.linalg.inv(A)
             rr = 1 / np.sqrt(np.linalg.eigvalsh(A))
-            m = 1 + cover2.FEATHER_W2 * rr.min() / rr.max() + 0.25
+            m = 1 + cover2.FEATHER_W * rr.min() / rr.max() + 0.25
             ex, ey = np.sqrt(Ai[0, 0]) * m, np.sqrt(Ai[1, 1]) * m
             xs += [c[0] - ex, c[0] + ex]; ys += [c[1] - ey, c[1] + ey]
         x0, x1 = int(max(0, min(xs))), int(min(W, max(xs)))
@@ -170,7 +170,7 @@ def _ebox(e, cover2):
     c, A = np.asarray(e[0], float), np.asarray(e[1], float)
     Ai = np.linalg.inv(A)
     rr = 1 / np.sqrt(np.linalg.eigvalsh(A))
-    m = 1 + cover2.FEATHER_W2 * rr.min() / rr.max() + 0.25
+    m = 1 + cover2.FEATHER_W * rr.min() / rr.max() + 0.25
     ex, ey = np.sqrt(Ai[0, 0]) * m, np.sqrt(Ai[1, 1]) * m
     return c[0] - ex, c[1] - ey, c[0] + ex, c[1] + ey
 

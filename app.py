@@ -952,7 +952,7 @@ def paint_save(src, ells, polys, dst, job, n, W, H, fps, params, p0=77, p1=99, t
     paths = [os.path.join(pd, f"part{k:05d}" + (".ts" if stream else ".nut")) for k in range(len(bounds))]
     pk = {k: params.get(k) for k in ("SCALE", "BLUR_FRAC", "FEATHER_W", "HAIR", "HAIR_REACH")}   # 그리기에 쓰는 설정 (처음 만들 때와 수정본에서 같은 것만)
     import cover2
-    sig = json.dumps([re.sub(r" \(.*\)$", "", desc), enc, pk, W, H, n, PART, WARMUP, cover2.BLUR_V2, cover2.FEATHER_W2, stream], default=str)   # 블러 방식이 바뀌면 예전 조각을 다시 쓰지 않음
+    sig = json.dumps([re.sub(r" \(.*\)$", "", desc), enc, pk, W, H, n, PART, WARMUP, cover2.BLUR_V2, cover2.FEATHER_W, stream], default=str)   # 블러 방식이 바뀌면 예전 조각을 다시 쓰지 않음
 
     def _j(o):
         return o.tolist() if hasattr(o, "tolist") else str(o)
