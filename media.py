@@ -207,17 +207,27 @@ def gpu_encode_args(info, fmt):
     a = ["-c:v", enc, "-pix_fmt", "yuv420p", "-preset", "p5", "-tune", "hq", "-rc", "vbr", "-spatial-aq", "1",
          "-g", str(gop), "-bf", str(min(bf, 3))]
     a += (["-b:v", str(br), "-maxrate", str(int(br * 1.2)), "-bufsize", str(int(br * 2))] if br else ["-cq", "16", "-b:v", "0"])
-    try:                                                  # 이 크기로 실제로 압축이 되는지 짧게 시험
-        r = subprocess.run([_ff(), "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
-                            f"color=gray:s={info['W']}x{info['H']}:r=30:d=0.5", *a, "-f", "null", "-"], capture_output=True, timeout=60)
-        if r.returncode != 0:
-            GPU_ENC_WHY = "시험 압축 실패: " + r.stderr.decode("utf-8", "ignore").strip().replace("\n", " / ")[-200:]
-            return None
-    except Exception as e:
-        GPU_ENC_WHY = "시험 압축 실패: " + str(e)[:200]
-        return None
-    GPU_ENC_WHY = ""
-    return a
+    # 이 크기로 실제로 압축이 되는지 짧게 시험. 안 되면 설정을 하나씩 덜어 가며 다시 (그래픽카드·드라이버마다 못 받는 설정이 있음)
+    rate = (["-b:v", str(br), "-maxrate", str(int(br * 1.2)), "-bufsize", str(int(br * 2))] if br else ["-cq", "16", "-b:v", "0"])
+    tries = [a,
+             ["-c:v", enc, "-pix_fmt", "yuv420p", "-preset", "p5", "-rc", "vbr", "-g", str(gop), "-bf", "0"] + rate,
+             ["-c:v", enc, "-pix_fmt", "yuv420p", "-preset", "p4"] + (["-b:v", str(br)] if br else ["-cq", "18"])]
+    errs = []
+    for a in tries:
+        try:
+            r = subprocess.run([_ff(), "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
+                                f"color=gray:s={info['W']}x{info['H']}:r=30:d=0.5", *a, "-f", "null", "-"], capture_output=True, timeout=60)
+            if r.returncode == 0:
+                GPU_ENC_WHY = ""
+                return a
+            e = r.stderr.decode("utf-8", "ignore").strip()
+        except Exception as ex:
+            e = str(ex)
+        errs.append(e)
+        print("그래픽카드 압축 시험 실패:", e[:600], flush=True)    # 원인 전체를 검은 창에 (화면에는 앞부분만)
+    first = next((l for l in errs[0].splitlines() if l.strip() and "Terminating thread" not in l), errs[0][:200]) if errs else ""
+    GPU_ENC_WHY = "시험 압축 실패: " + first[:200]
+    return None
 
 
 def _has_encoder(enc):
