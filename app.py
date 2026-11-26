@@ -606,6 +606,7 @@ def _paint_worker(src, runs, count, W, H, fps, params, mi, subs, counter, q):
             import subrender
             ov = subrender.Overlay(subs["cues"], W, H, fps, subs.get("style"))
         made = {}
+        tm = {"read": 0.0, "paint": 0.0, "write": 0.0}         # 어디서 시간이 드는지 (영상 풀기 / 블러 그리기 / 압축에 넘기기)
         for start, cnt, ells, polys, parts in runs:
             w0 = max(0, start - WARMUP)
             dec = Dec(src, w0, start + cnt - w0, W, H, fps, fmt, fsz, t0=mi["t0"], table=mi.get("table"))
@@ -642,7 +643,9 @@ def _paint_worker(src, runs, count, W, H, fps, params, mi, subs, counter, q):
                     finish()
             data = None                                  # 조각마다 정확히 정해진 장수를 순서대로 씀 (혹시 빠지면 앞 프레임으로 채움)
             while st["expect"] < start + cnt:
+                _t = time.time()
                 got = dec.read()
+                tm["read"] += time.time() - _t
                 if got is None:
                     break
                 i, buf, _ = got
@@ -651,24 +654,28 @@ def _paint_worker(src, runs, count, W, H, fps, params, mi, subs, counter, q):
                     continue
                 if i >= start + cnt:
                     break
+                _t = time.time()
                 yf = media.YuvFrame(buf, fmt, W, H, mi["matrix"], mi["range"])
                 changed = P.paint_yuv(yf, ells[j] if j < len(ells) else [], polys[j] if j < len(polys) else [])
                 if ov is not None and i >= start and ov.apply(yf, i):
                     changed = True
+                cur_ = (yf.tobytes() if changed else buf) if i >= start else None
+                tm["paint"] += time.time() - _t
                 if i >= start:
-                    cur_ = yf.tobytes() if changed else buf
+                    _t = time.time()
                     while st["expect"] < i:
                         put(data if data is not None else cur_)
                     put(cur_)
+                    tm["write"] += time.time() - _t
                     data = cur_
             dec.close()
             if data is None:
                 raise RuntimeError(f"{start}번 프레임부터 영상을 읽지 못했어요")
             while st["expect"] < start + cnt:
                 put(data)
-        q.put((0, sum(made.values()), made, None))
+        q.put((0, sum(made.values()), made, tm, None))
     except Exception:
-        q.put((0, 0, {}, traceback.format_exc()[-800:]))
+        q.put((0, 0, {}, {}, traceback.format_exc()[-800:]))
 
 
 def _run_parallel(job, K, n, make_args, target, label, p0=50, p1=99):
@@ -955,8 +962,12 @@ def paint_save(src, ells, polys, dst, job, n, W, H, fps, params, p0=77, p1=99, t
                 groups[w].append(k)
                 acc += bounds[k][1]
             try:
-                _run_parallel(job, K, total, lambda k: (src, runs_of(groups[k]), sum(bounds[i][1] for i in groups[k]), W, H, fps, params, mi, subs),
-                              _paint_worker, label, p0, p1)
+                rs_ = _run_parallel(job, K, total, lambda k: (src, runs_of(groups[k]), sum(bounds[i][1] for i in groups[k]), W, H, fps, params, mi, subs),
+                                    _paint_worker, label, p0, p1)
+                tms = [r[3] for r in rs_ if len(r) > 4 and r[3]]
+                if tms:                                     # 일꾼 평균: 영상 풀기·블러 그리기·압축에 넘기기(압축이 밀리면 여기서 기다림) 각각 몇 초
+                    times["paint_parts"] = {k: round(sum(x[k] for x in tms) / len(tms), 1) for k in ("read", "paint", "write")}
+                    print("  저장 단계 시간 나눔 (일꾼 평균 초):", times["paint_parts"], flush=True)
                 break
             except RuntimeError as e:
                 if not _is_mem_err(e) or K <= 1:
