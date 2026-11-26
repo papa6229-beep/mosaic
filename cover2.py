@@ -987,7 +987,7 @@ class Painter:
     def cut_check(self, small):
         """화면이 바뀌면 블러 속 색을 이어 쓰지 않음 (small: 64x36 흑백)"""
         if self.prev_small is not None and np.abs(small - self.prev_small).mean() > CUT_DIFF:
-            self.fill = None
+            self.fill = "cut" if getattr(self, "subs", None) is not None else None
             self.fill_s = None
         self.prev_small = small
 
@@ -1046,6 +1046,16 @@ class Painter:
         return X0, Y0, X1, Y1, sub, soft, alpha
 
     def paint(self, frame, ells, polys):
+        """블러마다 따로 그려서 겹침 (여러 블러를 한 덩어리로 계산하면 흐림 세기가 가장 작은 블러에 맞춰져 큰 블러가 묽어짐)"""
+        if len(ells) <= 1:
+            return self._paint1(frame, ells, polys)
+        out, last = frame, None
+        for e in ells:
+            out, r = Painter()._paint1(out, [e], polys)
+            last = r or last
+        return out, last
+
+    def _paint1(self, frame, ells, polys):
         H, W = frame.shape[:2]
         self.cut_check(cv2.resize(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), (64, 36), interpolation=cv2.INTER_AREA).astype(np.float32))
         r = self.core(W, H, ells, polys, lambda X0, Y0, X1, Y1: frame[Y0:Y1, X0:X1])
@@ -1068,10 +1078,28 @@ class Painter:
         return True
 
     def paint_yuv(self, yf, ells, polys):
+        """블러마다 따로 그려서 겹침 — 여러 블러를 한 덩어리로 계산하면 흐림 세기가 가장 작은 블러에 맞춰져서,
+        다른 블러가 같이 나오는 동안 큰 블러가 묽어졌음. 블러마다 이전 프레임 기억도 따로 둠"""
+        self.cut_check(yf.small_gray())
+        subs = getattr(self, "subs", None)
+        if subs is None or self.fill == "cut":
+            subs = {}
+        self.fill = None
+        keep, seen = {}, {}
+        changed = False
+        for e in ells:
+            sid = e[3] if len(e) > 3 else None
+            k = (sid, seen.get(sid, 0)); seen[sid] = k[1] + 1
+            sp = subs.get(k) or Painter()
+            changed |= sp._paint_yuv1(yf, [e], polys)
+            keep[k] = sp
+        self.subs = keep
+        return changed
+
+    def _paint_yuv1(self, yf, ells, polys):
         """원본 형식(YUV) 프레임에 바로 블러를 섞음. 블러 밖 픽셀은 원본 그대로.
         블러 재료는 원래도 작은 크기(짧은 변 120)에서 계산하므로, 큰 크기로 키우는 건 맨 마지막 섞을 때 한 번만 함
         (예전엔 4K 블러 영역 전체를 BGR로 바꾸고·키우고·이전 프레임과 섞고·다시 YUV로 바꾸느라 한 장에 0.1초씩 걸렸음)"""
-        self.cut_check(yf.small_gray())
         if not ells:
             self.fill = self.fill_s = None
             return False
