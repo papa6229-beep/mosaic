@@ -80,7 +80,7 @@
       <button id="bPlay" title="재생/멈춤 (스페이스)" style="min-width:70px">▶ 재생</button>
       <button id="bF1f" title="1프레임 앞으로 (→)">1프레임 ▶</button>
       <button id="bF1s" title="1초 앞으로 (Shift+→)">1초 ⏩</button>
-      <select id="speed" title="재생 속도"><option value="0.25">0.25배</option><option value="0.5">0.5배</option><option value="1" selected>1배</option><option value="2">2배</option><option value="3">3배</option><option value="4">4배</option><option value="8">8배</option><option value="16">16배</option></select>
+      <select id="speed" title="재생 속도 (V 느리게 · B 빠르게)"><option value="0.25">0.25배</option><option value="0.5">0.5배</option><option value="1" selected>1배</option><option value="2">2배</option><option value="3">3배</option><option value="4">4배</option><option value="8">8배</option><option value="16">16배</option></select>
       <button id="bMute" title="소리 켜기/끄기 (S)">🔊 소리 켬</button>
       <span class="tc"><b id="tc">0:00:00</b> · 프레임 <span id="fn">0</span> / <span id="fnN">0</span></span>
     </div>
@@ -130,6 +130,7 @@
         <div class="kr"><span class="kk"><kbd>← →</kbd></span><span>1프레임 이동</span></div>
         <div class="kr"><span class="kk"><kbd>Shift</kbd> <i>+</i> <kbd>← →</kbd></span><span>1초 이동</span></div>
         <div class="kr"><span class="kk"><kbd>S</kbd></span><span>소리 켜기 / 끄기</span></div>
+        <div class="kr"><span class="kk"><kbd>V</kbd> <kbd>B</kbd></span><span>재생 느리게 / 빠르게</span></div>
       </div>
       <div class="kg"><div class="kt">보면서 표시 → 나중에 고치기</div>
         <div class="kr"><span class="kk"><kbd>M</kbd></span><span>지금 위치 표시 / 지우기</span></div>
@@ -1125,6 +1126,9 @@ document.addEventListener("keydown", ev => {
     changed(); msg(`크기 ${Math.round(curOff(sel, cur).scale * 100)}%`, "ok");
   }
   else if (K === "s") setMute(!V.muted);
+  else if (K === "v" || K === "b") {               // 재생 속도: V 느리게 · B 빠르게
+    const sp = $("speed"), i = Math.max(0, Math.min(sp.options.length - 1, sp.selectedIndex + (K === "b" ? 1 : -1)));
+    sp.selectedIndex = i; V.playbackRate = +sp.value; msg(`재생 속도 ${sp.options[i].text}`); }
   else if (K === "n") setTool(tool === "draw" ? null : "draw");
   else if (K === "o") $("bOutline").click();
   else if (K === "p") $("bPreview").click();
