@@ -6,7 +6,7 @@ import os, sys, time, subprocess, multiprocessing as mp
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "tools"))
-N = 300          # 점검에 쓰는 프레임 수 (약 10초 분량)
+N = int(os.environ.get("BENCH_N", "300"))          # 점검에 쓰는 프레임 수 (약 10초 분량)
 lines = []
 
 
