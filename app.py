@@ -938,6 +938,13 @@ def run_job(jid, src, params):
             job["msg"] = "앞 영상의 자막이 끝나길 기다리는 중"
             time.sleep(3)
         job["msg"] = "시작하는 중"
+        try:                                           # 다른 번역 프로그램(HTML·이미지 번역기)이 창을 닫고도 남아 그래픽카드를 잡고 있으면 정리
+            k_ = _kill_leftovers(only_orphans=True)
+            if k_:
+                print(f"  남아 있던 번역 프로그램 {k_}개를 정리했어요 (그래픽카드 메모리 비움)")
+                time.sleep(2)
+        except Exception:
+            pass
         os.environ["MOSAIC_FULL"] = "1" if night["on"] else "0"
         try:
             import cover2
@@ -1153,7 +1160,7 @@ def _free_gpu():
         pass
 
 
-def _kill_leftovers():
+def _kill_leftovers(only_orphans=False):
     """생성기 창을 닫아도 남아서 메모리를 잡고 있는 자막 프로그램(받아쓰기·번역 모델)을 끔"""
     try:
         import psutil
@@ -1167,8 +1174,16 @@ def _kill_leftovers():
                 continue
             cmd = " ".join(p.info.get("cmdline") or [])
             name = (p.info.get("name") or "").lower()
+            orphan = False                                 # 주인(검은 창)이 꺼졌는데 혼자 남은 번역 프로그램 (HTML 번역기·이미지 번역기 것 포함)
+            if name.startswith("llama-server"):
+                try:
+                    orphan = not psutil.pid_exists(p.ppid()) or p.ppid() in (0, 4)
+                except Exception:
+                    orphan = False
+            if only_orphans and not orphan:
+                continue
             if ("whisperjav.main" in cmd or "whisperjav" in cmd.lower() and "pass_worker" in cmd) or \
-                    (name.startswith("llama-server") and "8771" in cmd):
+                    (name.startswith("llama-server") and ("8771" in cmd or orphan)):
                 for c in p.children(recursive=True):
                     c.kill()
                 p.kill()
