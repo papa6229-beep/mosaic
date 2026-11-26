@@ -18,9 +18,10 @@
   button.danger{border-color:var(--bad);color:var(--bad)}
   button:disabled{opacity:.4;cursor:default}
   main{display:grid;grid-template-columns:1fr 280px;gap:12px;padding:12px 16px}
+  main>div:first-child{align-self:start;min-width:0}
   @media (max-width:900px){main{grid-template-columns:1fr}}
   #stage{position:relative;background:#000;border-radius:8px;overflow:hidden;line-height:0}
-  #stage video{width:100%;max-height:66vh;display:block;object-fit:contain}
+  #stage video{width:100%;max-height:66vh;display:block;object-fit:contain}   /* 실제 높이는 fitV()가 창 높이에 맞춰 정함 */
   #ov{position:absolute;left:0;top:0;cursor:default;touch-action:none}
   .ctl{display:flex;align-items:center;gap:6px;margin-top:8px;flex-wrap:wrap}
   .ctl .tc{font-variant-numeric:tabular-nums;margin-left:8px;color:var(--sub)}
@@ -32,7 +33,7 @@
   #hsbT{position:absolute;top:2px;bottom:2px;min-width:16px;background:#78716c;border-radius:6px;cursor:grab}
   #hsbT:hover,#hsbT.on{background:var(--acc)}
   #tl{cursor:pointer}
-  .side{background:var(--panel);border-radius:8px;padding:12px;align-self:start}
+  .side{background:var(--panel);border-radius:8px;padding:12px;align-self:start;position:sticky;top:8px;max-height:calc(100vh - 16px);overflow:auto}
   .side h2{font-size:16px;margin:0 0 8px}
   .side .row{display:flex;gap:6px;align-items:center;margin:6px 0;flex-wrap:wrap}
   .side label{color:var(--sub);font-size:14px;min-width:44px}
@@ -321,7 +322,16 @@ function wantExact() {              // 멈춰 있으면 실제 수정본과 똑�
       .catch(() => { exactBusy = false; });
   }, 200);
 }
+let vMaxH = 0, lastTLH = 0;
+function fitV() {                  // 영상 크기를 창 높이에 맞춤: 아래 타임라인(블러 줄 전부)이 스크롤 없이 한 화면에 보이게
+  const col = $("stage").parentElement, cr = col.getBoundingClientRect(), vh = V.getBoundingClientRect().height;
+  const other = cr.height - vh, top = cr.top + scrollY;
+  const mh = Math.max(240, Math.floor(innerHeight - top - other - 14));
+  if (Math.abs(mh - vMaxH) > 2) { vMaxH = mh; V.style.maxHeight = mh + "px"; return true; }
+  return false;
+}
 function fit() {
+  fitV();
   const r = V.getBoundingClientRect();
   OV.width = Math.round(r.width * devicePixelRatio); OV.height = Math.round(r.height * devicePixelRatio);
   OV.style.width = r.width + "px"; OV.style.height = r.height + "px";
@@ -466,6 +476,7 @@ function drawTL() {
   buildRows();
   const h = Math.max(1, rows.length) * ROWH + 18;
   TL.style.height = h + "px"; TL.width = w * dpr; TL.height = h * dpr;
+  if (h !== lastTLH) { lastTLH = h; requestAnimationFrame(() => { if (fitV()) fit(); }); }   // 블러 줄 수가 바뀌면 영상 크기 다시 맞춤
   OVW.width = w * dpr; OVW.height = OVH * dpr;
   // 전체 보기
   wctx.setTransform(dpr, 0, 0, dpr, 0, 0); wctx.clearRect(0, 0, w, OVH);
