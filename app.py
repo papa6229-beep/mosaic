@@ -628,9 +628,14 @@ def _paint_worker(src, runs, count, W, H, fps, params, mi, subs, counter, q):
             def put(b_):
                 if st["out"] is None:
                     path = parts[st["pi"]][3]
+                    if path.endswith(".ts"):              # 이어 붙이기용 조각: 영상 전체 기준 시각을 붙여 두면 파일을 그대로 이어도 됨
+                        ofs = 10 + float(parts[st["pi"]][1] / Fraction(mi["fps_str"]))
+                        cont = ["-output_ts_offset", f"{ofs:.9f}", "-muxdelay", "0", "-muxpreload", "0", "-f", "mpegts"]
+                    else:
+                        cont = ["-f", "nut"]
                     st["out"] = subprocess.Popen([ffmpeg_exe(), "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", fmt,
                                                   "-s", f"{W}x{H}", "-r", mi["fps_str"], *mi["inp"], "-i", "-", *mi["enc"], "-threads", "2",
-                                                  "-f", "nut", path + ".tmp"], stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+                                                  *cont, path + ".tmp"], stdin=subprocess.PIPE, stderr=subprocess.PIPE)
                 try:
                     st["out"].stdin.write(b_)
                 except (BrokenPipeError, OSError):
@@ -859,6 +864,66 @@ def _copy_part(src, s, c, table, fps, out, tag=None):
         return False
 
 
+STREAM_MUX = os.environ.get("MOSAIC_STREAM_MUX", "1") != "0"
+
+
+class _StreamMux:
+    """조각이 만들어지는 대로 순서대로 최종 파일(원본 소리 포함)에 이어 붙임. 블러 그리기와 동시에 진행돼서
+    마지막에 '조각 이어 붙이기'를 따로 오래 기다리지 않음 (4K 20분: 14분 → 마지막 조각 몇 개 분량)"""
+
+    def __init__(self, paths, src, info, out):
+        self.paths, self.out, self.err, self.abort = paths, out, b"", False
+        self.p = subprocess.Popen([ffmpeg_exe(), "-y", "-loglevel", "error", "-f", "mpegts", "-i", "pipe:0", "-i", src,
+                                   "-map", "0:v", "-map", "1:a?", "-c", "copy", *media.mux_args(info, out), out],
+                                  stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+        threading.Thread(target=lambda: setattr(self, "err", self.p.stderr.read()), daemon=True).start()
+        self.t = threading.Thread(target=self._run, daemon=True)
+        self.ok = False
+        self.t.start()
+
+    def _run(self):
+        try:
+            for p in self.paths:
+                while not os.path.exists(p):
+                    if self.abort:
+                        raise RuntimeError("멈춤")
+                    time.sleep(0.3)
+                with open(p, "rb") as f:
+                    while True:
+                        b = f.read(8 << 20)              # 크게 읽어서 하드디스크가 덜 왔다 갔다 하게
+                        if not b:
+                            break
+                        self.p.stdin.write(b)
+            self.p.stdin.close()
+            self.ok = self.p.wait() == 0
+        except Exception as e:
+            self.err = (self.err or b"") + str(e).encode()
+            try:
+                self.p.kill()
+            except Exception:
+                pass
+
+    def stop(self):
+        self.abort = True
+        try:
+            self.p.kill()
+        except Exception:
+            pass
+
+    def finish(self):
+        self.t.join()
+        try:
+            self.p.wait(timeout=600)
+        except Exception:
+            pass
+        if not self.ok:
+            try:
+                os.remove(self.out)
+            except Exception:
+                pass
+        return self.ok, (self.err or b"").decode("utf-8", "ignore")
+
+
 def paint_save(src, ells, polys, dst, job, n, W, H, fps, params, p0=77, p1=99, times=None, subs=None):
     """계획된 블러대로 그려서 원본과 같은 형식으로 저장 (CPU 여러 개로 나눠서) → 원본 소리 트랙 그대로 붙여 하나로.
     실제로 저장한 파일 경로를 times["out_path"]에 남김"""
@@ -879,10 +944,15 @@ def paint_save(src, ells, polys, dst, job, n, W, H, fps, params, p0=77, p1=99, t
     pd = os.path.join(d, "parts")
     os.makedirs(pd, exist_ok=True)
     bounds = [(s_, min(PART, n - s_)) for s_ in range(0, n, PART)]
-    paths = [os.path.join(pd, f"part{k:05d}.nut") for k in range(len(bounds))]
+    base = os.path.splitext(dst)[0]
+    out_main = base + media.out_ext(info)
+    # H.264/H.265 를 MP4·MOV 로 저장할 때: 조각이 만들어지는 대로 바로바로 최종 파일에 이어 붙임 (마지막에 따로 기다리지 않게)
+    stream = STREAM_MUX and (info.get("codec") or "").lower() in ("h264", "hevc") and any(e in enc for e in ("h264_nvenc", "hevc_nvenc", "libx264", "libx265", "h264", "hevc")) \
+        and os.path.splitext(out_main)[1].lower() in (".mp4", ".m4v", ".mov")
+    paths = [os.path.join(pd, f"part{k:05d}" + (".ts" if stream else ".nut")) for k in range(len(bounds))]
     pk = {k: params.get(k) for k in ("SCALE", "BLUR_FRAC", "FEATHER_W", "HAIR", "HAIR_REACH")}   # 그리기에 쓰는 설정 (처음 만들 때와 수정본에서 같은 것만)
     import cover2
-    sig = json.dumps([desc, enc, pk, W, H, n, PART, WARMUP, cover2.BLUR_V2, cover2.FEATHER_W2], default=str)   # 블러 방식이 바뀌면 예전 조각을 다시 쓰지 않음
+    sig = json.dumps([re.sub(r" \(.*\)$", "", desc), enc, pk, W, H, n, PART, WARMUP, cover2.BLUR_V2, cover2.FEATHER_W2, stream], default=str)   # 블러 방식이 바뀌면 예전 조각을 다시 쓰지 않음
 
     def _j(o):
         return o.tolist() if hasattr(o, "tolist") else str(o)
@@ -952,6 +1022,9 @@ def paint_save(src, ells, polys, dst, job, n, W, H, fps, params, p0=77, p1=99, t
             w0 = max(0, s_ - WARMUP)
             out.append((s_, c_, ells[w0:s_ + c_], polys[w0:s_ + c_], [(k, *bounds[k], paths[k]) for k in r_]))
         return out
+    sm = None
+    if stream:
+        sm = _StreamMux(paths, src, info, out_main)
     if dirty:
         label = "블러 그리고 저장 중" + (f" (고친 곳만 다시: {len(dirty)}/{len(bounds)}조각)" if times["reused"] else f" (원본과 같은 형식: {desc})")
         while dirty:
@@ -962,6 +1035,8 @@ def paint_save(src, ells, polys, dst, job, n, W, H, fps, params, p0=77, p1=99, t
                     w += 1
                 groups[w].append(k)
                 acc += bounds[k][1]
+            if stream:                                  # 바로 이어 붙이려면 앞 조각부터 차례로 끝나야 함 → 일꾼마다 번갈아 맡음
+                groups = [dirty[w_::K] for w_ in range(K)]
             try:
                 rs_ = _run_parallel(job, K, total, lambda k: (src, runs_of(groups[k]), sum(bounds[i][1] for i in groups[k]), W, H, fps, params, mi, subs),
                                     _paint_worker, label, p0, p1)
@@ -972,6 +1047,8 @@ def paint_save(src, ells, polys, dst, job, n, W, H, fps, params, p0=77, p1=99, t
                 break
             except RuntimeError as e:
                 if not _is_mem_err(e) or K <= 1:
+                    if sm:
+                        sm.stop()
                     raise
                 K = max(1, K // 2)                         # 메모리가 모자라면 반으로 줄여 다시 (다 만든 조각은 그대로 씀)
                 done_ = [k for k in dirty if os.path.exists(paths[k])]
@@ -982,6 +1059,15 @@ def paint_save(src, ells, polys, dst, job, n, W, H, fps, params, p0=77, p1=99, t
     times["paint"] = round(time.time() - t0, 1)
     t0 = time.time()
     job["msg"] = "조각 이어 붙이고 원본 소리 트랙 붙이는 중"
+    if sm:
+        job["msg"] = "마지막 조각 이어 붙이는 중 (앞 조각들은 만들면서 이미 붙였어요)"
+        ok_, err_ = sm.finish()
+        if ok_:
+            times["out_path"] = out_main
+            times["mux"] = round(time.time() - t0, 1)
+            times["mux_stream"] = True
+            return [(0, n)], KP
+        print("  바로 이어 붙이기 실패 → 예전 방식으로 다시:", err_[-300:], flush=True)
     lst = os.path.join(d, "parts.txt")
     fr = Fraction(info["fps_str"])
     with open(lst, "w", encoding="utf-8") as fp:      # 조각마다 길이를 적어 줌 → 이어 붙인 곳에서 시간이 1프레임씩 밀리지 않음
