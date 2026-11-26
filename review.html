@@ -370,9 +370,11 @@ function draw() {
     const sw = Math.min(640, M.W), k = sw / M.W, sh = Math.round(M.H * k);
     for (const c of [small, blurC, maskC]) { c.width = sw; c.height = sh; }
     sctx.drawImage(V, 0, 0, sw, sh);
+    for (const e1 of es) {               // 블러마다 자기 세기로 따로 흐려서 겹침 (수정본과 같은 방식)
+    const one = [e1];
     let minr = 1e9;
-    for (const e of es) { const a = axesOf(e.A); minr = Math.min(minr, a.ry); }
-    const kmax = Math.max(...es.map(e => e.k ?? 1));
+    for (const e of one) { const a = axesOf(e.A); minr = Math.min(minr, a.ry); }
+    const kmax = Math.max(...one.map(e => e.k ?? 1));
     const sigma = Math.max(15, 2 * minr * (M.params.BLUR_FRAC ?? 0.2)) * kmax * k;
     // 화면 가장자리 바깥을 가장자리 색으로 채운 뒤 흐림 (안 그러면 가장자리가 투명하게 비쳐 보임)
     const pd = Math.ceil(sigma * 3) + 2;
@@ -386,7 +388,7 @@ function draw() {
     pbctx.filter = `blur(${sigma.toFixed(1)}px)`; pbctx.drawImage(padC, 0, 0); pbctx.filter = "none";
     bctx.drawImage(pbC, pd, pd, sw, sh, 0, 0, sw, sh);
     mctx.clearRect(0, 0, sw, sh);
-    for (const e of es) {
+    for (const e of one) {
       const a = axesOf(e.A);
       const fe = e.fe ?? 1, F = Math.min(Math.max(a.ry * (M.params.FEATHER_W ?? 0.5) * fe, 20), (M.params.FEATHER_MAX ?? 150) * fe);
       const outer = 1 + F / Math.sqrt(a.rx * a.ry);
@@ -400,6 +402,7 @@ function draw() {
     }
     bctx.globalCompositeOperation = "destination-in"; bctx.drawImage(maskC, 0, 0); bctx.globalCompositeOperation = "source-over";
     octx.drawImage(blurC, ox, oy, M.W * s, M.H * s);
+    }
   }
   if (mode && es.length) {
     octx.save(); octx.font = `${12 * devicePixelRatio}px sans-serif`;
