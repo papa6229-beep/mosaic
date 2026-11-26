@@ -43,6 +43,8 @@ OVER_RATIO = 2.2    # 타원이 필요한 크기의 이 배를 넘는 상태가
 OVER_AFTER = 30     # 이 프레임 수(1초) 넘게 이어지면 새 키프레임으로 줄임
 FILL_RES = 120      # 블러 재료 계산 크기
 FILL_KEEP = 0.65    # 블러 속 이전 프레임 비율 (클수록 속 색이 천천히 바뀜)
+BLUR_V2 = False     # (시험) 새 블러: 가장자리로 갈수록 '점점 흐려지게'(흐린 그림을 겹치지 않음) + 넓은 번짐 + 블러 속에 바깥 어두움이 덜 묻어남
+FEATHER_W2 = 0.8    # 새 블러의 번짐 폭 (타원 짧은 반지름 대비, 크기 제한 없음)
 CUT_DIFF = 28       # 화면 전환 판단 (작은 화면 밝기 차이)
 
 
@@ -333,6 +335,42 @@ def fill_small(small, nd, cv_, sigma, f):
     else:
         small = cv2.GaussianBlur(small, (k, k), s2)
     return small
+
+
+def fill_small_v2(small, nd, alpha_s, sigma, f):
+    """새 블러 재료: 흐림 세기를 4단계로 만들어 두고, 가장자리(투명도 낮음) → 약하게, 안쪽 → 세게 이어 붙임.
+    털·모자이크 메우기는 타원 안쪽만. 세게 흐릴 때는 타원 안쪽 내용을 주로 써서 바깥의 검은 배경·머리카락이 안쪽까지 번지지 않게"""
+    lab = cv2.cvtColor(small, cv2.COLOR_BGR2LAB).astype(np.float32)
+    L = lab[..., 0]
+    Cc = np.hypot(lab[..., 1] - 128, lab[..., 2] - 128)
+    core = alpha_s >= 0.99
+    ref = core if core.sum() > 20 else alpha_s > 0.05
+    Lr, Cr = L[ref], Cc[ref]
+    ok = (Lr > 25) & (Cr > np.percentile(Cr, 60)) if Cr.size else np.zeros(0, bool)
+    skinL = np.median(Lr[ok]) if ok.sum() > 20 else 170
+    skinC = np.median(Cr[ok]) if ok.sum() > 20 else 25
+    notskin = (L < skinL * 0.75) | ((L > skinL * 1.12) & (Cc < skinC * 0.7)) | (Cc < skinC * 0.45)
+    msk = ((nd > 0) | (notskin & core)).astype(np.uint8) * 255
+    msk = cv2.dilate(msk, np.ones((5, 5), np.uint8))
+    img = cv2.inpaint(small, msk, 3, cv2.INPAINT_TELEA) if msk.any() else small
+    img = img.astype(np.float32)
+    w = np.where(core, 1.0, 0.2).astype(np.float32)
+    iw = img * w[..., None]
+    s2 = max(1.0, sigma / f)
+    lv = []
+    for t in (0.125, 0.25, 0.5, 1.0):
+        sg = max(0.8, s2 * t)
+        num = cv2.GaussianBlur(iw, (0, 0), sg)
+        den = cv2.GaussianBlur(w, (0, 0), sg)
+        lv.append(num / np.maximum(den, 1e-4)[..., None])
+    p = np.clip(alpha_s * 4.0, 0, 4.0)
+    idx = np.clip(np.floor(p), 1, 3).astype(np.int32)
+    fr = np.clip(p - idx, 0, 1)[..., None]
+    M = np.zeros_like(lv[0])
+    for k in (1, 2, 3):
+        m = (idx == k)[..., None]
+        M = np.where(m, lv[k - 1] * (1 - fr) + lv[k] * fr, M)
+    return M.astype(np.float32)
 
 
 # ======================= 5. 프레임 처리 =======================
@@ -1110,7 +1148,7 @@ class Painter:
             ws.append(float(e[2]) if len(e) > 2 else 1.0)
             r, _ = _axes(A)
             fe = float(e[5]) if len(e) > 5 and e[5] else 1.0
-            F = float(np.clip(min(r) * FEATHER_W * fe, 20, FEATHER_MAX * fe))
+            F = float(np.clip(min(r) * FEATHER_W2 * fe, 20, 2000)) if BLUR_V2 else float(np.clip(min(r) * FEATHER_W * fe, 20, FEATHER_MAX * fe))
             boxes.append((c, A, r, F, max(r) + F))
         X0 = int(max(0, min(c[0] - R for c, _, _, _, R in boxes)))
         Y0 = int(max(0, min(c[1] - R for c, _, _, _, R in boxes)))
@@ -1160,7 +1198,8 @@ class Painter:
         cv_ = self.alpha_s > 0.05
         minr = min(min(r) for _, _, r, _, _ in boxes)
         kmax = max([float(e[4]) if len(e) > 4 and e[4] else 1.0 for e in ells] or [1.0])
-        soft = fill_small(small, nd, cv_, max(15.0, 2 * minr * BLUR_FRAC) * kmax, f).astype(np.float32)
+        sig = max(15.0, 2 * minr * BLUR_FRAC) * kmax
+        soft = (fill_small_v2(small, nd, self.alpha_s, sig, f) if BLUR_V2 else fill_small(small, nd, cv_, sig, f)).astype(np.float32)
         fs = getattr(self, "fill_s", None)
         if fs is not None:                           # 블러 속은 이전 프레임과 섞어 천천히만 바뀜 (작은 크기에서, 위치를 맞춰서)
             (pX0, pY0, pw, ph), ps = fs
@@ -1182,6 +1221,8 @@ class Painter:
             np.clip(r_, 0, yf.maxv, out=r_)
             r_ += 0.5
             P[...] = r_.astype(P.dtype)
+        if BLUR_V2:                                  # 원본은 투명도 1/4 지점까지만 섞이고, 그 안쪽은 흐림 세기만 점점 세짐
+            alpha, alpha_c = np.minimum(alpha * 4.0, 1.0), np.minimum(alpha_c * 4.0, 1.0)
         mix(yf.Y[Y0:Y1, X0:X1], cv2.resize(ys_, (w, h), interpolation=cv2.INTER_CUBIC), alpha)
         mix(yf.U[Y0 // sy:Y0 // sy + hc, X0 // sx:X0 // sx + wc], cv2.resize(us_, (wc, hc), interpolation=cv2.INTER_CUBIC), alpha_c)
         mix(yf.V[Y0 // sy:Y0 // sy + hc, X0 // sx:X0 // sx + wc], cv2.resize(vs_, (wc, hc), interpolation=cv2.INTER_CUBIC), alpha_c)
