@@ -49,6 +49,7 @@
   #msg{font-size:15px;color:var(--sub)}
   #msg.ok{color:var(--ok)} #msg.bad{color:var(--bad)}
   a.dl{display:inline-block;background:var(--ok);color:#1c1917;font-weight:700;padding:7px 12px;border-radius:8px;text-decoration:none}
+  .leak{margin-top:8px;padding:8px 10px;border:1px solid #ec4899;border-radius:8px;background:rgba(236,72,153,.08);color:#fbcfe8}
   .marks{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
   .marks .mk{border-color:#ef4444;color:#fca5a5;padding:4px 8px;font-size:14px}
   hr{border:0;border-top:1px solid var(--line);margin:12px 0}
@@ -121,6 +122,10 @@
     </div>
     <hr>
     <div class="muted" id="sumEd"></div>
+    <div id="leakBox" class="leak" style="display:none">
+      <div>고친 블러 밖으로 <b>원본 모자이크가 삐져나오는 곳 <span id="leakN">0</span>곳</b> (타임라인 분홍)</div>
+      <div class="row"><button id="bLeakGo" title="다음 삐져나온 곳으로 (L · 이전은 Shift+L)">다음 곳으로 (L)</button><button id="bLeakFix" class="main" title="삐져나온 구간만 필요한 만큼 키워요. 나머지는 고친 그대로">자동으로 맞추기</button></div>
+    </div>
     <h2 style="margin-top:12px">표시한 곳 <span class="muted">(M 표시 · J 다음 · H 이전)</span></h2>
     <div id="marks" class="marks"></div>
     <div class="keys">
@@ -133,6 +138,7 @@
       <div class="kg"><div class="kt">보면서 표시 → 나중에 고치기</div>
         <div class="kr"><span class="kk"><kbd>M</kbd></span><span>지금 위치 표시 / 지우기</span></div>
         <div class="kr"><span class="kk"><kbd>J</kbd> <kbd>H</kbd></span><span>다음 / 이전 표시로 (1초 앞에서)</span></div>
+        <div class="kr"><span class="kk"><kbd>L</kbd> <kbd>Shift</kbd><i>+</i><kbd>L</kbd></span><span>다음 / 이전 삐져나온 곳 (분홍)</span></div>
       </div>
       <div class="kg"><div class="kt">블러 고르기</div>
         <div class="kr"><span class="kk"><kbd>클릭</kbd></span><span>블러 선택</span></div>
@@ -179,7 +185,8 @@ const $ = id => document.getElementById(id);
 const JID = location.pathname.split("/").filter(Boolean)[1];
 document.getElementById("toSubs").href = `/review/${JID}/subtitles`;
 const V = $("v"), OV = $("ov"), octx = OV.getContext("2d");
-let M, SEG, PLAN, ED;               // 정보, 구간표, 블러 계획, 고친 내용
+let M, SEG, PLAN, ED, MOS = [];     // 정보, 구간표, 블러 계획, 고친 내용, 프레임마다 원본 모자이크 자리
+let LEAK = [], LEAKF = new Set();   // 고친 블러 밖으로 원본 모자이크가 삐져나오는 프레임
 let cur = 0, sel = null, selSet = new Set(), tool = null, drag = null, hist = [], showOutline = true, showPreview = true;
 let tlStart = 0, tlSpan = 600;      // 타임라인 보기 범위 (프레임)
 const FADE = [0.2, 0.5, 0.8];
@@ -479,6 +486,7 @@ function drawTL() {
   wctx.fillStyle = "rgba(245,158,11,.14)"; wctx.fillRect(bx0, 1, Math.max(2, bx1 - bx0), OVH - 2);
   wctx.strokeStyle = "#f59e0b"; wctx.lineWidth = 2; wctx.strokeRect(bx0, 1, Math.max(2, bx1 - bx0), OVH - 2);
   wctx.fillStyle = "#f59e0b"; wctx.fillRect(bx0 - 2, 8, 4, OVH - 16); wctx.fillRect(bx1 - 2, 8, 4, OVH - 16);
+  wctx.fillStyle = "#ec4899"; for (const r of leakRuns()) wctx.fillRect(fx(r.a) - 1.5, 0, Math.max(3, fx(r.b + 1) - fx(r.a)), OVH);   // 삐져나온 곳
   wctx.fillStyle = "#ef4444"; (ED.marks || []).forEach(m => wctx.fillRect(fx(m) - 1.5, 0, 3, OVH));   // 표시한 곳
   wctx.fillStyle = "#fafaf9"; wctx.fillRect(fx(cur) - 1, 0, 2, OVH);
   // 자세히 보기
@@ -510,6 +518,8 @@ function drawTL() {
   for (const [k, st] of Object.entries(SEG)) { if (!st || !REAL.has(+k)) continue; const ed = segEd(+k) || {}; if (ed.del) continue;
     bar(+k, ed.start ?? st.start, ed.end ?? st.end, Object.keys(ed).length ? "#d97706" : "#a8a29e"); }
   ED.added.forEach((ad, k) => { if (!ad.del) bar("a" + k, ad.start, ad.end, "#84cc16"); });
+  for (const r of leakRuns()) { const ri = rowOf(r.sid); if (ri < 0) continue; const y = 16 + ri * ROWH;   // 삐져나온 곳: 그 블러 줄 위에 분홍
+    tctx.fillStyle = "#ec4899"; tctx.fillRect(tx(r.a), y - 2, Math.max(3, tx(r.b + 1) - tx(r.a)), ROWH); }
   (ED.marks || []).forEach(m => { const x = tx(m); tctx.fillStyle = "rgba(239,68,68,.55)"; tctx.fillRect(x - 1, 0, 2, h);
     tctx.fillStyle = "#ef4444"; tctx.beginPath(); tctx.moveTo(x - 6, 0); tctx.lineTo(x + 6, 0); tctx.lineTo(x, 9); tctx.fill(); });
   tctx.fillStyle = "#fafaf9"; tctx.fillRect(tx(cur) - 1, 0, 2, h);
@@ -573,11 +583,83 @@ V.addEventListener("seeked", draw);
 function setMute(m) { V.muted = m; $("bMute").textContent = m ? "🔇 소리 끔" : "🔊 소리 켬"; $("bMute").classList.toggle("on", !m); }
 $("bMute").onclick = () => setMute(!V.muted);
 
+// ---------- 삐져나옴 검사: 고친 블러가 그 구간 끝까지 원본 모자이크를 다 덮는지 계산으로 바로 확인 ----------
+function qOut(e, pts) {             // 점들 중 타원 밖으로 가장 멀리 나간 정도 (1 이하 = 안쪽)
+  let m = 0; for (const [x, y] of pts) { const dx = x - e.cx, dy = y - e.cy, A = e.A;
+    m = Math.max(m, A[0][0] * dx * dx + 2 * A[0][1] * dx * dy + A[1][1] * dy * dy); } return Math.sqrt(m);
+}
+function leakOf(sid, f) {           // 이 블러(sid)가 f 프레임에서 덮어야 할 원본 모자이크가 얼마나 삐져나오나 (0 = 괜찮음)
+  const ed = segEd(sid), st = SEG[sid]; if (!ed || ed.del || !st) return 0;
+  const a = ed.start ?? st.start, b = ed.end ?? st.end;
+  if (f < Math.max(a, st.start) || f > Math.min(b, st.end)) return 0;
+  const base = baseAt(sid, f); if (!base) return 0;
+  const orig = { cx: base[0][0], cy: base[0][1], A: base[1] };
+  const now = tf(base[0], base[1], ed, f);
+  let need = 0;
+  for (const h of (MOS[f] || [])) {
+    let cx = 0, cy = 0; for (const [x, y] of h) { cx += x; cy += y; } cx /= h.length; cy /= h.length;
+    if (!inside(orig, cx, cy)) continue;             // 원래 이 블러가 덮던 모자이크만
+    const q = qOut(now, h); if (q > 1.0) need = Math.max(need, q);
+  }
+  return need;
+}
+let leakT = null;
+function scanLeaks() {
+  LEAK = []; LEAKF = new Set();
+  for (const k of Object.keys(ED.segs)) {
+    const sid = +k, ed = segEd(sid), st = SEG[sid]; if (!st || !ed || ed.del || !Object.keys(ed).length) continue;
+    for (let f = st.start; f <= st.end; f++) { const q = leakOf(sid, f); if (q) { LEAK.push({ f, sid, q }); LEAKF.add(f); } }
+  }
+  LEAK.sort((p, q) => p.f - q.f);
+  const n = leakRuns().length, el = $("leakBox");
+  if (el) { el.style.display = n ? "" : "none"; $("leakN").textContent = n; }
+}
+function leakRuns(sid, gap = 5) {   // 붙어 있는 삐져나옴 프레임 묶음
+  const rs = [];
+  for (const L of LEAK) { if (sid != null && L.sid !== sid) continue;
+    const r = rs.find(r => r.sid === L.sid && L.f - r.b <= gap);
+    if (r) { r.b = L.f; r.q = Math.max(r.q, L.q); } else rs.push({ sid: L.sid, a: L.f, b: L.f, q: L.q }); }
+  return rs.sort((p, q) => p.a - q.a);
+}
+function jumpLeak(dir) {
+  const rs = leakRuns();
+  const r = dir > 0 ? rs.find(r => r.a > cur) : [...rs].reverse().find(r => r.a < cur);
+  if (!r) { msg(rs.length ? (dir > 0 ? "마지막 삐져나온 곳이에요" : "첫 삐져나온 곳이에요") : "삐져나온 곳이 없어요 👍", rs.length ? "bad" : "ok"); return; }
+  V.pause(); selectOnly(r.sid); setFrame(r.a); drawTL(); draw(); updSide();
+  msg(`원본 모자이크가 삐져나와요 (${fmt(r.a)}~${fmt(r.b)}) — 크기를 맞추거나 '자동으로 맞추기'`, "bad");
+}
+function fixLeaks() {               // 삐져나온 구간만 필요한 만큼 키움 (그 앞뒤는 지금 모습 그대로)
+  if (!LEAK.length) return;
+  snapshot();
+  for (let pass = 0; pass < 4 && LEAK.length; pass++) {
+    const bySid = {};
+    for (const r of leakRuns(null, Math.round(M.fps * 1.5))) (bySid[r.sid] = bySid[r.sid] || []).push(r);   // 1.5초 안에 또 삐져나오면 한 묶음 (블러가 자꾸 커졌다 작아졌다 하지 않게)
+    for (const [k, rs] of Object.entries(bySid)) {
+      const sid = +k, ed = segEd(sid), st = SEG[sid], a = Math.max(ed.start ?? st.start, st.start), b = Math.min(ed.end ?? st.end, st.end);
+      const keep = [];                              // 바꾸기 전 모습을 먼저 적어 둠
+      const RAMP = Math.round(M.fps * 0.4);          // 0.4초에 걸쳐 천천히 커지고 작아짐
+      for (const r of rs) { const p0 = Math.max(a, r.a - RAMP), p1 = Math.min(b, r.b + RAMP);
+        keep.push([p0, curOff(sid, p0)], [p1, curOff(sid, p1)]); }
+      if (!ed.keys || !ed.keys.length) { const o = curOff(sid, a); ed.keys = [{ f: a, ...o }, { f: b, ...curOff(sid, b) }]; delete ed.dx; delete ed.dy; delete ed.scale; delete ed.rot; delete ed.sx; delete ed.sy; }
+      for (const [f, o] of keep) setKey(sid, f, { ...o });
+      for (const r of rs) {
+        let mx = 0; for (let f = r.a; f <= r.b; f++) mx = Math.max(mx, curOff(sid, f).scale * (leakOf(sid, f) || 1));
+        ed.keys = ed.keys.filter(x => !(x.f > r.a && x.f < r.b));
+        setKey(sid, r.a, { scale: Math.min(4, mx * 1.04) }); setKey(sid, r.b, { scale: Math.min(4, mx * 1.04) });
+      }
+    }
+    scanLeaks();
+  }
+  changed();
+  msg(LEAK.length ? `거의 맞췄는데 ${leakRuns().length}곳이 남았어요 — L로 가서 직접 맞춰 주세요` : "삐져나온 곳을 모두 맞췄어요 👍", LEAK.length ? "bad" : "ok");
+}
+
 // ---------- 고치기 ----------
 function snapshot() { hist.push(JSON.stringify(ED)); if (hist.length > 200) hist.shift(); }
 let saveT = null;
 function changed() {
   pruneSel();
+  scanLeaks();
   drawTL(); draw(); updSide();
   clearTimeout(saveT);
   saveT = setTimeout(() => fetch(`/review/${JID}/edits`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(ED) })
@@ -1074,6 +1156,7 @@ $("bB1s").onclick = () => { V.pause(); setFrame(cur - Math.round(M.fps)); };
 $("bF1s").onclick = () => { V.pause(); setFrame(cur + Math.round(M.fps)); };
 $("speed").onchange = () => V.playbackRate = +$("speed").value;
 $("bZin").onclick = () => zoom(1 / 1.5); $("bZout").onclick = () => zoom(1.5);
+$("bLeakGo").onclick = () => jumpLeak(1); $("bLeakFix").onclick = fixLeaks;
 $("bPrevSeg").onclick = () => jumpSeg(-1); $("bNextSeg").onclick = () => jumpSeg(1);
 function jumpSeg(dir) {
   const starts = allBars().map(([id, a]) => [a, id]).sort((p, q) => p[0] - q[0]);
@@ -1095,6 +1178,7 @@ document.addEventListener("keydown", ev => {
   else if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
   else if (K === "k") $("bKeyDel").click();
   else if (K === "m") toggleMark();
+  else if (K === "l") jumpLeak(ev.shiftKey ? -1 : 1);
   else if (K === "j") jumpMark(1);
   else if (K === "h") jumpMark(-1);
   else if ((K === "q" || K === "e") && sel != null) {
@@ -1140,7 +1224,7 @@ function poll(id) {
 
 // ---------- 시작 ----------
 fetch(`/review/${JID}/data`).then(r => r.json()).then(d => {
-  M = d.meta; SEG = d.segments; PLAN = d.plan; ED = d.edits || { segs: {}, added: [] }; setTimeout(showMarks, 0);
+  M = d.meta; SEG = d.segments; PLAN = d.plan; ED = d.edits || { segs: {}, added: [] }; MOS = d.mos || []; setTimeout(showMarks, 0); setTimeout(scanLeaks, 0);
   ED.segs = ED.segs || {}; ED.added = ED.added || [];
   for (const fr of PLAN) for (const e of fr) if (e[3] != null && e[2] >= 1) REAL.add(e[3]);
   $("name").textContent = M.name; $("fnN").textContent = M.n - 1;

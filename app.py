@@ -1619,7 +1619,38 @@ def review_data(jid):
                                                                     "mode": r.get("mode", "blur")},
                    segments=json.load(open(sg)) if os.path.exists(sg) else {},
                    plan=json.load(open(bp)) if os.path.exists(bp) else [],
-                   edits=json.load(open(ep)) if os.path.exists(ep) else {"segs": {}, "added": []})
+                   edits=json.load(open(ep)) if os.path.exists(ep) else {"segs": {}, "added": []},
+                   mos=_mosaic_hulls(d))
+
+
+def _mosaic_hulls(d):
+    """프레임마다 원본 모자이크 자리(볼록 껍질, 점 12개 이하) — 검수 화면에서 '고친 블러 밖으로 삐져나오나'를 바로 계산하려고"""
+    pp = os.path.join(d, "polys.json")
+    if not os.path.exists(pp):
+        return []
+    cp = os.path.join(d, "mos_hulls.json")
+    try:
+        if os.path.getmtime(cp) >= os.path.getmtime(pp):
+            return json.load(open(cp))
+    except OSError:
+        pass
+    out = []
+    for fr in json.load(open(pp)):
+        hs = []
+        for poly in fr or []:
+            a = np.array(poly, np.float32).reshape(-1, 2)
+            if len(a) < 3:
+                continue
+            h = cv2.convexHull(a).reshape(-1, 2)
+            if len(h) > 12:
+                h = cv2.approxPolyDP(h.reshape(-1, 1, 2), 2.0, True).reshape(-1, 2)
+            hs.append([[int(round(x)), int(round(y))] for x, y in h])
+        out.append(hs)
+    try:
+        json.dump(out, open(cp, "w"), separators=(",", ":"))
+    except OSError:
+        pass
+    return out
 
 
 PLAYABLE = (".mp4", ".m4v", ".webm")
