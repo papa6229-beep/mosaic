@@ -1075,7 +1075,7 @@ def run_job(jid, src, params):
             n = int(cv2.VideoCapture(src).get(cv2.CAP_PROP_FRAME_COUNT))
             t0 = time.time()
             px = None
-            if os.path.splitext(src)[1].lower() not in PLAYABLE:   # 검수용 미리보기를 위치 찾기와 같이 만듦
+            if _need_proxy(src):   # 검수용 미리보기를 위치 찾기와 같이 만듦
                 try:
                     mi0 = media.probe(src)
                     c_ = cv2.VideoCapture(src)
@@ -1785,6 +1785,19 @@ def _mosaic_hulls(d):
 
 
 PLAYABLE = (".mp4", ".m4v", ".webm")
+
+
+def _need_proxy(src, H=None):
+    """검수 화면에 원본 대신 가벼운 미리보기(540p)를 쓸지: 브라우저가 못 트는 형식이거나, 1080p보다 큰 영상
+    (4K 원본을 그대로 틀면 프레임을 옮길 때마다 0.2초씩 늦게 따라옴)"""
+    if os.path.splitext(src)[1].lower() not in PLAYABLE:
+        return True
+    if H is None:
+        try:
+            c_ = cv2.VideoCapture(src); H = int(c_.get(cv2.CAP_PROP_FRAME_HEIGHT)); c_.release()
+        except Exception:
+            H = 0
+    return int(H or 0) > 1080
 proxy_state = {}
 
 
@@ -1893,7 +1906,7 @@ def review_video_status(jid):
                     _proxy_busy[k] = False
             threading.Thread(target=go, daemon=True).start()
         return jsonify(ready=False, pct=proxy_state.get(key, 0), failed=proxy_state.get(key) == -1 and not _proxy_busy.get(key))
-    if os.path.splitext(r["src"])[1].lower() in PLAYABLE:
+    if not _need_proxy(r["src"], r.get("H")):
         return jsonify(ready=True, audio="ok")
     pav, px = os.path.join(d, "proxy_av.mp4"), os.path.join(d, "proxy.mp4")
     if os.path.exists(pav):
@@ -1917,7 +1930,7 @@ def review_video(jid):
     r = json.load(open(os.path.join(d, "review.json"), encoding="utf-8"))
     if request.args.get("blur") and os.path.exists(os.path.join(d, "proxy_blur.mp4")):
         return send_file(os.path.join(d, "proxy_blur.mp4"), conditional=True, mimetype="video/mp4")
-    if os.path.splitext(r["src"])[1].lower() not in PLAYABLE:
+    if _need_proxy(r["src"], r.get("H")):
         for nm in ("proxy_av.mp4", "proxy.mp4"):
             px = os.path.join(d, nm)
             if os.path.exists(px):
