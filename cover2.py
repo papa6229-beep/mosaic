@@ -44,7 +44,7 @@ OVER_AFTER = 30     # 이 프레임 수(1초) 넘게 이어지면 새 키프레�
 FILL_RES = 120      # 블러 재료 계산 크기
 FILL_KEEP = 0.65    # 블러 속 이전 프레임 비율 (클수록 속 색이 천천히 바뀜)
 BLUR_V2 = False     # (시험) 새 블러: 가장자리로 갈수록 '점점 흐려지게'(흐린 그림을 겹치지 않음) + 넓은 번짐 + 블러 속에 바깥 어두움이 덜 묻어남
-FEATHER_W2 = 0.8    # 새 블러의 번짐 폭 (타원 짧은 반지름 대비, 크기 제한 없음)
+FEATHER_W2 = 1.0    # 새 블러의 번짐 폭 (타원 짧은 반지름 대비, 크기 제한 없음)
 CUT_DIFF = 28       # 화면 전환 판단 (작은 화면 밝기 차이)
 
 
@@ -352,9 +352,12 @@ def fill_small_v2(small, nd, alpha_s, sigma, f):
     notskin = (L < skinL * 0.75) | ((L > skinL * 1.12) & (Cc < skinC * 0.7)) | (Cc < skinC * 0.45)
     msk = ((nd > 0) | (notskin & core)).astype(np.uint8) * 255
     msk = cv2.dilate(msk, np.ones((5, 5), np.uint8))
-    img = cv2.inpaint(small, msk, 3, cv2.INPAINT_TELEA) if msk.any() else small
-    img = img.astype(np.float32)
-    w = np.where(core, 1.0, 0.2).astype(np.float32)
+    img = small.astype(np.float32)
+    if msk.any():                                     # 메운 곳과 안 메운 곳 사이에 선이 생기지 않게 부드럽게 섞음
+        inp = cv2.inpaint(small, msk, 3, cv2.INPAINT_TELEA).astype(np.float32)
+        ms = cv2.GaussianBlur(msk.astype(np.float32) / 255, (0, 0), 2.0)[..., None]
+        img = img + (inp - img) * ms
+    w = (0.2 + 0.8 * np.clip(alpha_s, 0, 1) ** 2).astype(np.float32)   # 안쪽 내용 위주로 (끊김 없이 이어지는 비율)
     iw = img * w[..., None]
     s2 = max(1.0, sigma / f)
     lv = []
@@ -1221,8 +1224,6 @@ class Painter:
             np.clip(r_, 0, yf.maxv, out=r_)
             r_ += 0.5
             P[...] = r_.astype(P.dtype)
-        if BLUR_V2:                                  # 원본은 투명도 1/4 지점까지만 섞이고, 그 안쪽은 흐림 세기만 점점 세짐
-            alpha, alpha_c = np.minimum(alpha * 4.0, 1.0), np.minimum(alpha_c * 4.0, 1.0)
         mix(yf.Y[Y0:Y1, X0:X1], cv2.resize(ys_, (w, h), interpolation=cv2.INTER_CUBIC), alpha)
         mix(yf.U[Y0 // sy:Y0 // sy + hc, X0 // sx:X0 // sx + wc], cv2.resize(us_, (wc, hc), interpolation=cv2.INTER_CUBIC), alpha_c)
         mix(yf.V[Y0 // sy:Y0 // sy + hc, X0 // sx:X0 // sx + wc], cv2.resize(vs_, (wc, hc), interpolation=cv2.INTER_CUBIC), alpha_c)
