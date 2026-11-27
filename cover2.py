@@ -234,7 +234,7 @@ def _pct_int(v, p):
     n = v.size
     if n == 0:
         return float("nan")
-    cnt = np.bincount(v.astype(np.int64).ravel(), minlength=256)
+    cnt = np.bincount(v.ravel() if v.dtype == np.uint8 else v.astype(np.int64).ravel(), minlength=256)
     cum = np.cumsum(cnt)
     pos = p / 100.0 * (n - 1)
     lo, hi = int(np.floor(pos)), int(np.ceil(pos))
@@ -258,6 +258,10 @@ class _StatsCPU:
         return float((self.a[name][m] < thr).mean())
 
 
+_ab = np.arange(256, dtype=np.float32) - 128
+_CHROMA = np.hypot(_ab[:, None], _ab[None, :]).astype(np.float32)     # Lab의 a·b 값 → 색 진하기 (표)
+
+
 def hair_mask(frame, box, near, faces=()):
     """원본 모자이크 주변에서 음모(가닥 결이 많고 살색이 빠진 덩어리)만 찾음. 얼굴 근처는 제외"""
     H, W = frame.shape[:2]
@@ -267,25 +271,25 @@ def hair_mask(frame, box, near, faces=()):
     X2, Y2 = min(W, int(x2 + bw + near)), min(H, int(y2 + bh + near))
     if X2 - X1 < 16 or Y2 - Y1 < 16:
         return None, (0, 0)
-    lab = cv2.cvtColor(frame[Y1:Y2, X1:X2], cv2.COLOR_BGR2LAB).astype(np.float32)
-    L = lab[..., 0]
-    C = np.hypot(lab[..., 1] - 128, lab[..., 2] - 128)
-    valid = cv2.erode((L > 25).astype(np.uint8), np.ones((31, 31), np.uint8)) > 0
+    lab8 = cv2.cvtColor(frame[Y1:Y2, X1:X2], cv2.COLOR_BGR2LAB)
+    L8 = lab8[..., 0]
+    L = L8.astype(np.float32)
+    C = _CHROMA[lab8[..., 1], lab8[..., 2]]                 # 색 진하기: 미리 계산해 둔 표에서 찾기 (계산 결과는 같음, 더 빠름)
+    valid = cv2.erode((L8 > 25).astype(np.uint8), np.ones((31, 31), np.uint8)) > 0
     if valid.sum() < 100:
         return None, (0, 0)
     # (훑기 일꾼마다 그래픽카드를 따로 켜면 일꾼 수만큼 그래픽카드 준비·주고받기가 생겨서 오히려 느림 → CPU, 같은 값)
-    S0 = _StatsCPU(L=L, valid=valid)
-    skinL = S0.q("L", "valid", 80)
+    skinL = _pct_int(L8[valid], 80)
     skin = valid & (L > skinL * 0.85)
     if skin.sum() < 50:
         return None, (0, 0)
     hp = L - cv2.GaussianBlur(L, (0, 0), 2)
     sd = np.sqrt(np.maximum(cv2.blur(hp * hp, (9, 9)), 0))
-    S = _StatsCPU(L=L, C=C, sd=sd, skin=skin)
+    S = _StatsCPU(L=L8, C=C, sd=sd, skin=skin)
     skinC = S.q("C", "skin", 50)
     base = S.q("sd", "skin", 50) + 1e-3
     m = (valid & (L < skinL * 0.8) & (C < skinC * 0.9)).astype(np.uint8)
-    m = (cv2.blur(m.astype(np.float32), (15, 15)) > 0.5).astype(np.uint8)
+    m = (cv2.boxFilter(m, cv2.CV_16U, (15, 15), normalize=False) >= 113).astype(np.uint8)   # 15x15 평균 > 0.5 와 같음 (정수로 세서 빠르게)
     m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (21, 21)))
     inner = np.zeros_like(m)                     # 원본 모자이크 안쪽은 빼고 봄
     ix1, iy1, ix2, iy2 = int(x1 - X1 + bw * 0.1), int(y1 - Y1 + bh * 0.1), int(x2 - X1 - bw * 0.1), int(y2 - Y1 - bh * 0.1)

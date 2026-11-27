@@ -660,12 +660,12 @@ def _mem_workers(K, W, H):
     return max(1, min(K, int(avail * 0.7 / per)))
 
 
-def _cpu_workers(n):
-    """동시에 쓸 CPU 수: 작업 중에도 컴퓨터를 쓸 수 있게 둘은 항상 비워 둠 (최대 8개)"""
+def _cpu_workers(n, cap=8):
+    """동시에 쓸 CPU 수: 작업 중에도 컴퓨터를 쓸 수 있게 둘은 항상 비워 둠 (최대 cap개)"""
     cores = os.cpu_count() or 2
     if os.environ.get("MOSAIC_FULL") == "1":          # 밤샘 모드: 비워 두는 CPU 없이 (최대 16개)
         return max(1, min(cores, 16, n // 60))
-    return max(1, min(cores - 2, 8, n // 60))
+    return max(1, min(cores - 2, cap, n // 60))
 
 
 def _scan_scale(W, H):
@@ -1167,7 +1167,7 @@ def render(src, boxes_json, dst, job, n, times=None):
         except Exception:
             ex = None
     sc = _scan_scale(W, H) if cover2.FAST_SCAN else 1.0
-    K = _mem_workers(_cpu_workers(n), int(W / sc), int(H / sc))
+    K = _mem_workers(_cpu_workers(n, 12), int(W / sc), int(H / sc))   # 훑기는 CPU 계산만 하는 단계라 일꾼을 12개까지 (낮은 우선순위라 다른 일은 계속 됨)
     params = {k: getattr(cover2, k) for k in ("SCALE", "BLUR_FRAC", "FEATHER_W", "HAIR", "HAIR_REACH", "FAST_SCAN", "FAST_SAVE")}
     d = os.path.dirname(dst)
     sparams = dict(params, _ana=_ana_info(d, n))
@@ -1277,32 +1277,52 @@ class _StreamMux:
     마지막에 '조각 이어 붙이기'를 따로 오래 기다리지 않음 (4K 20분: 14분 → 마지막 조각 몇 개 분량)"""
 
     def __init__(self, paths, src, info, out):
-        self.paths, self.out, self.err, self.abort = paths, out, b"", False
+        self.paths, self.out, self.abort = paths, out, False
+        self.ferr, self.perr, self.at = b"", "", -1       # ffmpeg가 남긴 말 / 생성기 쪽 오류 / 몇 번째 조각에서
         self.p = subprocess.Popen([ffmpeg_exe(), "-y", "-loglevel", "error", "-f", "mpegts", "-i", "pipe:0", "-i", src,
                                    "-map", "0:v", "-map", "1:a?", "-c", "copy", *media.mux_args(info, out), out],
                                   stdin=subprocess.PIPE, stderr=subprocess.PIPE)
-        threading.Thread(target=lambda: setattr(self, "err", self.p.stderr.read()), daemon=True).start()
+        threading.Thread(target=lambda: setattr(self, "ferr", self.p.stderr.read()), daemon=True).start()
         self.t = threading.Thread(target=self._run, daemon=True)
         self.ok = False
         self.t.start()
 
+    @staticmethod
+    def _open(p):
+        """방금 다 만든 조각 열기. 백신 프로그램이 새 파일을 검사하느라 잠깐 잠가 두는 경우가 있어서 잠시 기다렸다 다시 (최대 2분)"""
+        t0 = time.time()
+        while True:
+            try:
+                return open(p, "rb")
+            except OSError:
+                if time.time() - t0 > 120:
+                    raise
+                time.sleep(0.5)
+
     def _run(self):
         try:
-            for p in self.paths:
+            for i, p in enumerate(self.paths):
+                self.at = i
                 while not os.path.exists(p):
                     if self.abort:
                         raise RuntimeError("멈춤")
+                    if self.p.poll() is not None:
+                        raise RuntimeError(f"이어 붙이는 프로그램이 먼저 끝남 (코드 {self.p.returncode})")
                     time.sleep(0.3)
-                with open(p, "rb") as f:
+                with self._open(p) as f:
                     while True:
                         b = f.read(8 << 20)              # 크게 읽어서 하드디스크가 덜 왔다 갔다 하게
                         if not b:
                             break
                         self.p.stdin.write(b)
+            self.at = len(self.paths)
             self.p.stdin.close()
-            self.ok = self.p.wait() == 0
+            rc = self.p.wait()
+            self.ok = rc == 0
+            if not self.ok:
+                self.perr = f"이어 붙이는 프로그램 끝 코드 {rc}"
         except Exception as e:
-            self.err = (self.err or b"") + str(e).encode()
+            self.perr = f"{type(e).__name__}: {e}"
             try:
                 self.p.kill()
             except Exception:
@@ -1321,12 +1341,14 @@ class _StreamMux:
             self.p.wait(timeout=600)
         except Exception:
             pass
+        time.sleep(0.5)                                   # ffmpeg가 남긴 말을 다 읽을 때까지
         if not self.ok:
             try:
                 os.remove(self.out)
             except Exception:
                 pass
-        return self.ok, (self.err or b"").decode("utf-8", "ignore")
+        msg = f"{len(self.paths)}조각 중 {self.at + 1}번째에서 · {self.perr} · ffmpeg: " + (self.ferr or b"").decode("utf-8", "ignore")[-600:]
+        return self.ok, msg
 
 
 def paint_save(src, ells, polys, dst, job, n, W, H, fps, params, p0=77, p1=99, times=None, subs=None):
@@ -1503,7 +1525,8 @@ def paint_save(src, ells, polys, dst, job, n, W, H, fps, params, p0=77, p1=99, t
             times["mux"] = round(time.time() - t0, 1)
             times["mux_stream"] = True
             return [(0, n)], KP
-        print("  바로 이어 붙이기 실패 → 예전 방식으로 다시:", err_[-300:], flush=True)
+        print("  바로 이어 붙이기 실패 → 예전 방식으로 다시:", err_[-900:], flush=True)
+        times["stream_fail"] = err_[-400:]
     lst = os.path.join(d, "parts.txt")
     fr = Fraction(info["fps_str"])
     with open(lst, "w", encoding="utf-8") as fp:      # 조각마다 길이를 적어 줌 → 이어 붙인 곳에서 시간이 1프레임씩 밀리지 않음
