@@ -37,10 +37,12 @@ from fractions import Fraction
 
 
 def det_size(W, H):
-    """위치 찾기용 크기: 탐지 모델은 어차피 640(노출은 320)으로 줄여서 보므로, 4K 같은 큰 영상은 절반으로 줄여 풀어서 넘김 (탐지 결과는 같고 훨씬 빠름)"""
-    if W <= 2200:
+    """위치 찾기용 크기: 탐지 모델은 어차피 640(노출은 320)으로 줄여서 보므로, 큰 영상은 가로 960 근처로 줄여 풀어서 넘김
+    (모델이 보는 그림은 거의 같고, 풀어서 넘기고·바꾸고·모델 앞뒤 처리하는 양이 4K 기준 1080p로 넘길 때의 1/4)"""
+    if W <= 1280:
         return W, H
-    return W // 4 * 2, H // 4 * 2
+    k = W / 960.0
+    return int(round(W / k / 2)) * 2, int(round(H / k / 2)) * 2
 
 
 def frames(src, depth=16, table=None, size=None):
@@ -203,9 +205,10 @@ def detect_lada(frames):
         b = r.boxes.xyxy.cpu().numpy()
         conf = r.boxes.conf.cpu().numpy()
         polys = []
+        eps = max(0.5, 2.0 * r.orig_shape[1] / 1920)    # 윤곽 단순화 정도 (넘겨준 그림 크기에 맞춰 원본 기준 정밀도는 예전과 같게)
         try:                                   # 모자이크의 실제 윤곽 (있으면)
             for p in r.masks.xy:
-                p = cv2.approxPolyDP(np.asarray(p, np.float32).reshape(-1, 1, 2), 2.0, True)
+                p = cv2.approxPolyDP(np.asarray(p, np.float32).reshape(-1, 1, 2), eps, True)
                 polys.append(p.reshape(-1, 2).round().astype(int).tolist())
         except Exception:
             polys = []
