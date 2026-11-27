@@ -1013,9 +1013,20 @@ def plan(per, info, n, fw=1920, fh=1080):
     return out, sorted(leak), segtab
 
 
+def ell_reach(e, px=1.0):
+    """블러 하나가 (가장자리 번짐까지) 닿는 범위: (x0, y0, x1, y1)"""
+    c, A = np.asarray(e[0], float), np.asarray(e[1], float)
+    r, _ = _axes(A)
+    fe = float(e[5]) if len(e) > 5 and e[5] else 1.0
+    F = float(np.clip(min(r) * FEATHER_W * fe, 20 * px, 2000 * px)) if BLUR_V2 else float(np.clip(min(r) * FEATHER_W * fe, 20 * px, FEATHER_MAX * fe * px))
+    R = max(r) + F
+    return c[0] - R, c[1] - R, c[0] + R, c[1] + R
+
+
 class Painter:
     """3단계(그리기): 계획된 타원대로만 블러를 그림. 프레임마다 다시 판단하지 않음"""
-    def __init__(self):
+    def __init__(self, px=1.0):
+        self.px = px            # 이 프레임이 원본보다 몇 배 작은지 (작게 풀어 계산할 때 픽셀 단위 최솟값을 맞춤)
         self.fill = None
         self.prev_small = None
         self.akey = None
@@ -1130,7 +1141,7 @@ class Painter:
         for e in ells:
             sid = e[3] if len(e) > 3 else None
             k = (sid, seen.get(sid, 0)); seen[sid] = k[1] + 1
-            sp = subs.get(k) or Painter()
+            sp = subs.get(k) or Painter(self.px)
             changed |= sp._paint_yuv1(yf, [e], polys)
             keep[k] = sp
         self.subs = keep
@@ -1150,7 +1161,8 @@ class Painter:
             ws.append(float(e[2]) if len(e) > 2 else 1.0)
             r, _ = _axes(A)
             fe = float(e[5]) if len(e) > 5 and e[5] else 1.0
-            F = float(np.clip(min(r) * FEATHER_W * fe, 20, 2000)) if BLUR_V2 else float(np.clip(min(r) * FEATHER_W * fe, 20, FEATHER_MAX * fe))
+            px = self.px
+            F = float(np.clip(min(r) * FEATHER_W * fe, 20 * px, 2000 * px)) if BLUR_V2 else float(np.clip(min(r) * FEATHER_W * fe, 20 * px, FEATHER_MAX * fe * px))
             boxes.append((c, A, r, F, max(r) + F))
         X0 = int(max(0, min(c[0] - R for c, _, _, _, R in boxes)))
         Y0 = int(max(0, min(c[1] - R for c, _, _, _, R in boxes)))
@@ -1200,7 +1212,7 @@ class Painter:
         cv_ = self.alpha_s > 0.05
         minr = min(min(r) for _, _, r, _, _ in boxes)
         kmax = max([float(e[4]) if len(e) > 4 and e[4] else 1.0 for e in ells] or [1.0])
-        sig = max(15.0, 2 * minr * BLUR_FRAC) * kmax
+        sig = max(15.0 * self.px, 2 * minr * BLUR_FRAC) * kmax
         soft = (fill_small_v2(small, nd, self.alpha_s, sig, f) if BLUR_V2 else fill_small(small, nd, cv_, sig, f)).astype(np.float32)
         fs = getattr(self, "fill_s", None)
         if fs is not None:                           # 블러 속은 이전 프레임과 섞어 천천히만 바뀜 (작은 크기에서, 위치를 맞춰서)
@@ -1223,9 +1235,22 @@ class Painter:
             np.clip(r_, 0, yf.maxv, out=r_)
             r_ += 0.5
             P[...] = r_.astype(P.dtype)
-        mix(yf.Y[Y0:Y1, X0:X1], cv2.resize(ys_, (w, h), interpolation=cv2.INTER_CUBIC), alpha)
-        mix(yf.U[Y0 // sy:Y0 // sy + hc, X0 // sx:X0 // sx + wc], cv2.resize(us_, (wc, hc), interpolation=cv2.INTER_CUBIC), alpha_c)
-        mix(yf.V[Y0 // sy:Y0 // sy + hc, X0 // sx:X0 // sx + wc], cv2.resize(vs_, (wc, hc), interpolation=cv2.INTER_CUBIC), alpha_c)
+        Yr = cv2.resize(ys_, (w, h), interpolation=cv2.INTER_CUBIC)
+        Ur = cv2.resize(us_, (wc, hc), interpolation=cv2.INTER_CUBIC)
+        Vr = cv2.resize(vs_, (wc, hc), interpolation=cv2.INTER_CUBIC)
+        ov = getattr(yf, "ovl", None)
+        if ov is not None:                             # 덮개 모으기 (원본 크기 영상 위에 그래픽카드가 덮을 블러 색·투명도, 미리 곱한 색)
+            def acc(Pm, Pa, src, a):
+                a1 = 1.0 - a
+                cv2.multiply(Pm, a1, dst=Pm); cv2.add(Pm, cv2.multiply(src, a), dst=Pm)
+                cv2.multiply(Pa, a1, dst=Pa); cv2.add(Pa, a, dst=Pa)
+            acc(ov["Y"][Y0:Y1, X0:X1], ov["A"][Y0:Y1, X0:X1], Yr, alpha)
+            cy0, cx0 = Y0 // sy, X0 // sx
+            acc(ov["U"][cy0:cy0 + hc, cx0:cx0 + wc], ov["Ac"][cy0:cy0 + hc, cx0:cx0 + wc], Ur, alpha_c)
+            acc(ov["V"][cy0:cy0 + hc, cx0:cx0 + wc], ov["Ac2"][cy0:cy0 + hc, cx0:cx0 + wc], Vr, alpha_c)
+        mix(yf.Y[Y0:Y1, X0:X1], Yr, alpha)
+        mix(yf.U[Y0 // sy:Y0 // sy + hc, X0 // sx:X0 // sx + wc], Ur, alpha_c)
+        mix(yf.V[Y0 // sy:Y0 // sy + hc, X0 // sx:X0 // sx + wc], Vr, alpha_c)
         return True
 
 

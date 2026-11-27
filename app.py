@@ -350,9 +350,9 @@ class Dec:
     시간으로 건너뛰면 영상 형식에 따라 1~2프레임 어긋날 수 있어서, 1초 앞에서부터 풀고 각 프레임의 시간을 보고 번호를 맞춤.
     table(위치 찾기 단계에서 기록한 프레임별 시간)이 있으면 그걸로 번호를 찾음 (시간이 고르지 않은 영상도 정확)"""
 
-    def __init__(self, src, start, count, W, H, fps, pix_fmt="bgr24", fsz=None, t0=0.0, table=None, seek=True, threads=2, mi=None, vf=None):
+    def __init__(self, src, start, count, W, H, fps, pix_fmt="bgr24", fsz=None, t0=0.0, table=None, seek=True, threads=2, mi=None, vf=None, hwout=False):
         self.src, self.start, self.end, self.fps, self.t0 = src, start, start + count, fps, t0
-        self.vf = vf
+        self.vf, self.hwout = vf, hwout
         self.pix_fmt, self.fsz = pix_fmt, fsz or W * H * 3
         self.W, self.H, self.conv = W, H, None
         # BGR이 필요할 때: ffmpeg에서 BGR로 바꿔 넘기면 한 장이 6MB라 윈도우에서 넘기는 통로가 막힘 →
@@ -377,7 +377,7 @@ class Dec:
         self.ss = ss
         self.p = subprocess.Popen([ffmpeg_exe(), "-hide_banner", "-nostats", "-loglevel", "info", "-threads", str(self.threads),
                                    "-filter_threads", str(max(1, self.threads)), "-copyts",
-                                   *(["-hwaccel", "cuda"] if _hw_for(self.src) else []),          # 그래픽카드로 풀기 (CPU로 푼 것과 같은 걸 확인한 영상만)
+                                   *(["-hwaccel", "cuda"] + (["-hwaccel_output_format", "cuda"] if self.hwout else []) if _hw_for(self.src) else []),   # 그래픽카드로 풀기 (CPU로 푼 것과 같은 걸 확인한 영상만)
                                    *(["-ss", f"{ss:.6f}"] if ss > 0 else []), "-i", self.src, "-map", "0:v:0",
                                    "-vf", (self.vf + "," if self.vf else "") + "showinfo=checksum=0", "-fps_mode", "passthrough",   # 프레임을 복제·생략하지 않고 풀린 그대로
                                    "-f", "rawvideo", "-pix_fmt", self.pix_fmt, "-"],
@@ -683,6 +683,187 @@ def _paint_worker(src, runs, count, W, H, fps, params, mi, subs, counter, q):
         q.put((0, 0, {}, {}, traceback.format_exc()[-800:]))
 
 
+def _ovl_cmd(src, ps, pc, mi, W, H, box, gpu, path):
+    """원본을 그래픽카드로 풀어 그대로 압축하면서, 블러 덮개(작은 범위 yuva 그림)만 생성기에서 받아 덮는 ffmpeg 명령.
+    gpu=True: 원본 4K 프레임이 그래픽카드 밖으로 안 나옴 (풀기→덮기→압축 전부 그래픽카드)
+    gpu=False: 원본을 CPU 쪽으로 내려 덮은 뒤 압축 (그래픽카드 덮기가 안 될 때)"""
+    fr = mi["fps_str"]
+    fps = float(Fraction(fr))
+    table = mi.get("table")
+    if table and ps < len(table):
+        T0, ss = table[ps] - 0.5 / fps, max(0.0, table[ps] - table[0] - 1.0)
+    else:
+        T0, ss = mi["t0"] + (ps - 0.5) / fps, max(0.0, ps / fps - 1.0)
+    hw = _hw_for(src)
+    enc = list(mi["enc"])
+    if gpu:
+        i_ = 0
+        while i_ < len(enc) - 1:                    # 그래픽카드 프레임을 바로 압축 (픽셀 형식 지정 빼기)
+            if enc[i_] == "-pix_fmt":
+                del enc[i_:i_ + 2]
+            else:
+                i_ += 1
+    cmd = [ffmpeg_exe(), "-y", "-hide_banner", "-loglevel", "error", "-copyts",
+           *(["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"] if gpu else (["-hwaccel", "cuda"] if hw else [])),
+           *(["-ss", f"{ss:.6f}"] if ss > 0 else []), "-i", src]
+    main = f"[0:v]trim=start={T0:.6f},setpts=N/({fr})/TB"
+    if box is None:                                   # 이 조각엔 블러가 없음: 그대로 다시 압축만
+        fc = main + "[v]"
+    else:
+        x0, y0, x1, y1 = box
+        cmd += ["-f", "rawvideo", "-pix_fmt", "yuva420p", "-s", f"{x1 - x0}x{y1 - y0}", "-r", fr, "-i", "-"]
+        if gpu:
+            fc = (main + ",scale_cuda=format=yuv420p[m];[1:v]setpts=N/(" + fr + ")/TB,hwupload_cuda[o];"
+                  f"[m][o]overlay_cuda=x={x0}:y={y0}[v]")
+        else:
+            fc = (main + ",format=yuv420p[m];[1:v]setpts=N/(" + fr + ")/TB[o];"
+                  f"[m][o]overlay=x={x0}:y={y0}:format=yuv420:alpha=straight:eof_action=repeat[v]")
+    ofs = 10 + float(ps / Fraction(fr))
+    cont = ["-output_ts_offset", f"{ofs:.9f}", "-muxdelay", "0", "-muxpreload", "0", "-f", "mpegts"] if path.endswith(".ts") else ["-f", "nut"]
+    cmd += ["-filter_complex", fc, "-map", "[v]", "-frames:v", str(pc), "-fps_mode", "passthrough", *enc, *cont, path + ".tmp"]
+    return cmd
+
+
+def _ovl_paint_worker(src, parts, count, W, H, fps, params, mi, gpu, counter, q):
+    """새 저장 방식: 원본 4K는 ffmpeg(그래픽카드)가 풀어 바로 압축하고, 생성기는 작게 풀어 블러 덮개만 계산해 넘김.
+    parts: [(조각번호, 조각시작, 조각길이, 파일, 블러들, 윤곽들, 블러앞여유)] — 블러들/윤곽들은 (조각시작-여유)부터"""
+    _low_priority()
+    try:
+        import cover2
+        import numpy as np
+        for k, v in params.items():
+            setattr(cover2, k, v)
+        sc = min(1.0, 960.0 / W)                      # 블러 재료를 계산할 작은 크기 (4K → 960x540)
+        Wl, Hl = max(2, int(round(W * sc / 2)) * 2), max(2, int(round(H * sc / 2)) * 2)
+        sx_, sy_ = Wl / W, Hl / H
+        fszl = Wl * Hl * 3 // 2
+        if _hw_for(src):
+            vf_l, extra = f"scale_cuda={Wl}:{Hl}:interp_algo=lanczos,hwdownload,format=nv12", True
+        else:
+            vf_l, extra = f"scale={Wl}:{Hl}:flags=area", False
+        made, tm = {}, {"read": 0.0, "paint": 0.0, "write": 0.0}
+        mode = {"gpu": gpu}
+
+        def scale_e(e):
+            c = [e[0][0] * sx_, e[0][1] * sy_]
+            A = np.asarray(e[1], float)
+            S = np.diag([1 / sx_, 1 / sy_])
+            return (c, (S @ A @ S).tolist(), *e[2:])
+
+        for idx, ps, pc, path, ells, polys, w0 in parts:
+            # 이 조각에서 블러가 닿는 전체 범위 (원본 크기, 짝수로)
+            xs, ys = [], []
+            for k in range(ps - w0, ps - w0 + pc):
+                for e in (ells[k] if k < len(ells) else []):
+                    a, b_, c, d = cover2.ell_reach(e)
+                    xs += [a, c]; ys += [b_, d]
+            box = None
+            if xs:
+                x0, y0 = max(0, int(min(xs)) // 2 * 2), max(0, int(min(ys)) // 2 * 2)
+                x1, y1 = min(W, (int(max(xs)) + 2) // 2 * 2), min(H, (int(max(ys)) + 2) // 2 * 2)
+                if x1 - x0 >= 4 and y1 - y0 >= 4:
+                    box = (x0, y0, x1, y1)
+            for attempt in (0, 1):
+                use_gpu = mode["gpu"]
+                cmd = _ovl_cmd(src, ps, pc, mi, W, H, box, use_gpu, path)
+                enc = subprocess.Popen(cmd, stdin=subprocess.PIPE if box else subprocess.DEVNULL, stderr=subprocess.PIPE)
+                err = []
+                threading.Thread(target=lambda e_=enc: err.append(e_.stderr.read()), daemon=True).start()
+                broken = False
+                if box:
+                    bw, bh = box[2] - box[0], box[3] - box[1]
+                    lx0, ly0 = int(box[0] * sx_) // 2 * 2, int(box[1] * sy_) // 2 * 2
+                    lx1, ly1 = min(Wl, -(-int(box[2] * sx_ + 1) // 2) * 2), min(Hl, -(-int(box[3] * sy_ + 1) // 2) * 2)
+                    zero = bytes(bw * bh * 5 // 2)              # 블러가 없는 장: 완전히 투명
+                    dec = Dec(src, w0, ps + pc - w0, Wl, Hl, fps, "yuv420p", fszl, t0=mi["t0"],
+                              table=mi.get("table"), vf=vf_l, hwout=extra)
+                    P = cover2.Painter(px=sx_)
+                    expect, last = ps, zero
+                    while expect < ps + pc:
+                        _t = time.time()
+                        got = dec.read()
+                        tm["read"] += time.time() - _t
+                        if got is None:
+                            break
+                        i, buf, _ = got
+                        if i < expect and i >= ps:
+                            continue
+                        if i >= ps + pc:
+                            break
+                        _t = time.time()
+                        j = i - w0
+                        es = ells[j] if j < len(ells) else []
+                        out = None
+                        yf = media.YuvFrame(buf, "yuv420p", Wl, Hl, mi["matrix"], mi["range"])
+                        if es and i >= ps:
+                            ov = {"Y": np.zeros((Hl, Wl), np.float32), "A": np.zeros((Hl, Wl), np.float32),
+                                  "U": np.zeros((Hl // 2, Wl // 2), np.float32), "V": np.zeros((Hl // 2, Wl // 2), np.float32),
+                                  "Ac": np.zeros((Hl // 2, Wl // 2), np.float32), "Ac2": np.zeros((Hl // 2, Wl // 2), np.float32)}
+                            yf.ovl = ov
+                        P.paint_yuv(yf, [scale_e(e) for e in es],
+                                    [(np.asarray(p_, float) * (sx_, sy_)).tolist() for p_ in (polys[j] if j < len(polys) else []) if p_ is not None and len(p_) >= 3])
+                        if es and i >= ps:
+                            def up(prem, a_, size, cs):     # 미리 곱한 색·투명도를 원본 크기로 키운 뒤 나눠서 진짜 색으로
+                                x0_, y0_, x1_, y1_ = cs
+                                pm = cv2.resize(prem[y0_:y1_, x0_:x1_], size, interpolation=cv2.INTER_LINEAR)
+                                aa = cv2.resize(a_[y0_:y1_, x0_:x1_], size, interpolation=cv2.INTER_LINEAR)
+                                np.clip(aa, 0, 1, out=aa)
+                                col = pm / np.maximum(aa, 1e-3)
+                                return np.clip(col + 0.5, 0, 255).astype(np.uint8), aa
+                            Yc, Aa = up(ov["Y"], ov["A"], (bw, bh), (lx0, ly0, lx1, ly1))
+                            Uc, _ = up(ov["U"], ov["Ac"], (bw // 2, bh // 2), (lx0 // 2, ly0 // 2, lx1 // 2, ly1 // 2))
+                            Vc, _ = up(ov["V"], ov["Ac"], (bw // 2, bh // 2), (lx0 // 2, ly0 // 2, lx1 // 2, ly1 // 2))
+                            Ab = np.clip(Aa * 255 + 0.5, 0, 255).astype(np.uint8)
+                            out = Yc.tobytes() + Uc.tobytes() + Vc.tobytes() + Ab.tobytes()
+                        tm["paint"] += time.time() - _t
+                        if i < ps:
+                            continue
+                        _t = time.time()
+                        try:
+                            while expect <= i:              # 빠진 장은 앞 덮개로 채움
+                                enc.stdin.write(out if (expect == i and out is not None) else (last if expect < i else zero))
+                                expect += 1
+                                with counter.get_lock():
+                                    counter.value += 1
+                        except (BrokenPipeError, OSError):
+                            broken = True
+                            break
+                        last = out if out is not None else zero
+                        tm["write"] += time.time() - _t
+                    dec.close()
+                    try:
+                        while not broken and expect < ps + pc:
+                            enc.stdin.write(last); expect += 1
+                        enc.stdin.close()
+                    except (BrokenPipeError, OSError):
+                        broken = True
+                rc = enc.wait()
+                time.sleep(0.05)
+                e_txt = (err[0] if err else b"").decode("utf-8", "ignore")
+                ok_ = rc == 0 and not broken and os.path.exists(path + ".tmp") and _count_frames(path + ".tmp") == pc
+                if ok_:
+                    os.replace(path + ".tmp", path)
+                    made[idx] = pc
+                    if not box:
+                        with counter.get_lock():
+                            counter.value += pc
+                    break
+                try:
+                    os.remove(path + ".tmp")
+                except Exception:
+                    pass
+                if use_gpu and attempt == 0:          # 그래픽카드 덮기가 안 되면 CPU 덮기로 한 번 더
+                    print("  그래픽카드 덮기 실패 → CPU 덮기로:", e_txt[-300:], flush=True)
+                    mode["gpu"] = False
+                    with counter.get_lock():
+                        counter.value -= min(counter.value, pc)
+                    continue
+                raise RuntimeError(f"새 저장 방식 실패 (조각 {idx}): " + e_txt[-400:])
+        q.put((0, sum(made.values()), made, tm, None))
+    except Exception:
+        q.put((0, 0, {}, {}, traceback.format_exc()[-800:]))
+
+
 def _run_parallel(job, K, n, make_args, target, label, p0=50, p1=99):
     import multiprocessing as mp
     ctx = mp.get_context("spawn")
@@ -865,6 +1046,7 @@ def _copy_part(src, s, c, table, fps, out, tag=None):
 
 
 STREAM_MUX = os.environ.get("MOSAIC_STREAM_MUX", "1") != "0"
+OVL_SAVE = os.environ.get("MOSAIC_OVL_SAVE", "1") != "0"     # 새 저장 방식 (끄려면 환경 변수 0)
 
 
 class _StreamMux:
@@ -1027,6 +1209,34 @@ def paint_save(src, ells, polys, dst, job, n, W, H, fps, params, p0=77, p1=99, t
         sm = _StreamMux(paths, src, info, out_main)
     if dirty:
         label = "블러 그리고 저장 중" + (f" (고친 곳만 다시: {len(dirty)}/{len(bounds)}조각)" if times["reused"] else f" (원본과 같은 형식: {desc})")
+        # 새 저장 방식: 원본은 ffmpeg가 (가능하면 그래픽카드 안에서) 풀어 바로 압축, 생성기는 작게 풀어 블러 덮개만 계산
+        # (4K 프레임 한 장 12MB를 생성기로 들였다 내보내던 왕복이 없어짐). 안 되면 아래 예전 방식으로 이어서
+        ovl_ok = OVL_SAVE and stream and fmt == "yuv420p" and not (subs and subs.get("cues"))
+        if ovl_ok:
+            gpu_ovl = bool(genc) and _hw_for(src)
+            Ko = max(1, min(4 if gpu_ovl else K, len(dirty)))
+            groups_o = [dirty[w_::Ko] for w_ in range(Ko)]
+
+            def parts_of(g):
+                out = []
+                for k in g:
+                    s_, c_ = bounds[k]
+                    w0 = max(0, s_ - WARMUP)
+                    out.append((k, s_, c_, paths[k], ells[w0:s_ + c_], polys[w0:s_ + c_], w0))
+                return out
+            try:
+                rs_ = _run_parallel(job, Ko, total, lambda k: (src, parts_of(groups_o[k]), sum(bounds[i][1] for i in groups_o[k]), W, H, fps, params, mi, gpu_ovl),
+                                    _ovl_paint_worker, label, p0, p1)
+                times["save_mode"] = "새 방식 · " + ("그래픽카드 덮기" if gpu_ovl else "CPU 덮기")
+                tms = [r[3] for r in rs_ if len(r) > 4 and r[3]]
+                if tms:
+                    times["paint_parts"] = {k: round(sum(x[k] for x in tms) / len(tms), 1) for k in ("read", "paint", "write")}
+                    print("  저장 단계 시간 나눔 (일꾼 평균 초):", times["paint_parts"], flush=True)
+            except RuntimeError as e:
+                print("  새 저장 방식 실패 → 예전 방식으로 이어서:", str(e)[-500:], flush=True)
+                times["save_mode"] = "예전 방식 (새 방식 실패: " + str(e)[-200:] + ")"
+            dirty = [k for k in dirty if not os.path.exists(paths[k])]
+            total = sum(bounds[k][1] for k in dirty)
         while dirty:
             K = max(1, min(K, len(dirty)))
             groups, acc, w = [[] for _ in range(K)], 0, 0
