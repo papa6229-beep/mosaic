@@ -229,6 +229,35 @@ class _Stats:
         return float((self.a[name][m] < thr).double().mean())
 
 
+def _pct_int(v, p):
+    """정수 값(0~255)들의 백분위 — numpy percentile(직선 보간)과 똑같은 값을 정렬 없이 개수 세기로 빠르게"""
+    n = v.size
+    if n == 0:
+        return float("nan")
+    cnt = np.bincount(v.astype(np.int64).ravel(), minlength=256)
+    cum = np.cumsum(cnt)
+    pos = p / 100.0 * (n - 1)
+    lo, hi = int(np.floor(pos)), int(np.ceil(pos))
+    a = int(np.searchsorted(cum, lo + 1))
+    b = int(np.searchsorted(cum, hi + 1))
+    return float(a + (b - a) * (pos - lo))
+
+
+class _StatsCPU:
+    """털 판단용 중간값·백분위 (CPU). 밝기(L)는 정수라 개수 세기로 빠르게, 나머지는 numpy 그대로 — 값은 numpy 와 똑같음"""
+    def __init__(self, **arrs):
+        self.a = arrs
+
+    def q(self, name, mask, p):
+        m = self.a[mask] if isinstance(mask, str) else mask
+        v = self.a[name][m]
+        return _pct_int(v, p) if name == "L" else float(np.percentile(v, p))
+
+    def mean_lt(self, name, mask, thr):
+        m = self.a[mask] if isinstance(mask, str) else mask
+        return float((self.a[name][m] < thr).mean())
+
+
 def hair_mask(frame, box, near, faces=()):
     """원본 모자이크 주변에서 음모(가닥 결이 많고 살색이 빠진 덩어리)만 찾음. 얼굴 근처는 제외"""
     H, W = frame.shape[:2]
@@ -244,15 +273,15 @@ def hair_mask(frame, box, near, faces=()):
     valid = cv2.erode((L > 25).astype(np.uint8), np.ones((31, 31), np.uint8)) > 0
     if valid.sum() < 100:
         return None, (0, 0)
-    dev = _gpu() if FAST_SCAN else None
-    S0 = _Stats(dev, L=L, valid=valid) if dev is not None else None
-    skinL = S0.q("L", "valid", 80) if S0 else np.percentile(L[valid], 80)
+    # (훑기 일꾼마다 그래픽카드를 따로 켜면 일꾼 수만큼 그래픽카드 준비·주고받기가 생겨서 오히려 느림 → CPU, 같은 값)
+    S0 = _StatsCPU(L=L, valid=valid)
+    skinL = S0.q("L", "valid", 80)
     skin = valid & (L > skinL * 0.85)
     if skin.sum() < 50:
         return None, (0, 0)
     hp = L - cv2.GaussianBlur(L, (0, 0), 2)
     sd = np.sqrt(np.maximum(cv2.blur(hp * hp, (9, 9)), 0))
-    S = _Stats(dev, L=L, C=C, sd=sd, skin=skin)
+    S = _StatsCPU(L=L, C=C, sd=sd, skin=skin)
     skinC = S.q("C", "skin", 50)
     base = S.q("sd", "skin", 50) + 1e-3
     m = (valid & (L < skinL * 0.8) & (C < skinC * 0.9)).astype(np.uint8)
