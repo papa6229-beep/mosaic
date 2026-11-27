@@ -726,7 +726,10 @@ def _paint_worker(src, runs, count, W, H, fps, params, mi, subs, counter, q):
         q.put((0, 0, {}, {}, traceback.format_exc()[-800:]))
 
 
-OVL_MODES = ("g_yuv", "g_nv12", "g_dl", "cpu")        # 앞에서부터 시도해서 되는 걸로 (그래픽카드·드라이버마다 받는 형식이 달라서)
+# 덮기 방식: 원본은 그래픽카드로 풀고 → 덮기는 ffmpeg가 CPU에서(블러 범위만) → 그래픽카드로 압축 ("cpu").
+# 덮기까지 그래픽카드에서 하는 방식들은 태준님 PC(RTX 4060, 드라이버 621)에서 필터·압축기가 받아 주지 않아서 기본은 끔
+# (MOSAIC_OVL_GPU=1 이면 앞에서부터 시도). 실측: 4K60 H.264 저장 13.4장/초(예전) → 50.7장/초("cpu")
+OVL_MODES = ("g_yuv", "g_nv12", "g_dl", "cpu") if os.environ.get("MOSAIC_OVL_GPU") == "1" else ("cpu",)
 OVL_NAMES = {"g_yuv": "그래픽카드 덮기", "g_nv12": "그래픽카드 덮기(nv12)", "g_dl": "그래픽카드 덮기 + 내려받아 압축", "cpu": "CPU 덮기"}
 
 
@@ -1497,7 +1500,7 @@ def run_job(jid, src, params):
                 threading.Thread(target=_audio_job, args=(jid, src, os.path.join(JOBS, jid, "proxy.mp4"),
                                                           os.path.join(JOBS, jid, "proxy_av.mp4")), daemon=True).start()
             t_detect = time.time() - t0
-            n = max(n, n2)
+            n = n2 if n2 > 0 else n                          # 실제로 풀린 장수 (영상 정보의 장수는 어림값이라 몇 장 많을 수 있음)
             bj = os.path.join(JOBS, jid, "boxes.json")
             json.dump(boxes, open(bj, "w"))
             try:   # 찾은 원본 모자이크 전부 (여러 개·윤곽까지) — 다음 개선용

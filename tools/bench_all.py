@@ -81,7 +81,7 @@ def main():
     table = []
     boxes, all_boxes, exps, n2 = app.detect_all(clip, job, n, None, table)
     t_det = time.time() - t
-    n = max(n, n2)
+    n = n2 if n2 > 0 else n
     json.dump(table, open(os.path.join(work, "pts.json"), "w"))
     bj = os.path.join(work, "boxes.json")
     json.dump(boxes, open(bj, "w"))
