@@ -293,39 +293,69 @@ def detect_all(src, job, n, proxy=None, table=None):
     sb = (lambda b: [v * k_ for v in b[:4]] + list(b[4:])) if k_ != 1 else (lambda b: b)
     sp = (lambda p: [[round(x * k_), round(y * k_)] for x, y in p] if p else p) if k_ != 1 else (lambda p: p)
     it = frames(src, table=table, size=(Wd, Hd))
+    step = analysis_step(inf_.get("fps"))              # 1초에 60장 영상은 두 장에 한 장만 찾고 사이 장은 앞 장 결과를 그대로 씀
+    bidx, total = [], 0                                # 이번 묶음에 든 프레임 번호들, 지금까지 읽은 프레임 수
+    last_b, last_a = None, []
+
+    def fill_to(upto):                                 # upto 앞까지 아직 결과가 없는 프레임은 바로 앞 결과로
+        nonlocal i
+        while i < upto:
+            if str(i) not in boxes:
+                boxes[str(i)] = last_b
+                all_boxes[str(i)] = last_a
+                if nude is not None:
+                    exps[str(i)] = last_e
+            i += 1
     while True:
         f = next(it, None)
         if f is not None:
-            batch.append(f)
             if proxy is not None:
                 proxy.put(f)
+            if total % step == 0:
+                batch.append(f)
+                bidx.append(total)
+            total += 1
         if batch and (len(batch) == 8 or f is None):
             for k, (b, allb) in enumerate(detect(batch)):
-                boxes[str(i + k)] = sb(b) if b else b
-                all_boxes[str(i + k)] = [sb(a[:5]) + [sp(a[5]) if len(a) > 5 else None] for a in allb] if k_ != 1 else allb
+                fi = bidx[k]
+                fill_to(fi)
+                last_b = sb(b) if b else b
+                last_a = [sb(a[:5]) + [sp(a[5]) if len(a) > 5 else None] for a in allb] if k_ != 1 else allb
+                boxes[str(fi)], all_boxes[str(fi)] = last_b, last_a
+                if nude is None:
+                    i = fi + 1
             if nude is not None:
                 try:
-                    sel = [k for k in range(len(batch)) if (i + k) % NUDE_EVERY == 0]
+                    sel = [k for k in range(len(batch)) if bidx[k] % (NUDE_EVERY * step) == 0]
                     res = dict(zip(sel, nude.detect([batch[k] for k in sel]))) if sel else {}
                     if k_ != 1:
                         res = {kk: {"must": [sb(b) for b in e["must"]], "faces": [(c, sb(b)) for c, b in e["faces"]]} for kk, e in res.items()}
                     for k in range(len(batch)):
                         if k in res:
                             last_e = res[k]
-                        exps[str(i + k)] = last_e
+                        exps[str(bidx[k])] = last_e
+                    i = bidx[-1] + 1
                 except Exception:
                     traceback.print_exc()
                     nude = None
                     exps = {}
-            i += len(batch)
-            batch = []
-            job["pct"] = int(i * 50 / max(n, 1))
+            batch, bidx = [], []
+            job["pct"] = int(total * 50 / max(n, 1))
             el = time.time() - t0
-            left = el / max(i, 1) * (n - i)
-            job["msg"] = f"원본 모자이크 위치·노출 찾는 중 {i}/{n} 프레임 · {how} · 이 단계 남은 시간 약 {fmt_sec(left)}"
+            left = el / max(total, 1) * (n - total)
+            job["msg"] = f"원본 모자이크 위치·노출 찾는 중 {total}/{n} 프레임 · {how}{' · 두 장에 한 장' if step > 1 else ''} · 이 단계 남은 시간 약 {fmt_sec(left)}"
         if f is None:
             break
-    return boxes, all_boxes, exps if (nude is not None and len(exps) == i) else None, i
+    fill_to(total)
+    return boxes, all_boxes, exps if (nude is not None and len(exps) == total) else None, total
+
+
+def analysis_step(fps):
+    """찾기·훑기를 몇 장마다 할지: 1초에 40장 넘는 영상(60fps)은 2장마다 (30fps 영상과 같은 촘촘함)"""
+    try:
+        return 2 if float(fps) > 40 and os.environ.get("MOSAIC_FULLRATE") != "1" else 1
+    except Exception:
+        return 1
 
 
 # ---------------- 2단계: 덮기 + 저장 ----------------
@@ -561,15 +591,25 @@ def _scan_worker(src, start, count, W, H, fps, mi, table, entries, exps, params,
         total = start + count - w0
         s = _scan_scale(W, H) if params.get("FAST_SCAN") else 1.0   # 빠른 훑기: 큰 영상은 1080p 크기로 줄여서 훑음
         W2, H2 = (int(round(W / s / 2)) * 2, int(round(H / s / 2)) * 2) if s > 1 else (W, H)
+        gscale = s > 1 and _hw_for(src)                 # 줄이기도 그래픽카드 안에서 (4K 프레임을 CPU로 내려받지 않음)
         dec = Dec(src, w0, total, W2, H2, fps, t0=mi.get("t0", 0.0), table=table, mi=mi,
-                  vf=f"scale={W2}:{H2}:flags=area" if s > 1 else None)
+                  vf=(f"scale_cuda={W2}:{H2}:interp_algo=lanczos,hwdownload,format=nv12" if gscale else f"scale={W2}:{H2}:flags=area") if s > 1 else None,
+                  hwout=gscale)
         A = cover2.Analyzer()
         res = [None] * count
+        step = analysis_step(fps)                         # 60fps 영상: 두 장에 한 장만 훑고 사이 장은 앞 장 결과 그대로
+        prev_r = None
         while True:
             got = dec.read()
             if got is None:
                 break
             i, buf, _ = got
+            if step > 1 and i % step and prev_r is not None:
+                if i >= start:
+                    res[i - start] = prev_r
+                    with counter.get_lock():
+                        counter.value += 1
+                continue
             j = i - w0
             f = np.frombuffer(buf, np.uint8).reshape(H2, W2, 3)
             ent = entries[j] if j < len(entries) else []
@@ -579,6 +619,7 @@ def _scan_worker(src, start, count, W, H, fps, mi, table, entries, exps, params,
             r = A.analyze(f, i, ent, ex)
             if s > 1:
                 r = _scale_out(r, s)
+            prev_r = r
             if i >= start:
                 res[i - start] = r
                 with counter.get_lock():
@@ -774,11 +815,24 @@ def _ovl_paint_worker(src, parts, count, W, H, fps, params, mi, gpu, counter, q)
                     bw, bh = box[2] - box[0], box[3] - box[1]
                     lx0, ly0 = int(box[0] * sx_) // 2 * 2, int(box[1] * sy_) // 2 * 2
                     lx1, ly1 = min(Wl, -(-int(box[2] * sx_ + 1) // 2) * 2), min(Hl, -(-int(box[3] * sy_ + 1) // 2) * 2)
-                    zero = bytes(bw * bh * 5 // 2)              # 블러가 없는 장: 완전히 투명
+                    pbuf = np.zeros(bw * bh * 5 // 2, np.uint8)  # 덮개 한 장 (Y, U, V, 투명도) — 블러가 닿는 곳만 매번 고쳐 씀
+                    pY = pbuf[:bw * bh].reshape(bh, bw)
+                    pU = pbuf[bw * bh:bw * bh * 5 // 4].reshape(bh // 2, bw // 2)
+                    pV = pbuf[bw * bh * 5 // 4:bw * bh * 3 // 2].reshape(bh // 2, bw // 2)
+                    pA = pbuf[bw * bh * 3 // 2:].reshape(bh, bw)
+                    dirty_r = None                              # 지난 장에 그린 범위 (다음 장 전에 지움)
+                    ovc = {k_: np.zeros(sh_, np.float32) for k_, sh_ in (("Y", (Hl, Wl)), ("A", (Hl, Wl)), ("U", (Hl // 2, Wl // 2)),
+                                                                        ("V", (Hl // 2, Wl // 2)), ("Ac", (Hl // 2, Wl // 2)), ("Ac2", (Hl // 2, Wl // 2)))}
                     dec = Dec(src, w0, ps + pc - w0, Wl, Hl, fps, "yuv420p", fszl, t0=mi["t0"],
                               table=mi.get("table"), vf=vf_l, hwout=extra)
                     P = cover2.Painter(px=sx_)
-                    expect, last = ps, zero
+                    expect = ps
+
+                    def send():
+                        enc.stdin.write(memoryview(pbuf))
+                        with counter.get_lock():
+                            counter.value += 1
+
                     while expect < ps + pc:
                         _t = time.time()
                         got = dec.read()
@@ -793,47 +847,75 @@ def _ovl_paint_worker(src, parts, count, W, H, fps, params, mi, gpu, counter, q)
                         _t = time.time()
                         j = i - w0
                         es = ells[j] if j < len(ells) else []
-                        out = None
                         yf = media.YuvFrame(buf, "yuv420p", Wl, Hl, mi["matrix"], mi["range"])
-                        if es and i >= ps:
-                            ov = {"Y": np.zeros((Hl, Wl), np.float32), "A": np.zeros((Hl, Wl), np.float32),
-                                  "U": np.zeros((Hl // 2, Wl // 2), np.float32), "V": np.zeros((Hl // 2, Wl // 2), np.float32),
-                                  "Ac": np.zeros((Hl // 2, Wl // 2), np.float32), "Ac2": np.zeros((Hl // 2, Wl // 2), np.float32)}
-                            yf.ovl = ov
+                        live = bool(es) and i >= ps
+                        if live:
+                            for v_ in ovc.values():
+                                v_.fill(0)
+                            yf.ovl = ovc
                         P.paint_yuv(yf, [scale_e(e) for e in es],
                                     [(np.asarray(p_, float) * (sx_, sy_)).tolist() for p_ in (polys[j] if j < len(polys) else []) if p_ is not None and len(p_) >= 3])
-                        if es and i >= ps:
-                            def up(prem, a_, size, cs):     # 미리 곱한 색·투명도를 원본 크기로 키운 뒤 나눠서 진짜 색으로
-                                x0_, y0_, x1_, y1_ = cs
-                                pm = cv2.resize(prem[y0_:y1_, x0_:x1_], size, interpolation=cv2.INTER_LINEAR)
-                                aa = cv2.resize(a_[y0_:y1_, x0_:x1_], size, interpolation=cv2.INTER_LINEAR)
-                                np.clip(aa, 0, 1, out=aa)
-                                col = pm / np.maximum(aa, 1e-3)
-                                return np.clip(col + 0.5, 0, 255).astype(np.uint8), aa
-                            Yc, Aa = up(ov["Y"], ov["A"], (bw, bh), (lx0, ly0, lx1, ly1))
-                            Uc, _ = up(ov["U"], ov["Ac"], (bw // 2, bh // 2), (lx0 // 2, ly0 // 2, lx1 // 2, ly1 // 2))
-                            Vc, _ = up(ov["V"], ov["Ac"], (bw // 2, bh // 2), (lx0 // 2, ly0 // 2, lx1 // 2, ly1 // 2))
-                            Ab = np.clip(Aa * 255 + 0.5, 0, 255).astype(np.uint8)
-                            out = Yc.tobytes() + Uc.tobytes() + Vc.tobytes() + Ab.tobytes()
                         tm["paint"] += time.time() - _t
                         if i < ps:
                             continue
                         _t = time.time()
                         try:
-                            while expect <= i:              # 빠진 장은 앞 덮개로 채움
-                                enc.stdin.write(out if (expect == i and out is not None) else (last if expect < i else zero))
-                                expect += 1
-                                with counter.get_lock():
-                                    counter.value += 1
+                            while expect < i:                   # 빠진 장은 앞 덮개 그대로
+                                send(); expect += 1
                         except (BrokenPipeError, OSError):
                             broken = True
                             break
-                        last = out if out is not None else zero
+                        tm["write"] += time.time() - _t
+                        _t = time.time()
+                        if dirty_r is not None:                 # 지난 장 덮개 지우기
+                            a0, b0, a1, b1 = dirty_r
+                            pY[b0:b1, a0:a1] = 0; pA[b0:b1, a0:a1] = 0
+                            pU[b0 // 2:b1 // 2, a0 // 2:a1 // 2] = 0; pV[b0 // 2:b1 // 2, a0 // 2:a1 // 2] = 0
+                            dirty_r = None
+                        if live:
+                            nz = cv2.findNonZero((ovc["A"] > 1e-4).astype(np.uint8))
+                            if nz is not None:
+                                rx, ry, rw, rh = cv2.boundingRect(nz)
+                                # 작은 크기에서 블러가 닿은 범위 (짝수로) → 원본 크기 덮개 안의 자리
+                                l0, t0_ = max(0, rx - 2) // 2 * 2, max(0, ry - 2) // 2 * 2
+                                l1, t1 = min(Wl, (rx + rw + 3) // 2 * 2), min(Hl, (ry + rh + 3) // 2 * 2)
+                                F0 = (int(round(l0 / sx_)) // 2 * 2, int(round(t0_ / sy_)) // 2 * 2)
+                                F1 = (min(W, int(round(l1 / sx_)) // 2 * 2), min(H, int(round(t1 / sy_)) // 2 * 2))
+                                # 덮개 범위(box)와 겹치는 부분만
+                                a0, b0 = max(F0[0], box[0]), max(F0[1], box[1])
+                                a1, b1 = min(F1[0], box[2]), min(F1[1], box[3])
+                                if a1 - a0 >= 2 and b1 - b0 >= 2:
+                                    Ay = ovc["A"][t0_:t1, l0:l1]
+                                    Yc = ovc["Y"][t0_:t1, l0:l1] / np.maximum(Ay, 1e-3)
+                                    Ac = ovc["Ac"][t0_ // 2:t1 // 2, l0 // 2:l1 // 2]
+                                    Uc = ovc["U"][t0_ // 2:t1 // 2, l0 // 2:l1 // 2] / np.maximum(Ac, 1e-3)
+                                    Vc = ovc["V"][t0_ // 2:t1 // 2, l0 // 2:l1 // 2] / np.maximum(Ac, 1e-3)
+                                    q8 = lambda x: np.clip(x + 0.5, 0, 255).astype(np.uint8)
+                                    fw, fh = F1[0] - F0[0], F1[1] - F0[1]
+                                    # 작은 크기에서 진짜 색으로 바꾼 뒤 원본 크기로 (8비트로 키워서 빠르게)
+                                    Yf = cv2.resize(q8(Yc), (fw, fh), interpolation=cv2.INTER_LINEAR)
+                                    Af = cv2.resize(q8(np.clip(Ay, 0, 1) * 255), (fw, fh), interpolation=cv2.INTER_LINEAR)
+                                    Uf = cv2.resize(q8(Uc), (fw // 2, fh // 2), interpolation=cv2.INTER_LINEAR)
+                                    Vf = cv2.resize(q8(Vc), (fw // 2, fh // 2), interpolation=cv2.INTER_LINEAR)
+                                    ox, oy = a0 - F0[0], b0 - F0[1]
+                                    px0, py0 = a0 - box[0], b0 - box[1]
+                                    pY[py0:py0 + (b1 - b0), px0:px0 + (a1 - a0)] = Yf[oy:oy + (b1 - b0), ox:ox + (a1 - a0)]
+                                    pA[py0:py0 + (b1 - b0), px0:px0 + (a1 - a0)] = Af[oy:oy + (b1 - b0), ox:ox + (a1 - a0)]
+                                    pU[py0 // 2:(py0 + b1 - b0) // 2, px0 // 2:(px0 + a1 - a0) // 2] = Uf[oy // 2:(oy + b1 - b0) // 2, ox // 2:(ox + a1 - a0) // 2]
+                                    pV[py0 // 2:(py0 + b1 - b0) // 2, px0 // 2:(px0 + a1 - a0) // 2] = Vf[oy // 2:(oy + b1 - b0) // 2, ox // 2:(ox + a1 - a0) // 2]
+                                    dirty_r = (px0, py0, px0 + (a1 - a0), py0 + (b1 - b0))
+                        tm["paint"] += time.time() - _t
+                        _t = time.time()
+                        try:
+                            send(); expect += 1
+                        except (BrokenPipeError, OSError):
+                            broken = True
+                            break
                         tm["write"] += time.time() - _t
                     dec.close()
                     try:
                         while not broken and expect < ps + pc:
-                            enc.stdin.write(last); expect += 1
+                            send(); expect += 1
                         enc.stdin.close()
                     except (BrokenPipeError, OSError):
                         broken = True
