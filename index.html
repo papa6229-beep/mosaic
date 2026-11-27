@@ -185,7 +185,7 @@
         <div class="range"><div class="top"><b>블러 세기</b><span id="blur_v"></span></div>
           <input id="blur" type="range" min="0.1" max="0.6" step="0.05" value="0.2"></div>
         <div class="range"><div class="top"><b>가장자리 번짐 폭</b><span id="feather_v"></span></div>
-          <input id="feather" type="range" min="0.2" max="1.2" step="0.05" value="0.4"><small>클수록 바깥으로 넓게, 잘게 흐려지며 사라져요 (블러 크기에 비례)</small></div>
+          <input id="feather" type="range" min="0.2" max="1.2" step="0.05" value="0.45"><small>클수록 바깥으로 넓게, 잘게 흐려지며 사라져요 (블러 크기에 비례)</small></div>
       </details>
     </div>
     <button class="go" id="go">만들기 시작</button>
@@ -336,6 +336,13 @@ function jobCard(j, wait) {
   if (!j.done) h += `<div class="bar"><i style="width:${j.pct || 0}%"></i></div><div class="m">${esc(j.msg)}</div>`;
   else if (j.error) h += `<div class="m bad" style="margin-top:8px">${esc(j.error)}</div>`;
   if (s) h += `<div class="m ${s.sub_error ? "bad" : ""}" style="margin-top:4px">자막 · ${esc(s.sub_error ? "실패 — " + s.sub_error : s.sub_msg)}</div>`;
+  if (j.done && !j.error && j.kind === "fix") {               // 검수에서 시킨 수정본
+    const r = j.report || {};
+    h += `<div class="acts"><a class="btn pri" href="/download/${j.jid}">수정본 영상 받기</a>
+      <a class="btn" href="/review/${j.src_jid}" target="_blank">블러 검수·수정</a></div>`;
+    if (r.sec) h += `<div class="m" style="margin-top:6px">걸린 시간 ${fmt(r.sec)} · ${esc(r.out_name || "")}</div>`;
+    return h + "</div>";
+  }
   if (j.done && !j.error) {
     const r = j.report || {};
     h += j.mode === "subs" ? `<div class="acts"><a class="btn pri" href="/review/${j.jid}/subtitles" target="_blank">자막 보기·고치기</a></div>`

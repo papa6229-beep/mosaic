@@ -1238,7 +1238,7 @@ $("bRender").onclick = () => {
 function poll(id) {
   fetch("/status/" + id).then(r => r.json()).then(s => {
     if (s.error) { msg("실패: " + s.error, "bad"); $("bRender").disabled = false; return; }
-    msg(`${s.msg} ${s.pct || 0}%`);
+    msg(`${s.msg} ${s.pct || 0}% — 이 창을 닫고 다음 영상 검수로 넘어가도 돼요 (진행·결과는 첫 화면 목록에)`);
     if (!s.done) { setTimeout(() => poll(id), 800); return; }
     msg(`수정본 완성 (${s.report.sec}초 걸림)`, "ok");
     $("out").innerHTML = `<a class="dl" href="/download/${id}">수정본 영상 받기</a>`;

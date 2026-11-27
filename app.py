@@ -4,7 +4,7 @@
  - 영상 전체 위치를 시간순으로 다듬기 (점멸/크기 흔들림 방지)
  - 주변 피부색으로 채운 뒤 부드러운 블러로 덮기 -> 원본과 같은 형식(압축 방식·화질·소리 트랙)으로 저장
 """
-import os, sys, json, time, uuid, threading, subprocess, traceback, urllib.request, hashlib, shutil, re
+import os, collections, sys, json, time, uuid, threading, subprocess, traceback, urllib.request, hashlib, shutil, re
 import numpy as np
 import cv2
 from flask import Flask, request, jsonify, send_file, Response, redirect
@@ -27,7 +27,34 @@ os.makedirs(JOBS, exist_ok=True)
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = None
 state = {}            # job_id -> dict
-run_lock = threading.Lock()
+class _FifoLock:
+    """먼저 줄 선 작업부터 차례로 (새로 만들기·수정본 만들기가 섞여도 넣은 순서대로)"""
+
+    def __init__(self):
+        self.c = threading.Condition()
+        self.q = collections.deque()
+        self.busy = False
+
+    def __enter__(self):
+        me = object()
+        with self.c:
+            self.q.append(me)
+            while self.busy or self.q[0] is not me:
+                self.c.wait()
+            self.q.popleft()
+            self.busy = True
+        return self
+
+    def __exit__(self, *a):
+        with self.c:
+            self.busy = False
+            self.c.notify_all()
+
+    def locked(self):
+        return self.busy
+
+
+run_lock = _FifoLock()
 _model = None
 
 
@@ -1903,7 +1930,7 @@ def queue_list():
         if j.get("main"):
             out.append({"jid": jid, "name": j.get("name"), "pct": j.get("pct", 0), "msg": j.get("msg", ""), "done": j.get("done"),
                         "error": j.get("error"), "added": j.get("added"), "report": j.get("report"), "subs": sub_state.get(jid),
-                        "mode": j.get("mode", "blur")})
+                        "mode": j.get("mode", "blur"), "kind": j.get("kind"), "src_jid": j.get("src_jid")})
     out.sort(key=lambda x: x["added"])
     return jsonify(out)
 
@@ -2752,7 +2779,10 @@ def review_save(jid):
 
 def run_fix(fid, d, burn=False):
     job = state[fid]
+    if run_lock.locked():
+        job["msg"] = "앞 작업이 끝나길 기다리는 중"
     with run_lock:
+        job["msg"] = "수정본 만드는 중"
         os.environ["MOSAIC_FULL"] = "1" if night["on"] else "0"
         try:
             import cover2
@@ -2802,7 +2832,13 @@ def review_render(jid):
         json.dump(data, open(os.path.join(d, "edits.json"), "w"))
     burn = request.args.get("burn") == "1"
     fid = os.path.basename(jid) + "_fix_" + uuid.uuid4().hex[:4]
-    state[fid] = {"pct": 0, "msg": "수정본 만들 준비 중", "done": False}
+    try:
+        nm = os.path.basename(json.load(open(os.path.join(d, "review.json"), encoding="utf-8"))["src"])
+    except Exception:
+        nm = jid
+    # 첫 화면 작업 목록에도 보이게 (검수 창을 닫고 다음 영상 검수로 넘어가도 진행·결과를 볼 수 있게)
+    state[fid] = {"pct": 0, "msg": "수정본 만들 준비 중", "done": False, "main": True, "kind": "fix", "src_jid": os.path.basename(jid),
+                  "name": nm + (" — 자막 입힌 영상" if burn else " — 수정본"), "added": time.time()}
     threading.Thread(target=run_fix, args=(fid, d, burn), daemon=True).start()
     return jsonify(job=fid)
 
@@ -2814,7 +2850,12 @@ def review_subs_burn(jid):
     if not d:
         return jsonify(error="없는 작업"), 404
     fid = os.path.basename(jid) + "_sub_" + uuid.uuid4().hex[:4]
-    state[fid] = {"pct": 0, "msg": "자막 입힐 준비 중", "done": False}
+    try:
+        nm = os.path.basename(json.load(open(os.path.join(d, "review.json"), encoding="utf-8"))["src"])
+    except Exception:
+        nm = jid
+    state[fid] = {"pct": 0, "msg": "자막 입힐 준비 중", "done": False, "main": True, "kind": "fix", "src_jid": os.path.basename(jid),
+                  "name": nm + " — 자막 입힌 영상", "added": time.time()}
     threading.Thread(target=run_fix, args=(fid, d, True), daemon=True).start()
     return jsonify(job=fid)
 
