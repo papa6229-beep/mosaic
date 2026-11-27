@@ -23,7 +23,7 @@ def record(jid, job_dir, orig, lines):
         if not ja:
             continue
         if ko and (o is None or ko != (o.get("ko") or "").strip()):
-            tmp.append({"ja": ja, "ko": ko})
+            tmp.append({"ja": ja, "ko": ko, "ko0": (o.get("ko") or "").strip() if o is not None else ""})   # ko0: 고치기 전 번역 (어떤 말을 어떻게 바꿨는지 배우는 데 씀)
         if o is not None and ja != (o.get("src") or "").strip() and l["end"] - l["start"] < 30:
             asr.append({"start": round(l["start"], 2), "end": round(l["end"], 2), "ja": ja})
     os.makedirs(TM_DIR, exist_ok=True)
@@ -57,6 +57,35 @@ def record(jid, job_dir, orig, lines):
                     o.writeframes(w.readframes(s1 - s0))
                 meta.append({"audio": "clips/" + fn, "text": a["ja"]})
         json.dump(meta, open(os.path.join(ASR_DIR, jid + ".json"), "w", encoding="utf-8"), ensure_ascii=False)
+
+
+_PUNCT = " ,.?!~…·\"'‘’“”()[]-"
+
+
+def _words(t):
+    return [w.strip(_PUNCT) for w in (t or "").replace("\n", " ").split() if w.strip(_PUNCT)]
+
+
+def word_patterns(min_count=2, top=40):
+    """작업자들이 자막을 고친 기록에서 '이 말 → 이렇게' 바꾼 표현을 모음.
+    여러 줄(서로 다른 곳)에서 같은 식으로 바꾼 것만 (한 번만 바꾼 건 그 장면만의 사정일 수 있어서 뺌)"""
+    import difflib
+    cnt, seen = {}, set()
+    for m in _all():
+        a, b = _words(m.get("ko0")), _words(m.get("ko"))
+        if not a or not b or (m.get("ja"), m.get("ko")) in seen:
+            continue
+        seen.add((m.get("ja"), m.get("ko")))
+        sm = difflib.SequenceMatcher(None, a, b, autojunk=False)
+        if sm.ratio() < 0.3:                                # 거의 통째로 새로 쓴 줄은 단어 짝을 알 수 없어서 뺌
+            continue
+        for op, i1, i2, j1, j2 in sm.get_opcodes():
+            if op == "replace" and i2 - i1 <= 3 and j2 - j1 <= 3:
+                k = (" ".join(a[i1:i2]), " ".join(b[j1:j2]))
+                cnt[k] = cnt.get(k, 0) + 1
+    out = [(k[0], k[1], c) for k, c in cnt.items() if c >= min_count and k[0] != k[1]]
+    out.sort(key=lambda x: -x[2])
+    return out[:top]
 
 
 def _all():
@@ -96,11 +125,33 @@ def similar(texts, k=6):
 
 
 def prompt_for(texts):
+    out = ""
+    wp = word_patterns()
+    if wp:                                                 # 작업자가 여러 번 똑같이 고친 표현 → 처음부터 그렇게 쓰게
+        out += "\nTEAM WORDING learned from editors' repeated corrections (never use the left wording; use the right instead): " + \
+            "; ".join(f"{a} → {b}" for a, b, _ in wp) + "."
     s = similar(texts)
-    if not s:
-        return ""
-    return "\nPAST CORRECTIONS by this team for similar lines (Japanese → their final Korean; follow their choices): " + \
-        " | ".join(f"{m['ja']} → {m['ko']}" for m in s)
+    if s:
+        out += "\nPAST CORRECTIONS / BROADCAST SUBTITLES by this team for similar lines (Japanese → their final Korean; follow their wording): " + \
+            " | ".join(f"{m['ja']} → {m['ko']}" for m in s)
+    return out
+
+
+def add_pairs(name, pairs):
+    """방송본부 자막과 짝지어 배운 줄 (일본어 → 방송본부 한국어) 저장"""
+    os.makedirs(TM_DIR, exist_ok=True)
+    safe = "".join(ch if ch.isalnum() else "_" for ch in name)[:60]
+    json.dump(pairs, open(os.path.join(TM_DIR, "hq_" + safe + ".json"), "w", encoding="utf-8"), ensure_ascii=False)
+
+
+def hq_stats():
+    n, files = 0, 0
+    for f in glob.glob(os.path.join(TM_DIR, "hq_*.json")):
+        try:
+            n += len(json.load(open(f, encoding="utf-8"))); files += 1
+        except Exception:
+            pass
+    return n, files
 
 
 def stats():
@@ -110,4 +161,6 @@ def stats():
             asr += len(json.load(open(f, encoding="utf-8")))
         except Exception:
             pass
-    return {"tm": len(_all()), "asr": asr, "asr_dir": ASR_DIR}
+    hn, hf = hq_stats()
+    return {"tm": len(_all()) - hn, "asr": asr, "asr_dir": ASR_DIR, "hq": hn, "hq_files": hf,
+            "words": [[a, b, c] for a, b, c in word_patterns()]}

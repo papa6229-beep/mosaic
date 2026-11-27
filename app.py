@@ -2416,6 +2416,77 @@ def models_cfg():
     return jsonify(cfg=models.load(), tr=trs, asr=models.ASR_MODELS, p2=models.PASS2, enh=models.ENHANCERS, train=tm.stats())
 
 
+# ---------------- 방송본부 자막과 짝지어 배우기 ----------------
+learn_jobs = []          # [{id, name, msg, pct, done, error, n}]
+
+
+@app.post("/learn-pair")
+def learn_pair():
+    """방송본부 자막(SRT) + 그 자막과 시간이 맞는 영상(원본이든 편집본이든, 소리만 씀) → 일본어를 받아 적어서
+    같은 시간의 방송본부 한국어와 짝지어 '번역 기억'에 쌓음. 자막 만들기와 같은 줄에 서서 하나씩 (그래픽카드를 같이 안 씀)"""
+    f = request.files.get("srt")
+    path = (request.form.get("path") or "").strip().strip('"')
+    vf = request.files.get("video")
+    if not f:
+        return jsonify(error="방송본부 자막(SRT) 파일을 골라 주세요"), 400
+    if not vf and not (path and os.path.isfile(path)):
+        return jsonify(error="영상 파일을 고르거나, 영상 파일 위치를 적어 주세요" + (f" (그 위치에 파일이 없어요: {path})" if path else "")), 400
+    lid = uuid.uuid4().hex[:8]
+    d = os.path.join(BASE, "tmp", "learn_" + lid)
+    os.makedirs(d, exist_ok=True)
+    srt = os.path.join(d, "hq.srt")
+    f.save(srt)
+    if vf:
+        path = os.path.join(d, os.path.basename(vf.filename) or "video.mp4")
+        vf.save(path)
+    name = os.path.splitext(os.path.basename(f.filename or "hq"))[0]
+    st = {"id": lid, "name": name, "sub_msg": "차례를 기다리는 중 (자막 만들기가 끝나면 시작)", "sub_pct": 0, "done": False, "error": "", "n": 0}
+    learn_jobs.append(st)
+
+    def run():
+        with sub_lock:
+            try:
+                import subs, tm, wave
+                _close_line_tr()
+                _free_gpu()
+                cues = subs._read_srt(srt)
+                if not cues:
+                    raise RuntimeError("SRT 파일에서 자막을 못 읽었어요")
+                wav = os.path.join(d, "audio16k.wav")
+                subs._log(st, "말소리 꺼내는 중", 1)
+                subs.extract_audio(path, wav, st)
+                with wave.open(wav) as w:
+                    dur = w.getnframes() / float(w.getframerate())
+                lines = subs.transcribe(wav, dur, st, None, "ja")
+                subs._log(st, "방송본부 자막과 짝짓는 중", 98)
+                pairs = []
+                for c in cues:
+                    ko = re.sub(r"<[^>]+>|\{[^}]*\}", "", c["src"]).strip()
+                    ja = " ".join(l["src"] for l in lines
+                                  if c["start"] - 0.3 <= (l["start"] + l["end"]) / 2 <= c["end"] + 0.3 and l.get("src"))
+                    if ko and ja.strip():
+                        pairs.append({"ja": ja.strip(), "ko": ko, "hq": True})
+                if not pairs:
+                    raise RuntimeError("짝지을 줄이 없어요 — 영상과 자막의 시간이 맞는지 확인해 주세요")
+                with _tm_lock:
+                    tm.add_pairs(name, pairs)
+                st.update(n=len(pairs), sub_msg=f"끝 — 방송본부 자막 {len(cues)}개 중 {len(pairs)}줄을 일본어와 짝지어 배웠어요", sub_pct=100)
+            except Exception as e:
+                traceback.print_exc()
+                st["error"] = str(e)[:300]
+            finally:
+                st["done"] = True
+                shutil.rmtree(d, ignore_errors=True)         # 받아 적은 소리·올린 영상 사본은 지움 (배운 짝만 남김)
+    threading.Thread(target=run, daemon=True).start()
+    return jsonify(ok=True, id=lid)
+
+
+@app.get("/learn-pair")
+def learn_pair_list():
+    return jsonify([{"id": j["id"], "name": j["name"], "msg": j.get("sub_msg", ""), "pct": j.get("sub_pct", 0), "done": j["done"],
+                     "error": j["error"], "n": j["n"]} for j in learn_jobs])
+
+
 @app.get("/profiles")
 def profiles_list():
     import profiles
