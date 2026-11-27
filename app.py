@@ -1741,6 +1741,7 @@ def quit_server():
 PAGES = {}            # 열려 있는 생성기 화면들: {화면 id: 마지막으로 소식 온 시각}
 PAGES_LOCK = threading.Lock()
 LAST_BYE = [0.0]
+PAGES_SEEN = [False]
 
 
 def _shutdown():
@@ -1774,6 +1775,7 @@ def page_beat():
     pid = (request.get_json(silent=True) or {}).get("id") or request.args.get("id") or "?"
     with PAGES_LOCK:
         PAGES[pid] = time.time()
+        PAGES_SEEN[0] = True
     return jsonify(ok=True)
 
 
@@ -1822,9 +1824,11 @@ def _watch_pages():
         time.sleep(1)
         now = time.time()
         with PAGES_LOCK:
-            alive, seen = STREAMS[0], STREAMS[1]
-        if seen and alive == 0 and now - LAST_BYE[0] > 5:
-            print("  생성기 화면이 모두 닫혀서 생성기를 끕니다.", flush=True)
+            alive, seen, pages = STREAMS[0], STREAMS[1], len(PAGES)
+        # ① 화면들이 같이 쓰는 연결이 끊김 (브라우저를 통째로 닫음)
+        # ② 화면마다 '닫혀요' 소식이 와서 열린 화면이 0개 (탭만 닫음 — 브라우저가 연결을 늦게 끊는 경우 대비)
+        if seen and now - LAST_BYE[0] > 5 and (alive == 0 or (PAGES_SEEN[0] and pages == 0)):
+            print(f"  생성기 화면이 모두 닫혀서 생성기를 끕니다. (연결 {alive}개 · 화면 {pages}개)", flush=True)
             _shutdown()
 
 

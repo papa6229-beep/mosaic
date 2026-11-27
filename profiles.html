@@ -250,6 +250,9 @@ addEventListener("beforeunload", e => { if (window.__busy) { e.preventDefault();
 // 화면이 열려 있는 동안 생성기와 연결을 열어 둠 (생성기 화면을 모두 닫으면 생성기도 꺼짐)
 try { window.__alive = new SharedWorker("/alive-worker.js", { name: "mosaic-alive" }); window.__alive.port.start(); }
 catch (e) { try { new EventSource("/alive"); } catch (e2) {} }
+{ const pid = Math.random().toString(36).slice(2), hi = () => fetch("/beat?id=" + pid, { method: "POST" }).catch(() => {});
+  hi(); setInterval(hi, 20000); addEventListener("pageshow", e => { if (e.persisted) hi(); });
+  addEventListener("pagehide", () => { try { navigator.sendBeacon("/bye?id=" + pid); } catch (e) {} }); }
 </script>
 </body>
 </html>

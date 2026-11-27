@@ -481,6 +481,9 @@ setMode(mode); loadJobs(); pollQ();
   // 화면이 열려 있는 동안 생성기와 연결을 열어 둠 (모두 닫히면 끊김 → 생성기 꺼짐). 탭이 여러 개여도 연결은 하나만 같이 씀
   try { window.__alive = new SharedWorker("/alive-worker.js", { name: "mosaic-alive" }); window.__alive.port.start(); }
   catch (e) { try { new EventSource("/alive"); } catch (e2) {} }
+  const pid = Math.random().toString(36).slice(2), hi = () => fetch("/beat?id=" + pid, { method: "POST" }).catch(() => {});
+  hi(); setInterval(hi, 20000); addEventListener("pageshow", e => { if (e.persisted) hi(); });
+  addEventListener("pagehide", () => { try { navigator.sendBeacon("/bye?id=" + pid); } catch (e) {} });   // 이 화면이 닫혀요
   addEventListener("beforeunload", e => { if (window.__busy) { e.preventDefault(); e.returnValue = ""; } });
 })();
 </script>
