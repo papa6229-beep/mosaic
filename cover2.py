@@ -14,7 +14,7 @@ import cv2
 # ---------- 조절 값 ----------
 SCALE = 1.15        # 감싸는 타원을 이만큼 키움
 PAD_PX = 12         # 추가 여유 (픽셀)
-FEATHER_W = 0.6     # 가장자리 번짐 폭 (타원 짧은 반지름 대비). 새 블러는 크기 제한 없음, 예전 블러는 FEATHER_MAX 까지
+FEATHER_W = 0.4     # 가장자리 번짐 폭 (타원 짧은 반지름 대비). 새 블러는 크기 제한 없음, 예전 블러는 FEATHER_MAX 까지
 FEATHER_MAX = 150   # 번짐 폭 최대 (픽셀)
 BLUR_FRAC = 0.20    # 블러 세기 (타원 짧은 지름 대비)
 HAIR = True         # 음모 찾아서 같이 덮기
@@ -807,6 +807,7 @@ def _segments(bx, forced, fw, fh):
     return out[::-1]
 
 
+V2_SIZE = 0.85      # 새 블러(가장자리가 바깥으로 넓게 번짐)는 같은 크기여도 커 보여서 전체 크기를 15% 줄임 (검수에서 매번 손으로 줄이던 만큼)
 SIZE_K = 0.8        # 블러 지름 = 장면 대표 크기(가려야 할 곳의 가로·세로 폭)의 이 배
 SIZE_PCT = 80       # 장면 대표 크기 = 장면 안 프레임별 크기 중 이 백분위 (큰 쪽)
 MIN_R = 50          # 블러 최소 반지름 (픽셀)
@@ -978,7 +979,7 @@ def plan(per, info, n, fw=1920, fh=1080):
                 ratio = 1.25
                 U = _ell((0, 0), ratio, 1.0, ang)[1]
                 fit = max(float(np.sqrt(np.einsum("ij,jk,ik->i", d, U, d).max())) for d in ds)
-            r2 = max(base, fit * 1.05, MIN_R) + PAD_PX
+            r2 = max(base, fit * 1.05, MIN_R) * (V2_SIZE if BLUR_V2 else 1.0) + PAD_PX
             r1 = r2 * ratio
             A = U / r2 ** 2
             # 위치: 다듬은 중심을 '끈'처럼 따라감 — 조금 움직이면 가만히, 많이 움직일 때만 따라감
