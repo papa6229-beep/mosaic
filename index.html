@@ -141,7 +141,7 @@
 <main>
   <header>
     <div class="mark"><i></i></div>
-    <div><h1>모자이크 생성기</h1><p>원본 모자이크 위에 더 크고 자연스러운 블러를 덮어요</p></div>
+    <div><h1>모자이크 생성기</h1><p>원본 모자이크 위에 더 크고 자연스러운 블러를 덮어요</p><p id="ver" style="font-size:12.5px;margin-top:4px"></p></div>
     <a href="/subtitle-style" class="night" style="margin-left:auto;text-decoration:none;color:inherit" title="자막 번역 기준(단어 사전·말투·실제 자막 예시)을 정해 두는 곳"><div><b>자막 스타일</b><small>단어 사전 · 말투 · SRT로 배우기</small></div></a>
     <div class="night" id="night" style="margin-left:0" title="켜 두면 다음 단계부터 CPU를 전부 써서 더 빨리 끝나요. 그동안 컴퓨터가 느려지니 퇴근 후나 안 쓸 때 켜세요.">
       <div><b>밤샘 모드</b><small>컴퓨터를 안 쓸 때 최대 속도</small></div><div class="sw"></div>
@@ -406,6 +406,15 @@ $("setupBtns").querySelectorAll("button").forEach(b => b.onclick = () =>
   post("/setup", { what: b.dataset.w }).then(d => { if (b.dataset.w === "later") $("setup").classList.add("hide"); else setTimeout(() => fetch("/setup").then(r => r.json()).then(setupPoll), 300); }));
 fetch("/setup").then(r => r.json()).then(setupPoll).catch(() => {});
 setMode(mode); loadJobs(); pollQ();
+(function ver() {   // 지금 쓰는 판 (언제 만든 판인지 + 최신인지)
+  fetch("/version").then(r => r.json()).then(v => {
+    const e = $("ver"); if (!v.ver) return;
+    const st = v.latest === true ? ' · <b style="color:#3a9d5d">최신 판</b>'
+      : v.latest === false ? ' · <b style="color:#d9822b">새 판이 있어요 — 생성기를 껐다 켜면 받아요</b>' : "";
+    e.innerHTML = "판: " + v.ver + st;
+    if (v.latest == null) setTimeout(ver, 3000);
+  }).catch(() => {});
+})();
 </script>
 <script>
 /* 생성기 화면이 열려 있다고 생성기에 알림 — 생성기 화면을 모두 닫으면 생성기도 꺼짐 */

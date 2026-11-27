@@ -1770,6 +1770,30 @@ def _watch_pages():
             _shutdown()
 
 
+VERSION_STATE = {"latest": None}
+
+
+def _check_latest():
+    """지금 판이 깃허브의 최신 판과 같은지 (인터넷이 안 되면 모름)"""
+    try:
+        cur = open(os.path.join(BASE, "settings", "version.txt")).read().strip()
+        req = urllib.request.Request("https://api.github.com/repos/papa6229-beep/mosaic/commits/main", headers={"User-Agent": "mosaic"})
+        sha = json.loads(urllib.request.urlopen(req, timeout=15).read())["sha"]
+        VERSION_STATE["latest"] = (sha == cur)
+    except Exception:
+        VERSION_STATE["latest"] = "?"
+
+
+@app.get("/version")
+def version():
+    try:
+        ver = open(os.path.join(BASE, "ver.txt"), encoding="utf-8").read().strip()
+    except Exception:
+        ver = ""
+    lt = VERSION_STATE["latest"]
+    return jsonify(ver=ver, latest=lt if lt in (True, False) else (None if lt is None else "?"))
+
+
 @app.get("/fonts/<name>")
 def fonts(name):
     """자막 글꼴 (본고딕 Noto Sans KR Medium — 방송본부 자막 샘플과 같은 모양, 무료 글꼴 OFL)"""
@@ -2808,6 +2832,7 @@ if __name__ == "__main__":
     except Exception:
         pass
     print(f"\n  모자이크 생성기:  http://127.0.0.1:{port}\n")
+    threading.Thread(target=_check_latest, daemon=True).start()
     if os.environ.get("MOSAIC_CLOSE_WITH_PAGE") != "0":      # 생성기 화면(브라우저)을 모두 닫으면 같이 꺼짐 (어떻게 켰든)
         threading.Thread(target=_watch_pages, daemon=True).start()
     app.run(host="127.0.0.1", port=port, threaded=True)
