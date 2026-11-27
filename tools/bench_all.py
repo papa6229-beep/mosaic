@@ -79,7 +79,9 @@ def main():
     out("· 위치 찾는 중…")
     t = time.time()
     table = []
-    boxes, all_boxes, exps, n2 = app.detect_all(clip, job, n, None, table)
+    ana = app._make_ana(clip, work)                     # 실제와 같게: 큰 영상은 분석용 1080p 사본도 같이 만듦
+    boxes, all_boxes, exps, n2 = app.detect_all(clip, job, n, None, table, ana)
+    app._finish_ana(ana, work, n2)
     t_det = time.time() - t
     n = n2 if n2 > 0 else n
     json.dump(table, open(os.path.join(work, "pts.json"), "w"))

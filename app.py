@@ -45,7 +45,7 @@ def det_size(W, H):
     return int(round(W / k / 2)) * 2, int(round(H / k / 2)) * 2
 
 
-def frames(src, depth=16, table=None, size=None):
+def frames(src, depth=16, table=None, size=None, ana=None):
     """영상 프레임을 다른 일과 동시에 미리 읽어 둠 (읽는 시간만큼 빨라짐).
     그리기 단계와 똑같이 ffmpeg로 풀고, 프레임마다 시간을 table에 기록 (다른 단계에서 프레임 번호를 정확히 맞추는 데 씀)"""
     info = media.probe(src)
@@ -66,7 +66,37 @@ def frames(src, depth=16, table=None, size=None):
             q.put(np.frombuffer(got[1], np.uint8).reshape(H, W, 3).copy())
         d.close()
         q.put(None)
-    threading.Thread(target=reader, daemon=True).start()
+
+    def reader_ana():
+        """1080p로 풀어서 그대로(색 변환 없이) 분석용 사본에 쓰고, 찾기용 작은 크기로 줄여서 넘김"""
+        Wa, Ha = ana.w, ana.h
+        gsa = _hw_for(src)
+        vfa = f"scale_cuda={Wa}:{Ha}:interp_algo=lanczos,hwdownload,format=nv12" if gsa else f"scale={Wa}:{Ha}:flags=area"
+        d = Dec(src, 0, 10 ** 9, Wa, Ha, info["fps"], "yuv420p", Wa * Ha * 3 // 2, seek=False,
+                threads=max(2, min(8, (os.cpu_count() or 4) // 2)), vf=vfa, hwout=gsa)
+        conv = _BT709_FIX if (info.get("matrix_tagged") and info.get("matrix") == "bt709") else False
+        while True:
+            got = d.read()
+            if got is None:
+                break
+            if table is not None:
+                table.append(got[2])
+            raw = got[1]
+            ana.put(raw)
+            a = np.frombuffer(raw, np.uint8)
+            Y = a[:Wa * Ha].reshape(Ha, Wa)
+            U = a[Wa * Ha:Wa * Ha * 5 // 4].reshape(Ha // 2, Wa // 2)
+            V = a[Wa * Ha * 5 // 4:].reshape(Ha // 2, Wa // 2)
+            i420 = np.vstack([cv2.resize(Y, (W, H), interpolation=cv2.INTER_AREA),
+                              cv2.resize(U, (W // 2, H // 2), interpolation=cv2.INTER_AREA).reshape(H // 4, W),
+                              cv2.resize(V, (W // 2, H // 2), interpolation=cv2.INTER_AREA).reshape(H // 4, W)])
+            b = cv2.cvtColor(i420, cv2.COLOR_YUV2BGR_I420)
+            if conv is not False:
+                b = cv2.transform(b, conv)
+            q.put(b)
+        d.close()
+        q.put(None)
+    threading.Thread(target=reader_ana if ana is not None else reader, daemon=True).start()
     while True:
         f = q.get()
         if f is None:
@@ -267,10 +297,89 @@ class ProxyWriter:
         return False
 
 
+class AnaWriter(ProxyWriter):
+    """4K 같은 큰 영상: 위치 찾기 때 그래픽카드가 1080p로 줄여 푼 프레임을 '분석용 사본'으로 같이 저장 (색 변환 없이 그대로, 거의 손실 없는 화질).
+    훑기와 저장 단계의 블러 재료 계산은 4K 원본을 다시 풀지 않고 이 사본을 읽음 → 4K 원본 풀기가 4번 → 2번"""
+
+    def __init__(self, path, W, H, fps_str, info):
+        self.path, self.w, self.h = path, W, H
+        self.q = queue.Queue(maxsize=32)
+        m = info.get("matrix", "bt709")
+        cs = "bt709" if m == "bt709" else "smpte170m"
+        tags = (["-colorspace", cs] if info.get("matrix_tagged") else []) + ["-color_range", "tv"]
+        self.p = subprocess.Popen([ffmpeg_exe(), "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "yuv420p",
+                                   "-s", f"{W}x{H}", "-r", fps_str, "-i", "-",
+                                   "-c:v", "libx264", "-preset", "superfast", "-crf", "17", "-g", "60", "-pix_fmt", "yuv420p",
+                                   *tags, "-threads", "6", "-an", path + ".part.mp4"],
+                                  stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        self.ok = True
+        self.t = threading.Thread(target=self._run, daemon=True)
+        self.t.start()
+
+    def _run(self):
+        while True:
+            f = self.q.get()
+            if f is None:
+                break
+            if not self.ok:
+                continue
+            try:
+                self.p.stdin.write(f)
+            except Exception:
+                self.ok = False
+
+
+def _ana_info(d, n):
+    """작업 폴더의 분석용 사본: (경로, 가로, 세로) — 없거나 장수가 안 맞으면 None (그때는 원본을 직접 풂)"""
+    try:
+        a = json.load(open(os.path.join(d, "ana.json")))
+        p_ = os.path.join(d, "ana.mp4")
+        if a.get("n") == n and os.path.exists(p_):
+            return p_, int(a["W"]), int(a["H"])
+    except Exception:
+        pass
+    return None
+
+
+def _make_ana(src, d):
+    """큰 영상이면 분석용 사본 쓰개를 만듦 (안 맞는 영상이면 None → 예전처럼 원본을 직접 풂)"""
+    import cover2
+    try:
+        mi0 = media.probe(src)
+        ok = (cover2.FAST_SCAN and os.environ.get("MOSAIC_ANA") != "0" and mi0.get("range") != "pc"
+              and str(mi0.get("pix_fmt", "")).startswith("yuv"))
+        asz = _ana_size(mi0["W"], mi0["H"]) if ok else None
+        return AnaWriter(os.path.join(d, "ana.mp4"), *asz, mi0["fps_str"], mi0) if asz else None
+    except Exception:
+        traceback.print_exc()
+        return None
+
+
+def _finish_ana(ana, d, n2):
+    if ana is None:
+        return False
+    try:
+        if ana.close() and _count_frames(os.path.join(d, "ana.mp4")) == n2:
+            json.dump({"n": n2, "W": ana.w, "H": ana.h}, open(os.path.join(d, "ana.json"), "w"))
+            return True
+        print("  분석용 사본을 못 만들어서 원본을 직접 풀어요", flush=True)
+    except Exception:
+        traceback.print_exc()
+    return False
+
+
+def _ana_size(W, H):
+    """분석용 사본 크기 (빠른 훑기 크기와 같음, 1080p). 작은 영상은 사본을 안 만듦(None)"""
+    s = _scan_scale(W, H)
+    if s <= 1:
+        return None
+    return int(round(W / s / 2)) * 2, int(round(H / s / 2)) * 2
+
+
 NUDE_EVERY = 3   # 얼굴·노출 찾기는 3프레임마다 (모자이크 옆 노출·얼굴 위치만 쓰므로 충분)
 
 
-def detect_all(src, job, n, proxy=None, table=None):
+def detect_all(src, job, n, proxy=None, table=None, ana=None):
     detect = detect_fake_all if FAKE else detect_lada
     if not FAKE:
         get_model(job)
@@ -297,7 +406,7 @@ def detect_all(src, job, n, proxy=None, table=None):
     k_ = inf_["W"] / Wd                                  # 줄여서 찾은 위치를 원래 크기로 되돌리는 배율
     sb = (lambda b: [v * k_ for v in b[:4]] + list(b[4:])) if k_ != 1 else (lambda b: b)
     sp = (lambda p: [[round(x * k_), round(y * k_)] for x, y in p] if p else p) if k_ != 1 else (lambda p: p)
-    it = frames(src, table=table, size=(Wd, Hd))
+    it = frames(src, table=table, size=(Wd, Hd), ana=ana)
     step = analysis_step(inf_.get("fps"))              # 1초에 60장 영상은 두 장에 한 장만 찾고 사이 장은 앞 장 결과를 그대로 씀
     bidx, total = [], 0                                # 이번 묶음에 든 프레임 번호들, 지금까지 읽은 프레임 수
     last_b, last_a = None, []
@@ -596,10 +705,14 @@ def _scan_worker(src, start, count, W, H, fps, mi, table, entries, exps, params,
         total = start + count - w0
         s = _scan_scale(W, H) if params.get("FAST_SCAN") else 1.0   # 빠른 훑기: 큰 영상은 1080p 크기로 줄여서 훑음
         W2, H2 = (int(round(W / s / 2)) * 2, int(round(H / s / 2)) * 2) if s > 1 else (W, H)
-        gscale = s > 1 and _hw_for(src)                 # 줄이기도 그래픽카드 안에서 (4K 프레임을 CPU로 내려받지 않음)
-        dec = Dec(src, w0, total, W2, H2, fps, t0=mi.get("t0", 0.0), table=table, mi=mi,
-                  vf=(f"scale_cuda={W2}:{H2}:interp_algo=lanczos,hwdownload,format=nv12" if gscale else f"scale={W2}:{H2}:flags=area") if s > 1 else None,
-                  hwout=gscale)
+        ana = params.get("_ana")
+        if ana and s > 1 and (ana[1], ana[2]) == (W2, H2):   # 위치 찾기 때 만든 1080p 분석용 사본을 읽음 (4K 원본을 다시 풀지 않음)
+            dec = Dec(ana[0], w0, total, W2, H2, fps, t0=0.0, table=None, mi=media.probe(ana[0]))
+        else:
+            gscale = s > 1 and _hw_for(src)                 # 줄이기도 그래픽카드 안에서 (4K 프레임을 CPU로 내려받지 않음)
+            dec = Dec(src, w0, total, W2, H2, fps, t0=mi.get("t0", 0.0), table=table, mi=mi,
+                      vf=(f"scale_cuda={W2}:{H2}:interp_algo=lanczos,hwdownload,format=nv12" if gscale else f"scale={W2}:{H2}:flags=area") if s > 1 else None,
+                      hwout=gscale)
         A = cover2.Analyzer()
         res = [None] * count
         step = analysis_step(fps)                         # 60fps 영상: 두 장에 한 장만 훑고 사이 장은 앞 장 결과 그대로
@@ -788,8 +901,10 @@ def _ovl_paint_worker(src, parts, count, W, H, fps, params, mi, gpu, counter, q)
     try:
         import cover2
         import numpy as np
+        ana = params.get("_ana")
         for k, v in params.items():
-            setattr(cover2, k, v)
+            if not k.startswith("_"):
+                setattr(cover2, k, v)
         sc = min(1.0, 960.0 / W)                      # 블러 재료를 계산할 작은 크기 (4K → 960x540)
         Wl, Hl = max(2, int(round(W * sc / 2)) * 2), max(2, int(round(H * sc / 2)) * 2)
         sx_, sy_ = Wl / W, Hl / H
@@ -839,8 +954,12 @@ def _ovl_paint_worker(src, parts, count, W, H, fps, params, mi, gpu, counter, q)
                     dirty_r = None                              # 지난 장에 그린 범위 (다음 장 전에 지움)
                     ovc = {k_: np.zeros(sh_, np.float32) for k_, sh_ in (("Y", (Hl, Wl)), ("A", (Hl, Wl)), ("U", (Hl // 2, Wl // 2)),
                                                                         ("V", (Hl // 2, Wl // 2)), ("Ac", (Hl // 2, Wl // 2)), ("Ac2", (Hl // 2, Wl // 2)))}
-                    dec = Dec(src, w0, ps + pc - w0, Wl, Hl, fps, "yuv420p", fszl, t0=mi["t0"],
-                              table=mi.get("table"), vf=vf_l, hwout=extra)
+                    if ana:                                     # 블러 재료는 1080p 분석용 사본에서 (4K 원본을 한 번 더 풀지 않음)
+                        dec = Dec(ana[0], w0, ps + pc - w0, Wl, Hl, fps, "yuv420p", fszl, t0=0.0, table=None,
+                                  vf=f"scale={Wl}:{Hl}:flags=area")
+                    else:
+                        dec = Dec(src, w0, ps + pc - w0, Wl, Hl, fps, "yuv420p", fszl, t0=mi["t0"],
+                                  table=mi.get("table"), vf=vf_l, hwout=extra)
                     P = cover2.Painter(px=sx_)
                     expect = ps
 
@@ -1051,6 +1170,7 @@ def render(src, boxes_json, dst, job, n, times=None):
     K = _mem_workers(_cpu_workers(n), int(W / sc), int(H / sc))
     params = {k: getattr(cover2, k) for k in ("SCALE", "BLUR_FRAC", "FEATHER_W", "HAIR", "HAIR_REACH", "FAST_SCAN", "FAST_SAVE")}
     d = os.path.dirname(dst)
+    sparams = dict(params, _ana=_ana_info(d, n))
 
     # 1단계: 훑기 (덮을 곳 모으기)
     t0 = time.time()
@@ -1061,7 +1181,7 @@ def render(src, boxes_json, dst, job, n, times=None):
         wb = lambda k: max(0, bounds[k] - WARMUP)
         scans = [os.path.join(d, f"scan{k:02d}.pkl") for k in range(K)]
         try:
-            _run_parallel(job, K, n, lambda k: (src, bounds[k], bounds[k + 1] - bounds[k], W, H, fps, t0v, table, per[wb(k):bounds[k + 1]], (ex[wb(k):bounds[k + 1]] if ex else None), params, scans[k]),
+            _run_parallel(job, K, n, lambda k: (src, bounds[k], bounds[k + 1] - bounds[k], W, H, fps, t0v, table, per[wb(k):bounds[k + 1]], (ex[wb(k):bounds[k + 1]] if ex else None), sparams, scans[k]),
                           _scan_worker, "1/3 덮을 곳 훑는 중", 50, 75)
             break
         except RuntimeError as e:
@@ -1328,7 +1448,7 @@ def paint_save(src, ells, polys, dst, job, n, W, H, fps, params, p0=77, p1=99, t
                     out.append((k, s_, c_, paths[k], ells[w0:s_ + c_], polys[w0:s_ + c_], w0))
                 return out
             try:
-                rs_ = _run_parallel(job, Ko, total, lambda k: (src, parts_of(groups_o[k]), sum(bounds[i][1] for i in groups_o[k]), W, H, fps, params, mi, gpu_ovl),
+                rs_ = _run_parallel(job, Ko, total, lambda k: (src, parts_of(groups_o[k]), sum(bounds[i][1] for i in groups_o[k]), W, H, fps, dict(params, _ana=_ana_info(d, n)), mi, gpu_ovl),
                                     _ovl_paint_worker, label, p0, p1)
                 tms = [r[3] for r in rs_ if len(r) > 4 and r[3]]
                 used = sorted({x.get("mode") for x in tms if x.get("mode")}, key=OVL_MODES.index)
@@ -1489,8 +1609,10 @@ def run_job(jid, src, params):
                 except Exception:
                     traceback.print_exc()
                     px = None
+            ana = _make_ana(src, os.path.join(JOBS, jid))
             table = []
-            boxes, all_boxes, exps, n2 = detect_all(src, job, n, px, table)
+            boxes, all_boxes, exps, n2 = detect_all(src, job, n, px, table, ana)
+            _finish_ana(ana, os.path.join(JOBS, jid), n2)
             subs_later = False
             if params.get("subs") == "1":                   # 자막은 그래픽카드가 비는 지금부터 뒤에서 같이 만듦
                 if _mem_free_gb() >= 12:
