@@ -95,6 +95,10 @@ def main():
     st = [("위치 찾기", t_det), ("훑기", tm.get("scan", 0)), ("계획", tm.get("plan", 0)), ("저장 (이어 붙이기 포함)", tm.get("paint", 0) + tm.get("mux", 0))]
     out("")
     blur_frames = rep.get("covered", 0)
+    if blur_frames == 0:
+        out("")
+        out("※ 떼어 온 장면에서 원본 모자이크를 하나도 못 찾았어요. 이미 블러를 입힌 결과 영상(_cover·_fix)을 넣으셨다면")
+        out("  모자이크가 가려져 있어서 그래요 — 이 숫자는 블러 작업 시간이 빠진 값이라 맞지 않아요. 원본 영상으로 다시 해 주세요.")
     out(f"떼어 온 {n}장 중 블러가 들어간 장: {blur_frames}장 ({blur_frames * 100 // max(1, n)}%) — 영상 전체와 비율이 비슷할수록 계산이 정확해요")
     out(f"{'단계':<14}{'떼어 온 것':>10}{'1초에':>10}   영상 전체({mmss(total / fps)})를 돌리면")
     whole = 0

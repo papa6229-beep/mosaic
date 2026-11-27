@@ -953,7 +953,11 @@ def _ovl_paint_worker(src, parts, count, W, H, fps, params, mi, gpu, counter, q)
                     with counter.get_lock():
                         counter.value -= min(counter.value, pc)
                     continue
-                raise RuntimeError(f"새 저장 방식 실패 (조각 {idx}): " + e_txt[-400:])
+                # 이 조각만 안 됨 (예: 영상 끝 장수가 안 맞음) → 이 조각은 건너뛰고 다음 조각 계속. 빠진 조각은 끝나고 예전 방식으로 만듦
+                print(f"  조각 {idx}은 새 방식으로 못 만들어서 예전 방식으로 만들게요:", e_txt.strip()[-300:], flush=True)
+                with counter.get_lock():
+                    counter.value -= min(counter.value, pc)
+                break
         tm["mode"] = modes[0]
         q.put((0, sum(made.values()), made, tm, None))
     except Exception:
