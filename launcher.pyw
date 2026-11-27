@@ -14,7 +14,8 @@ NOWIN = 0x08000000 if os.name == "nt" else 0          # 검은 창 안 띄움
 os.makedirs(LOGD, exist_ok=True)
 TMP = os.path.join(ROOT, "tmp")
 os.makedirs(TMP, exist_ok=True)
-ENV = dict(os.environ, PYTHONUTF8="1", PIP_NO_CACHE_DIR="1", TEMP=TMP, TMP=TMP, PYTHONIOENCODING="utf-8")
+ENV = dict(os.environ, PYTHONUTF8="1", PIP_NO_CACHE_DIR="1", TEMP=TMP, TMP=TMP, PYTHONIOENCODING="utf-8",
+           MOSAIC_CLOSE_WITH_PAGE="1")                     # 생성기 화면(브라우저)을 모두 닫으면 생성기도 꺼짐
 SLOG = os.path.join(LOGD, "server.log")
 ULOG = os.path.join(LOGD, "update.log")
 
@@ -85,6 +86,11 @@ def work():
             os.replace(SLOG, os.path.join(LOGD, "server_이전.log"))
     except Exception:
         pass
+    mark = os.path.join(LOGD, "closed_by_user")
+    try:
+        os.remove(mark)
+    except Exception:
+        pass
     lf = open(SLOG, "w", encoding="utf-8", buffering=1)
     srv = subprocess.Popen([PY, os.path.join(ROOT, "app.py")], cwd=ROOT, env=ENV, stdout=lf, stderr=subprocess.STDOUT,
                            stdin=subprocess.DEVNULL, creationflags=NOWIN)
@@ -96,6 +102,8 @@ def work():
         say("실행 중 (아이콘을 누르면 열기·끄기)")
         webbrowser.open(URL)
     srv.wait()
+    if os.path.exists(mark):                      # 생성기 화면을 닫아서 꺼진 것: 조용히 끝
+        state["quit"] = True
     if not state["quit"]:                         # 스스로 꺼졌으면 알리고 기록을 열어 줌
         notify("생성기가 멈췄어요. 기록 파일을 열어 드릴게요 — 캡처해서 보내 주세요")
         try:

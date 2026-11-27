@@ -1551,8 +1551,66 @@ def sysinfo_api():
 
 @app.get("/quit")
 def quit_server():
-    threading.Timer(0.3, lambda: os._exit(0)).start()
+    threading.Timer(0.3, _shutdown).start()
     return "bye"
+
+
+# ---------- 브라우저 창을 닫으면 생성기도 완전히 꺼짐 (검은 창 없는 실행기로 켰을 때) ----------
+PAGES = {}            # 열려 있는 생성기 화면들: {화면 id: 마지막으로 소식 온 시각}
+PAGES_LOCK = threading.Lock()
+LAST_BYE = [0.0]
+
+
+def _shutdown():
+    """생성기와 생성기가 띄운 것(일꾼·ffmpeg·자막 프로그램)을 전부 끄고 종료"""
+    try:
+        open(os.path.join(BASE, "logs", "closed_by_user"), "w").write(str(time.time()))
+    except Exception:
+        pass
+    try:
+        _kill_leftovers()
+    except Exception:
+        pass
+    if os.name == "nt":                                 # 나와 내 밑의 프로그램 전부
+        try:
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(os.getpid())], capture_output=True, creationflags=0x08000000, timeout=30)
+        except Exception:
+            pass
+    os._exit(0)
+
+
+@app.post("/beat")
+def page_beat():
+    pid = (request.get_json(silent=True) or {}).get("id") or request.args.get("id") or "?"
+    with PAGES_LOCK:
+        PAGES[pid] = time.time()
+    return jsonify(ok=True)
+
+
+@app.post("/bye")
+def page_bye():
+    pid = request.args.get("id") or "?"
+    with PAGES_LOCK:
+        PAGES.pop(pid, None)
+    LAST_BYE[0] = time.time()
+    return jsonify(ok=True)
+
+
+def _watch_pages():
+    """화면이 하나도 안 남으면 끔: 닫힌 뒤 8초 안에 새 화면(새로 고침·다른 화면으로 이동)이 안 열리면.
+    브라우저가 강제로 꺼져 소식이 끊긴 경우는 3분 동안 소식이 없으면"""
+    while True:
+        time.sleep(2)
+        now = time.time()
+        with PAGES_LOCK:
+            for k_, t_ in list(PAGES.items()):
+                if now - t_ > 180:
+                    PAGES.pop(k_, None)
+            alive = len(PAGES)
+            seen = bool(PAGES) or LAST_BYE[0] > 0
+        if seen and alive == 0 and (LAST_BYE[0] == 0 or now - LAST_BYE[0] > 8):
+            print("  생성기 화면이 모두 닫혀서 생성기를 끕니다.", flush=True)
+            _shutdown()
 
 
 @app.get("/fonts/<name>")
@@ -2593,4 +2651,6 @@ if __name__ == "__main__":
     except Exception:
         pass
     print(f"\n  모자이크 생성기:  http://127.0.0.1:{port}\n")
+    if os.environ.get("MOSAIC_CLOSE_WITH_PAGE") == "1":      # 검은 창 없는 실행기로 켰을 때: 화면을 닫으면 같이 꺼짐
+        threading.Thread(target=_watch_pages, daemon=True).start()
     app.run(host="127.0.0.1", port=port, threaded=True)

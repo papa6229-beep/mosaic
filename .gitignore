@@ -12,3 +12,6 @@ python/
 tools/whisperjav/
 tools/llama-cuda/
 imgjobs/
+logs/
+저장속도점검결과.txt
+전체속도점검결과.txt

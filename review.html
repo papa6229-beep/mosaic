@@ -1280,5 +1280,14 @@ fetch(`/review/${JID}/data`).then(r => r.json()).then(d => {
   changed.call(null);
 }).catch(e => msg("불러오기 실패: " + e, "bad"));
 </script>
+<script>
+/* 생성기 화면이 열려 있다고 생성기에 알림 — 생성기 화면을 모두 닫으면 생성기도 꺼짐 */
+(() => {
+  const id = Math.random().toString(36).slice(2) + Date.now().toString(36);
+  const beat = () => fetch("/beat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }), keepalive: true }).catch(() => {});
+  beat(); setInterval(beat, 15000);
+  addEventListener("pagehide", () => { try { navigator.sendBeacon("/bye?id=" + id); } catch (e) {} });
+})();
+</script>
 </body>
 </html>
