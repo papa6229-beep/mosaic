@@ -1347,7 +1347,8 @@ def _rotA(A, th):
 
 def apply_edits(ells, segtab, edits, n):
     """검수 화면에서 고친 내용(구간별 이동·크기·삭제·기간·흐림 세기·키프레임, 새로 추가한 블러)을 블러 계획에 적용.
-    edits = {"segs": {구간번호: {"dx","dy","scale" 또는 "keys":[{"f","dx","dy","scale","rot","sx","sy"}], "del","start","end","blur","fea"}},
+    edits = {"segs": {구간번호: {"dx","dy","scale" 또는 "keys":[{"f","dx","dy","scale","rot","sx","sy"}], "del","start","end","blur","fea","pin"}},
+    pin = [x, y, f]: 위치 고정 (f 프레임부터 구간 끝까지 가운데를 이 자리에, 크기·회전 등은 그대로 바뀜)
              "added": [{"start","end","cx","cy","rx","ry","ang","blur","fea", "keys"}]}
     blur = 흐림 세기 배수, fea = 가장자리 번짐 폭 배수"""
     se = {int(k): v for k, v in (edits or {}).get("segs", {}).items()}
@@ -1370,7 +1371,8 @@ def apply_edits(ells, segtab, edits, n):
 
     def tf(e, ed, f):
         dx, dy, sc, rot, sx, sy = edit_offset(ed, f)
-        c = np.asarray(e[0], float) + (dx, dy)
+        pn = ed.get("pin")                                   # 위치 고정: 고정한 프레임부터 구간 끝까지 이 자리
+        c = np.asarray(pn[:2], float) if pn and f >= (pn[2] if len(pn) > 2 else -1) else np.asarray(e[0], float) + (dx, dy)
         A = _rotA(_stretchA(e[1], sx, sy) / (sc ** 2), rot)
         return [c.tolist(), A.tolist()]
 
@@ -1429,6 +1431,9 @@ def apply_edits(ells, segtab, edits, n):
 
         def el_at(f):
             dx, dy, sc, rot, sx, sy = edit_offset(ad if ad.get("keys") else {}, f)
+            pn = ad.get("pin")
+            if pn and f >= (pn[2] if len(pn) > 2 else -1):
+                dx, dy = pn[0] - ad["cx"], pn[1] - ad["cy"]
             c, A = _ell_from(ad["cx"] + dx, ad["cy"] + dy, ad["rx"] * sc * sx, ad["ry"] * sc * sy, ad.get("ang", 0.0) + rot)
             return c.tolist(), A.tolist()
         for i in range(max(0, a), min(n, b + 1)):
