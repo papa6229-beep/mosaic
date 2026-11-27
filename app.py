@@ -1736,19 +1736,36 @@ def page_bye():
     return jsonify(ok=True)
 
 
+STREAMS = [0, False]   # [지금 열려 있는 생성기 화면 연결 수, 한 번이라도 열린 적 있음]
+
+
+@app.get("/alive")
+def page_alive():
+    """생성기 화면마다 하나씩 계속 열어 두는 연결. 화면·브라우저를 닫으면 연결이 끊기고, 생성기는 바로 알아챔
+    (닫을 때 '닫아요' 소식을 보내는 방식은 브라우저를 통째로 닫으면 소식이 안 가서 3분 뒤에야 꺼졌음)"""
+    def gen():
+        with PAGES_LOCK:
+            STREAMS[0] += 1
+            STREAMS[1] = True
+        try:
+            while True:
+                yield ": ok\n\n"
+                time.sleep(1)
+        finally:
+            with PAGES_LOCK:
+                STREAMS[0] -= 1
+            LAST_BYE[0] = time.time()
+    return Response(gen(), mimetype="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
 def _watch_pages():
-    """화면이 하나도 안 남으면 끔: 닫힌 뒤 8초 안에 새 화면(새로 고침·다른 화면으로 이동)이 안 열리면.
-    브라우저가 강제로 꺼져 소식이 끊긴 경우는 3분 동안 소식이 없으면"""
+    """생성기 화면이 하나도 안 남으면 끔: 마지막 화면이 닫히고 5초 안에 새 화면(새로 고침·다른 화면으로 이동)이 안 열리면"""
     while True:
-        time.sleep(2)
+        time.sleep(1)
         now = time.time()
         with PAGES_LOCK:
-            for k_, t_ in list(PAGES.items()):
-                if now - t_ > 180:
-                    PAGES.pop(k_, None)
-            alive = len(PAGES)
-            seen = bool(PAGES) or LAST_BYE[0] > 0
-        if seen and alive == 0 and (LAST_BYE[0] == 0 or now - LAST_BYE[0] > 8):
+            alive, seen = STREAMS[0], STREAMS[1]
+        if seen and alive == 0 and now - LAST_BYE[0] > 5:
             print("  생성기 화면이 모두 닫혀서 생성기를 끕니다.", flush=True)
             _shutdown()
 
