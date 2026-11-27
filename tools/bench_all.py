@@ -112,6 +112,10 @@ def main():
     out(f"{'합계':<14}{sum(x for _, x in st):>8.1f}초{'':>10}   약 {mmss(whole)}  (영상 길이의 {whole / (total / fps):.1f}배)")
     out("")
     out(f"저장 방식: {tm.get('save_mode', '?')}  ·  찾기: {job.get('det_how', '?')}")
+    if tm.get("mux_stream"):
+        out("이어 붙이기: 만들면서 바로 이어 붙이기 성공 (마지막에 따로 기다리는 시간 없음)")
+    else:
+        out("이어 붙이기: 바로 이어 붙이기 실패 → 예전 방식 · 이유: " + str(tm.get("stream_fail", "?"))[-400:])
     out("※ 첫 화면 기본 설정 기준. 처음 켜서 모델을 받는 시간 등은 빠져 있어요.")
     out("끝. 이 창을 캡처하거나, 생성기 폴더의 전체속도점검결과.txt를 보내 주세요.")
     try:
