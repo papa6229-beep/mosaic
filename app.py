@@ -724,10 +724,15 @@ def _paint_worker(src, runs, count, W, H, fps, params, mi, subs, counter, q):
         q.put((0, 0, {}, {}, traceback.format_exc()[-800:]))
 
 
-def _ovl_cmd(src, ps, pc, mi, W, H, box, gpu, path):
+OVL_MODES = ("g_yuv", "g_nv12", "g_dl", "cpu")        # 앞에서부터 시도해서 되는 걸로 (그래픽카드·드라이버마다 받는 형식이 달라서)
+OVL_NAMES = {"g_yuv": "그래픽카드 덮기", "g_nv12": "그래픽카드 덮기(nv12)", "g_dl": "그래픽카드 덮기 + 내려받아 압축", "cpu": "CPU 덮기"}
+
+
+def _ovl_cmd(src, ps, pc, mi, W, H, box, mode, path):
     """원본을 그래픽카드로 풀어 그대로 압축하면서, 블러 덮개(작은 범위 yuva 그림)만 생성기에서 받아 덮는 ffmpeg 명령.
-    gpu=True: 원본 4K 프레임이 그래픽카드 밖으로 안 나옴 (풀기→덮기→압축 전부 그래픽카드)
-    gpu=False: 원본을 CPU 쪽으로 내려 덮은 뒤 압축 (그래픽카드 덮기가 안 될 때)"""
+    mode: g_yuv / g_nv12 = 풀기→덮기→압축 전부 그래픽카드 안에서 (4K 프레임이 밖으로 안 나옴)
+          g_dl = 그래픽카드에서 풀고 덮은 뒤 내려받아 압축기에 넘김
+          cpu  = 원본을 CPU 쪽으로 내려 덮은 뒤 압축"""
     fr = mi["fps_str"]
     fps = float(Fraction(fr))
     table = mi.get("table")
@@ -736,8 +741,10 @@ def _ovl_cmd(src, ps, pc, mi, W, H, box, gpu, path):
     else:
         T0, ss = mi["t0"] + (ps - 0.5) / fps, max(0.0, ps / fps - 1.0)
     hw = _hw_for(src)
+    gpu = mode != "cpu"
+    on_gpu = mode in ("g_yuv", "g_nv12")              # 압축기에 그래픽카드 프레임을 바로 넘김
     enc = list(mi["enc"])
-    if gpu:
+    if on_gpu:
         i_ = 0
         while i_ < len(enc) - 1:                    # 그래픽카드 프레임을 바로 압축 (픽셀 형식 지정 빼기)
             if enc[i_] == "-pix_fmt":
@@ -748,14 +755,15 @@ def _ovl_cmd(src, ps, pc, mi, W, H, box, gpu, path):
            *(["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"] if gpu else (["-hwaccel", "cuda"] if hw else [])),
            *(["-ss", f"{ss:.6f}"] if ss > 0 else []), "-i", src]
     main = f"[0:v]trim=start={T0:.6f},setpts=N/({fr})/TB"
+    tail = {"g_yuv": "", "g_nv12": ",scale_cuda=format=nv12", "g_dl": ",hwdownload,format=yuv420p", "cpu": ""}[mode]
     if box is None:                                   # 이 조각엔 블러가 없음: 그대로 다시 압축만
-        fc = main + "[v]"
+        fc = main + ({"g_dl": ",hwdownload,format=nv12"}.get(mode, "")) + "[v]"
     else:
         x0, y0, x1, y1 = box
         cmd += ["-f", "rawvideo", "-pix_fmt", "yuva420p", "-s", f"{x1 - x0}x{y1 - y0}", "-r", fr, "-i", "-"]
         if gpu:
             fc = (main + ",scale_cuda=format=yuv420p[m];[1:v]setpts=N/(" + fr + ")/TB,hwupload_cuda[o];"
-                  f"[m][o]overlay_cuda=x={x0}:y={y0}[v]")
+                  f"[m][o]overlay_cuda=x={x0}:y={y0}{tail}[v]")
         else:
             fc = (main + ",format=yuv420p[m];[1:v]setpts=N/(" + fr + ")/TB[o];"
                   f"[m][o]overlay=x={x0}:y={y0}:format=yuv420:alpha=straight:eof_action=repeat[v]")
@@ -783,7 +791,7 @@ def _ovl_paint_worker(src, parts, count, W, H, fps, params, mi, gpu, counter, q)
         else:
             vf_l, extra = f"scale={Wl}:{Hl}:flags=area", False
         made, tm = {}, {"read": 0.0, "paint": 0.0, "write": 0.0}
-        mode = {"gpu": gpu}
+        modes = list(OVL_MODES if gpu else ("cpu",))     # 되는 방식이 나올 때까지 앞에서부터
 
         def scale_e(e):
             c = [e[0][0] * sx_, e[0][1] * sy_]
@@ -804,9 +812,9 @@ def _ovl_paint_worker(src, parts, count, W, H, fps, params, mi, gpu, counter, q)
                 x1, y1 = min(W, (int(max(xs)) + 2) // 2 * 2), min(H, (int(max(ys)) + 2) // 2 * 2)
                 if x1 - x0 >= 4 and y1 - y0 >= 4:
                     box = (x0, y0, x1, y1)
-            for attempt in (0, 1):
-                use_gpu = mode["gpu"]
-                cmd = _ovl_cmd(src, ps, pc, mi, W, H, box, use_gpu, path)
+            while True:
+                use_mode = modes[0]
+                cmd = _ovl_cmd(src, ps, pc, mi, W, H, box, use_mode, path)
                 enc = subprocess.Popen(cmd, stdin=subprocess.PIPE if box else subprocess.DEVNULL, stderr=subprocess.PIPE)
                 err = []
                 threading.Thread(target=lambda e_=enc: err.append(e_.stderr.read()), daemon=True).start()
@@ -934,13 +942,14 @@ def _ovl_paint_worker(src, parts, count, W, H, fps, params, mi, gpu, counter, q)
                     os.remove(path + ".tmp")
                 except Exception:
                     pass
-                if use_gpu and attempt == 0:          # 그래픽카드 덮기가 안 되면 CPU 덮기로 한 번 더
-                    print("  그래픽카드 덮기 실패 → CPU 덮기로:", e_txt[-300:], flush=True)
-                    mode["gpu"] = False
+                if len(modes) > 1:                    # 이 방식이 안 되면 다음 방식으로 (이 일꾼은 앞으로도 다음 방식으로)
+                    print(f"  저장 방식 '{OVL_NAMES[use_mode]}' 안 됨 → '{OVL_NAMES[modes[1]]}'로:", e_txt.strip()[-600:], flush=True)
+                    modes.pop(0)
                     with counter.get_lock():
                         counter.value -= min(counter.value, pc)
                     continue
                 raise RuntimeError(f"새 저장 방식 실패 (조각 {idx}): " + e_txt[-400:])
+        tm["mode"] = modes[0]
         q.put((0, sum(made.values()), made, tm, None))
     except Exception:
         q.put((0, 0, {}, {}, traceback.format_exc()[-800:]))
@@ -1309,8 +1318,10 @@ def paint_save(src, ells, polys, dst, job, n, W, H, fps, params, p0=77, p1=99, t
             try:
                 rs_ = _run_parallel(job, Ko, total, lambda k: (src, parts_of(groups_o[k]), sum(bounds[i][1] for i in groups_o[k]), W, H, fps, params, mi, gpu_ovl),
                                     _ovl_paint_worker, label, p0, p1)
-                times["save_mode"] = "새 방식 · " + ("그래픽카드 덮기" if gpu_ovl else "CPU 덮기")
                 tms = [r[3] for r in rs_ if len(r) > 4 and r[3]]
+                used = sorted({x.get("mode") for x in tms if x.get("mode")}, key=OVL_MODES.index)
+                times["save_mode"] = "새 방식 · " + (" / ".join(OVL_NAMES[m] for m in used) if used else "?")
+                print("  저장 방식:", times["save_mode"], flush=True)
                 if tms:
                     times["paint_parts"] = {k: round(sum(x[k] for x in tms) / len(tms), 1) for k in ("read", "paint", "write")}
                     print("  저장 단계 시간 나눔 (일꾼 평균 초):", times["paint_parts"], flush=True)
