@@ -944,7 +944,7 @@ def paint_save(src, ells, polys, dst, job, n, W, H, fps, params, p0=77, p1=99, t
     pd = os.path.join(d, "parts")
     os.makedirs(pd, exist_ok=True)
     bounds = [(s_, min(PART, n - s_)) for s_ in range(0, n, PART)]
-    base = os.path.splitext(dst)[0]
+    base = os.path.splitext(_final_path(d, dst))[0]          # 결과 영상은 정해 둔 저장 폴더로 (조각은 작업 폴더)
     out_main = base + media.out_ext(info)
     # H.264/H.265 를 MP4·MOV 로 저장할 때: 조각이 만들어지는 대로 바로바로 최종 파일에 이어 붙임 (마지막에 따로 기다리지 않게)
     stream = STREAM_MUX and (info.get("codec") or "").lower() in ("h264", "hevc") and any(e in enc for e in ("h264_nvenc", "hevc_nvenc", "libx264", "libx265", "h264", "hevc")) \
@@ -1064,6 +1064,7 @@ def paint_save(src, ells, polys, dst, job, n, W, H, fps, params, p0=77, p1=99, t
         ok_, err_ = sm.finish()
         if ok_:
             times["out_path"] = out_main
+            _note_out(d, out_main)
             times["mux"] = round(time.time() - t0, 1)
             times["mux_stream"] = True
             return [(0, n)], KP
@@ -1074,7 +1075,7 @@ def paint_save(src, ells, polys, dst, job, n, W, H, fps, params, p0=77, p1=99, t
         for k, s_ in enumerate(paths):
             fp.write("file '" + s_.replace("\\", "/").replace("'", "'\\''") + "'\n")
             fp.write(f"duration {float(bounds[k][1] / fr):.9f}\n")
-    base = os.path.splitext(dst)[0]
+    base = os.path.splitext(out_main)[0]                     # (위에서 정한 결과 저장 경로)
     tmpv = base + "_v.mov"
     tries = [(base + media.out_ext(info), False), (base + media.out_ext(info), True), (base + ".mov", False), (base + ".mkv", False)]
     err = ""
@@ -1105,6 +1106,7 @@ def paint_save(src, ells, polys, dst, job, n, W, H, fps, params, p0=77, p1=99, t
     if out != tries[0][0]:
         times["out_fmt"] = desc + f" (원본 파일 형식으로는 저장이 안 돼서 {os.path.splitext(out)[1]}로 저장: {err[-150:]})"
     times["out_path"] = out
+    _note_out(d, out)
     times["mux"] = round(time.time() - t0, 1)
     try:
         os.remove(lst)
@@ -1398,6 +1400,90 @@ def _kill_leftovers(only_orphans=False):
 
 
 # ---------- 자막 화면 소리 그림: 말소리 대역(300~4000Hz) 크기를 0.05초마다 + 자막 없는데 소리 있는 곳 ----------
+APP_SET = os.path.join(BASE, "settings", "app.json")
+
+
+def _app_set():
+    try:
+        return json.load(open(APP_SET, encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _out_dir():
+    """결과 영상 저장 폴더 (첫 화면에서 정함). 안 정했거나 지금 쓸 수 없으면 None → 작업 폴더에 저장"""
+    od = (_app_set().get("out_dir") or "").strip()
+    if od and os.path.isdir(od) and os.access(od, os.W_OK):
+        return od
+    return None
+
+
+def _final_path(d, path):
+    """결과 영상의 실제 저장 경로: 저장 폴더를 정했으면 그 폴더로. 다른 작업의 같은 이름 파일은 덮어쓰지 않음"""
+    od = _out_dir()
+    if not od:
+        return path
+    mine = []
+    try:
+        mine = json.load(open(os.path.join(d, "out_paths.json"), encoding="utf-8"))
+    except Exception:
+        pass
+    p = os.path.join(od, os.path.basename(path))
+    if os.path.exists(p) and os.path.normcase(os.path.abspath(p)) not in [os.path.normcase(x) for x in mine]:
+        stem, ext = os.path.splitext(os.path.basename(path))
+        p = os.path.join(od, f"{stem}_{os.path.basename(d)[:6]}{ext}")
+    return p
+
+
+def _note_out(d, p):
+    """이 작업이 만든 결과 영상 경로를 기억 (저장 폴더가 작업 폴더 밖이어도 검수·자막 화면이 찾게)"""
+    f = os.path.join(d, "out_paths.json")
+    try:
+        mine = json.load(open(f, encoding="utf-8"))
+    except Exception:
+        mine = []
+    p = os.path.abspath(p)
+    if p not in mine:
+        mine.append(p)
+        json.dump(mine, open(f, "w", encoding="utf-8"), ensure_ascii=False)
+
+
+@app.get("/settings")
+def get_settings():
+    s_ = _app_set()
+    od = (s_.get("out_dir") or "").strip()
+    return jsonify(out_dir=od, out_ok=bool(_out_dir()) if od else True)
+
+
+@app.post("/settings/out-dir")
+def set_out_dir():
+    b = request.get_json(silent=True) or {}
+    od = b.get("path")
+    if b.get("pick"):
+        ps = ("[Console]::OutputEncoding=[Text.Encoding]::UTF8;Add-Type -AssemblyName System.Windows.Forms;"
+              "$d=New-Object System.Windows.Forms.FolderBrowserDialog;$d.Description='결과 영상을 저장할 폴더 고르기';$d.ShowNewFolderButton=$true;"
+              "$f=New-Object System.Windows.Forms.Form;$f.TopMost=$true;$f.ShowInTaskbar=$false;$f.Opacity=0;"
+              "$f.StartPosition='CenterScreen';$f.Show();$f.Activate();$f.BringToFront();"
+              "$r=$d.ShowDialog($f);$f.Close();if($r -eq 'OK'){[Console]::Write($d.SelectedPath)}")
+        try:
+            r = subprocess.run(["powershell", "-NoProfile", "-STA", "-Command", ps], capture_output=True, timeout=3600)
+            od = r.stdout.decode("utf-8", "ignore").strip()
+        except Exception as e:
+            return jsonify(error=f"폴더 고르는 창을 못 띄웠어요: {e}"), 500
+        if not od:
+            return jsonify(cancel=True)
+    od = (od or "").strip().strip('"')
+    if od and not os.path.isdir(od):
+        return jsonify(error="없는 폴더예요: " + od), 400
+    if od and not os.access(od, os.W_OK):
+        return jsonify(error="이 폴더에는 저장할 수 없어요: " + od), 400
+    s_ = _app_set()
+    s_["out_dir"] = od
+    os.makedirs(os.path.dirname(APP_SET), exist_ok=True)
+    json.dump(s_, open(APP_SET, "w", encoding="utf-8"), ensure_ascii=False)
+    return jsonify(out_dir=od)
+
+
 @app.get("/viewer")
 def viewer_page():
     """검수·자막 화면에서 떼어낸 영상 화면을 담는 빈 창 (내용은 원래 창이 옮겨 넣음)"""
@@ -1971,6 +2057,13 @@ def _blurred_out(d, r):
             c.append(os.path.join(d, f))
     if r.get("out") and os.path.exists(os.path.join(d, r["out"])):
         c.append(os.path.join(d, r["out"]))
+    try:                                              # 저장 폴더를 따로 정해 둔 경우 그쪽에 만든 결과
+        for p in json.load(open(os.path.join(d, "out_paths.json"), encoding="utf-8")):
+            stem = os.path.splitext(os.path.basename(p))[0]
+            if os.path.exists(p) and not stem.endswith("_sub") and "_sub_" not in stem:
+                c.append(p)
+    except Exception:
+        pass
     return max(c, key=os.path.getmtime) if c else None
 
 

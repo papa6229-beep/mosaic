@@ -61,6 +61,12 @@
   textarea:focus{border-color:var(--acc)}
 
   .opts{margin-top:18px;border-top:1px solid var(--line)}
+  .outdir{display:flex;align-items:center;gap:8px;padding:14px 2px;border-bottom:1px solid var(--line)}
+  .outdir .t{flex:1;min-width:0}
+  .outdir .t b{display:block;font-weight:600;font-size:16px}
+  .outdir .t small{color:var(--sub);font-size:14px;word-break:break-all}
+  .outdir small.bad{color:#ff8a7a}
+  .outdir button{font:inherit;font-size:14px;padding:7px 12px;border-radius:8px;border:1px solid var(--line);background:transparent;color:inherit;cursor:pointer;white-space:nowrap}
   .opt{display:flex;align-items:center;gap:14px;padding:14px 2px;border-bottom:1px solid var(--line);cursor:pointer;user-select:none}
   .opt .t{flex:1}
   .opt .t b{display:block;font-weight:600;font-size:16px}
@@ -160,6 +166,8 @@
       <div class="opt blurOnly" id="o_copy"><div class="t"><b>블러 없는 구간은 원본 그대로 (시험)</b><small>블러가 없는 구간은 다시 압축하지 않고 원본을 복사해요. 저장이 빨라지고 그 구간은 원본 화질 그대로. MOV(ProRes)·MXF(DNxHD) 원본만 해당</small></div><div class="sw"></div></div>
       <div class="opt blurOnly" id="o_fast"><div class="t"><b>빠른 훑기 (시험)</b><small>4K 같은 큰 영상을 1080p 크기로 줄여서 훑어요. 훨씬 빠르지만 털 찾는 결과가 조금 달라질 수 있어요</small></div><div class="sw"></div></div>
       <div class="opt on blurOnly" id="o_hair"><div class="t"><b>밖으로 나온 털까지 같이 덮기</b><small>원본 모자이크 밖의 음모를 찾아서 함께 가려요</small></div><div class="sw"></div></div>
+      <div class="outdir"><div class="t"><b>결과 영상 저장 폴더</b><small id="odTxt">작업 폴더 안 (따로 안 정함)</small></div>
+        <button id="odPick" type="button">폴더 고르기</button><button id="odClear" type="button" title="따로 정하지 않고 작업 폴더 안에 저장">기본으로</button></div>
       <div class="modes"><div class="t"><b>무엇을 만들까요</b><small id="modeHelp"></small></div>
         <div class="seg" id="mode"><button data-m="both" class="on">블러 + 자막</button><button data-m="blur">블러만</button><button data-m="subs">자막만</button></div></div>
       <div class="modes subsOnly"><div class="t"><b>영상 속 말</b><small>자막을 만들 원래 언어</small></div>
@@ -206,6 +214,21 @@ const post = (u, b) => fetch(u, { method: "POST", headers: { "Content-Type": "ap
 
 // ---------- 옵션 ----------
 $("o_hair").onclick = () => $("o_hair").classList.toggle("on");
+// ---------- 결과 영상 저장 폴더 ----------
+function showOd(d) {
+  const t = $("odTxt");
+  if (!d.out_dir) { t.textContent = "작업 폴더 안 (따로 안 정함)"; t.className = ""; return; }
+  t.textContent = d.out_dir + (d.out_ok === false ? "  — 지금 이 폴더를 쓸 수 없어서 작업 폴더에 저장돼요" : "");
+  t.className = d.out_ok === false ? "bad" : "";
+}
+fetch("/settings").then(r => r.json()).then(showOd).catch(() => {});
+$("odPick").onclick = () => {
+  $("odTxt").textContent = "폴더 고르는 창을 띄웠어요 — 안 보이면 Alt+Tab 으로 찾아 주세요";
+  fetch("/settings/out-dir", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pick: true }) })
+    .then(r => r.json()).then(d => { if (d.error) alert(d.error); fetch("/settings").then(r => r.json()).then(showOd); });
+};
+$("odClear").onclick = () => fetch("/settings/out-dir", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: "" }) })
+  .then(() => fetch("/settings").then(r => r.json()).then(showOd));
 $("o_copy").onclick = () => { $("o_copy").classList.toggle("on"); try { localStorage.setItem("copySave", $("o_copy").classList.contains("on") ? "1" : "0"); } catch (e) {} };
 try { if (localStorage.getItem("copySave") === "1") $("o_copy").classList.add("on"); } catch (e) {}
 $("o_fast").onclick = () => { $("o_fast").classList.toggle("on"); try { localStorage.setItem("fastScan", $("o_fast").classList.contains("on") ? "1" : "0"); } catch (e) {} };
