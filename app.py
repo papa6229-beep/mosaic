@@ -1574,11 +1574,19 @@ def _shutdown():
         _kill_leftovers()
     except Exception:
         pass
-    if os.name == "nt":                                 # 나와 내 밑의 프로그램 전부
-        try:
-            subprocess.run(["taskkill", "/T", "/F", "/PID", str(os.getpid())], capture_output=True, creationflags=0x08000000, timeout=30)
-        except Exception:
-            pass
+    try:                                                # 내가 띄운 프로그램 전부 (일꾼·ffmpeg 등)
+        import psutil
+        for c in psutil.Process(os.getpid()).children(recursive=True):
+            try:
+                c.kill()
+            except Exception:
+                pass
+    except Exception:
+        if os.name == "nt":
+            try:
+                subprocess.run(["taskkill", "/T", "/F", "/PID", str(os.getpid())], capture_output=True, creationflags=0x08000000, timeout=30)
+            except Exception:
+                pass
     os._exit(0)
 
 
@@ -2654,6 +2662,6 @@ if __name__ == "__main__":
     except Exception:
         pass
     print(f"\n  모자이크 생성기:  http://127.0.0.1:{port}\n")
-    if os.environ.get("MOSAIC_CLOSE_WITH_PAGE") == "1":      # 검은 창 없는 실행기로 켰을 때: 화면을 닫으면 같이 꺼짐
+    if os.environ.get("MOSAIC_CLOSE_WITH_PAGE") != "0":      # 생성기 화면(브라우저)을 모두 닫으면 같이 꺼짐 (어떻게 켰든)
         threading.Thread(target=_watch_pages, daemon=True).start()
     app.run(host="127.0.0.1", port=port, threaded=True)
