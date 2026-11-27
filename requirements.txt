@@ -9,3 +9,4 @@ nudenet
 onnx
 onnx2torch
 pillow
+pystray

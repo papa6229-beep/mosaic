@@ -90,15 +90,23 @@ def ask_mode():
 
 
 def shortcut():
-    """바탕화면에 '모자이크 생성기' 바로가기"""
+    """바탕화면·시작 메뉴에 '모자이크 생성기' 바로가기 — 검은 창 없는 실행기(launcher.pyw)로"""
     if os.name != "nt":
         return
-    bat = os.path.join(ROOT, "start.bat")
     name = "모자이크 생성기"
-    ps = ("$d=[Environment]::GetFolderPath('Desktop');"
-          f"$s=(New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $d '{name}.lnk'));"
-          f"$s.TargetPath='{bat}';$s.WorkingDirectory='{ROOT}';$s.Save()")
-    subprocess.run(["powershell", "-NoProfile", "-Command", ps])
+    pyw = os.path.join(os.path.dirname(PY), "pythonw.exe")
+    lau = os.path.join(ROOT, "launcher.pyw")
+    ico = os.path.join(ROOT, "app.ico")
+    if os.path.exists(pyw) and os.path.exists(lau):
+        tgt, arg = pyw, f'"{lau}"'
+    else:
+        tgt, arg = os.path.join(ROOT, "start.bat"), ""
+    for where in ("Desktop", "Programs"):
+        ps = (f"$d=[Environment]::GetFolderPath('{where}');"
+              f"$s=(New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $d '{name}.lnk'));"
+              f"$s.TargetPath='{tgt}';$s.Arguments='{arg}';$s.WorkingDirectory='{ROOT}';"
+              + (f"$s.IconLocation='{ico}';" if os.path.exists(ico) else "") + "$s.Save()")
+        subprocess.run(["powershell", "-NoProfile", "-Command", ps], creationflags=0x08000000)
 
 
 def check_gpu():
@@ -129,8 +137,29 @@ def check_gpu():
             pass
 
 
+def set_mode(m):
+    p = os.path.join(ROOT, "settings", "install.json")
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    json.dump({"mode": m}, open(p, "w", encoding="utf-8"))
+
+
 def main():
     what = sys.argv[1] if len(sys.argv) > 1 else "update"
+    # 설치 프로그램(모자이크생성기_설치.exe)이 단계별로 부름 — 묻는 것 없이
+    if what == "fetch":
+        print("프로그램 받는 중…", flush=True)
+        fetch(force=True)
+        print("받았어요.", flush=True)
+        return 0
+    if what == "packages":
+        packages(force=True)
+        return 0
+    if what == "finish":
+        m = sys.argv[2] if len(sys.argv) > 2 and sys.argv[2] in ("both", "blur", "subs") else "both"
+        set_mode(m)
+        print({"both": "블러 + 자막", "blur": "블러만", "subs": "자막만"}[m], "— 처음 켤 때 필요한 모델을 알아서 받아요.", flush=True)
+        check_gpu()
+        return 0
     if what == "install":
         print("프로그램 받는 중…")
         fetch(force=True)
@@ -151,6 +180,13 @@ def main():
         packages()
     except Exception as e:
         print("패키지 확인 실패:", e)
+    mk = os.path.join(ROOT, "settings", "shortcut2.txt")    # 예전 바로가기(검은 창)를 새 실행기로 한 번 바꿔 줌
+    if os.name == "nt" and not os.path.exists(mk) and os.path.exists(os.path.join(os.path.dirname(PY), "pythonw.exe")):
+        try:
+            shortcut()
+            open(mk, "w").write("ok")
+        except Exception:
+            pass
     return 0
 
 
