@@ -1,4 +1,4 @@
-"""전체 속도 점검 (3~5분): 영상 가운데 30초만 잘라서, 실제 생성기와 똑같이
+"""전체 속도 점검 (4~6분): 영상 전체에서 고르게 5초씩 8군데를 떼어 이어 붙여서, 실제 생성기와 똑같이
 위치 찾기 → 훑기 → 계획 → 저장을 처음부터 끝까지 돌려 단계별로 1초에 몇 장인지 재고,
 그 속도로 영상 전체를 돌리면 단계별로 몇 분 걸릴지 계산함. 결과 영상은 지우고 숫자만 남김.
 → 영상 전체(몇 시간)를 돌리지 않고도 이 PC에서 실제로 얼마나 걸릴지 알 수 있음.
@@ -8,7 +8,7 @@ import os, sys, time, shutil, subprocess, json
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "tools"))
-SEC = 30
+PIECES, PSEC = 8, 5      # 영상 전체에 고르게 흩어진 5초짜리 8조각 (모두 40초)
 lines = []
 
 
@@ -52,9 +52,20 @@ def main():
     clip = os.path.join(work, "clip" + os.path.splitext(src)[1])
     out("===== 전체 속도 점검 =====")
     out(f"파일: {os.path.basename(src)} ({info.get('codec')} {W}x{H}, 1초에 {fps:.2f}장, 전체 {total}장 = {mmss(total / fps)})")
-    out(f"영상 가운데 {SEC}초를 잘라 실제와 똑같이 처음부터 끝까지 만들어 봐요. 다른 프로그램은 쓰지 말고 기다려 주세요 (3~5분)...")
-    subprocess.run([media.ffmpeg_exe(), "-y", "-v", "error", "-ss", f"{total / 2 / fps:.2f}", "-i", src, "-t", str(SEC),
-                    "-map", "0", "-c", "copy", clip], capture_output=True)
+    out(f"영상 전체에서 고르게 {PSEC}초씩 {PIECES}군데를 떼어 이어 붙인 뒤, 실제와 똑같이 처음부터 끝까지 만들어 봐요.")
+    out("다른 프로그램은 쓰지 말고 기다려 주세요 (4~6분)...")
+    dur = total / fps
+    pieces = PIECES if dur >= PIECES * PSEC * 3 else 1      # 짧은 영상은 통째로
+    lst = os.path.join(work, "pieces.txt")
+    with open(lst, "w", encoding="utf-8") as fl:
+        for k in range(pieces):
+            at = dur * (k + 0.5) / PIECES - PSEC / 2 if pieces > 1 else 0
+            pp = os.path.join(work, f"p{k}" + os.path.splitext(src)[1])
+            subprocess.run([media.ffmpeg_exe(), "-y", "-v", "error", "-ss", f"{max(0, at):.2f}", "-i", src, "-t", str(PSEC if pieces > 1 else dur + 1),
+                            "-map", "0", "-c", "copy", pp], capture_output=True)
+            fl.write(f"file '{pp.replace(os.sep, '/')}'\n")
+    subprocess.run([media.ffmpeg_exe(), "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", lst, "-map", "0", "-c", "copy", clip],
+                   capture_output=True)
     cap = cv2.VideoCapture(clip); n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)); cap.release()
     if n <= 0:
         out("영상을 자르지 못했어요.")
@@ -83,7 +94,9 @@ def main():
     tm = rep.get("times", times)
     st = [("위치 찾기", t_det), ("훑기", tm.get("scan", 0)), ("계획", tm.get("plan", 0)), ("저장 (이어 붙이기 포함)", tm.get("paint", 0) + tm.get("mux", 0))]
     out("")
-    out(f"{'단계':<14}{'이 30초':>10}{'1초에':>10}   영상 전체({mmss(total / fps)})를 돌리면")
+    blur_frames = rep.get("covered", 0)
+    out(f"떼어 온 {n}장 중 블러가 들어간 장: {blur_frames}장 ({blur_frames * 100 // max(1, n)}%) — 영상 전체와 비율이 비슷할수록 계산이 정확해요")
+    out(f"{'단계':<14}{'떼어 온 것':>10}{'1초에':>10}   영상 전체({mmss(total / fps)})를 돌리면")
     whole = 0
     for name, sec in st:
         rate = n / sec if sec > 0 else 0
