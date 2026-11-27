@@ -12,11 +12,11 @@
   *{box-sizing:border-box}
   html,body{margin:0;background:var(--bg);color:var(--ink)}
   body{font:17px/1.6 "Pretendard","Malgun Gothic",system-ui,sans-serif;-webkit-font-smoothing:antialiased}
-  main{max-width:1480px;margin:0 auto;padding:40px 48px 80px}
+  main{max-width:1560px;margin:0 auto;padding:32px 48px 80px}
   .grid{display:grid;grid-template-columns:1fr 1fr;gap:28px;align-items:start}
   .left{position:sticky;top:24px}
   .right h2:first-child,.right #qWrap.hide+h2{margin-top:4px}
-  @media (max-width:1100px){.grid{grid-template-columns:1fr}.left{position:static}main{padding:32px 20px 60px}}
+
   button,input,textarea{font:inherit;color:inherit}
 
   header{display:flex;align-items:center;gap:14px;margin-bottom:28px}
@@ -133,7 +133,40 @@
   .ib:hover{border-color:var(--line2);color:var(--ink)}
   .ib.del:hover{color:var(--bad);border-color:rgba(239,107,95,.4)}
   .empty{padding:22px;text-align:center;color:var(--dim);font-size:15px}
+
+  /* ---- 새 작업 카드 ---- */
+  .grid{grid-template-columns:minmax(420px,520px) 1fr}
+  .step{display:flex;align-items:baseline;gap:10px;margin:0 2px 10px}
+  .step+*{margin-top:0}
+  .step:not(:first-child){margin-top:26px}
+  .step .no{width:22px;height:22px;border-radius:50%;background:rgba(232,165,75,.15);color:var(--acc2);font-size:13px;font-weight:700;display:inline-grid;place-items:center;flex:none;transform:translateY(-1px)}
+  .step b{font-size:17px;font-weight:700;letter-spacing:-.01em}
+  .step small{color:var(--dim);font-size:14px}
+  #drop{display:flex;align-items:center;gap:14px;text-align:left;padding:22px 20px}
+  #drop .ic{margin:0}
+  #drop span{display:block;font-size:14px;color:var(--dim)}
+  .or{display:flex;align-items:center;gap:10px;margin:14px 2px 0;color:var(--dim);font-size:14px}
+  .or::before,.or::after{content:"";flex:1;height:1px;background:var(--line)}
+  .hint{display:block;color:var(--dim);font-size:13.5px;margin:6px 2px 0;line-height:1.5}
+  .seg.wide{width:100%}
+  .seg.wide button{flex:1;padding:11px 10px;font-size:16px}
+  .subrow{display:flex;gap:12px;align-items:flex-end;margin-top:14px;flex-wrap:wrap}
+  .subrow label{display:block;color:var(--sub);font-size:14px;margin:0 2px 6px}
+  .subrow label a{color:var(--acc2);text-decoration:none}
+  .subrow .psel{width:100%;min-width:0}
+  .go{margin-top:22px}
+  .setbox{margin-top:18px;border:1px solid var(--line);border-radius:14px;background:var(--panel2)}
+  .setbox>summary{list-style:none;display:flex;align-items:center;gap:12px;padding:13px 16px;cursor:pointer;user-select:none}
+  .setbox>summary::-webkit-details-marker{display:none}
+  .setbox .st{font-weight:700;font-size:15px;flex:none}
+  .setbox .sum{flex:1;min-width:0;color:var(--dim);font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .setbox .chev{color:var(--dim);font-size:20px;line-height:1;transition:.2s}
+  .setbox[open] .chev{transform:rotate(90deg)}
+  .setbox .opts{margin:0;padding:0 16px 8px;border-top:1px solid var(--line)}
+  .setbox .opt:last-of-type{border-bottom:1px solid var(--line)}
+  .right h2:first-child{margin-top:4px}
   .hide{display:none!important}
+  @media (max-width:1100px){.grid{grid-template-columns:1fr}.left{position:static}main{padding:28px 18px 60px}}
   @media (max-width:560px){.night small{display:none}.row{flex-wrap:wrap}.row .info{flex-basis:100%}}
 </style>
 </head>
@@ -150,45 +183,50 @@
 
   <div class="grid">
   <section class="panel left">
+    <div class="step"><span class="no">1</span><b>영상 넣기</b><small>여러 개를 넣으면 차례대로 만들어요</small></div>
     <div id="drop">
       <div class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4M6 10l6-6 6 6"/><path d="M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/></svg></div>
-      <b>영상을 끌어 놓거나 눌러서 선택</b>
-      <span>여러 개를 한 번에 넣으면 차례대로 만들어요</span>
+      <div><b>영상을 끌어 놓거나 눌러서 선택</b><span>MP4 · MOV · MXF · MKV</span></div>
     </div>
     <input id="file" type="file" accept="video/*,.mxf,.MXF" multiple class="hide">
     <div id="picked"></div>
-    <details class="pathbox" open><summary>파일 경로·폴더로 넣기 — 여러 개를 걸어 두면 하나 끝나면 다음 것을 알아서 이어서 해요</summary>
-      <textarea id="path" rows="3" placeholder="D:\영상\원본1.mxf&#10;D:\영상\원본2.mxf   ← 한 줄에 하나씩&#10;D:\영상\오늘할것   ← 폴더를 넣으면 안의 영상 전부"></textarea>
-      <small class="muted" style="display:block;margin-top:4px">탐색기에서 파일 여러 개를 고르고 Shift+오른쪽 클릭 → '경로로 복사' 한 뒤 여기에 붙여 넣으면 돼요. 복사하지 않고 원본을 바로 읽어서 큰 파일도 빨라요.</small>
-    </details>
+    <div class="or"><span>또는 파일 위치 붙여 넣기</span></div>
+    <textarea id="path" rows="2" placeholder="D:\영상\원본1.mxf   ← 한 줄에 하나씩&#10;D:\영상\오늘할것   ← 폴더를 넣으면 안의 영상 전부"></textarea>
+    <small class="hint">탐색기에서 파일을 고르고 Shift+오른쪽 클릭 → '경로로 복사' 후 붙여 넣기. 원본을 복사하지 않고 바로 읽어서 큰 파일도 빨라요.</small>
 
-    <div class="opts">
-      <div class="opt blurOnly" id="o_copy"><div class="t"><b>블러 없는 구간은 원본 그대로 (시험)</b><small>블러가 없는 구간은 다시 압축하지 않고 원본을 복사해요. 저장이 빨라지고 그 구간은 원본 화질 그대로. MOV(ProRes)·MXF(DNxHD) 원본만 해당</small></div><div class="sw"></div></div>
-      <div class="opt blurOnly" id="o_fast"><div class="t"><b>빠른 훑기 (시험)</b><small>4K 같은 큰 영상을 1080p 크기로 줄여서 훑어요. 훨씬 빠르지만 털 찾는 결과가 조금 달라질 수 있어요</small></div><div class="sw"></div></div>
-      <div class="opt on blurOnly" id="o_hair"><div class="t"><b>밖으로 나온 털까지 같이 덮기</b><small>원본 모자이크 밖의 음모를 찾아서 함께 가려요</small></div><div class="sw"></div></div>
-      <div class="outdir"><div class="t"><b>결과 영상 저장 폴더</b><small id="odTxt">작업 폴더 안 (따로 안 정함)</small></div>
-        <button id="odPick" type="button">폴더 고르기</button><button id="odClear" type="button" title="따로 정하지 않고 작업 폴더 안에 저장">기본으로</button></div>
-      <div class="modes"><div class="t"><b>무엇을 만들까요</b><small id="modeHelp"></small></div>
-        <div class="seg" id="mode"><button data-m="both" class="on">블러 + 자막</button><button data-m="blur">블러만</button><button data-m="subs">자막만</button></div></div>
-      <div class="modes subsOnly"><div class="t"><b>영상 속 말</b><small>자막을 만들 원래 언어</small></div>
-        <div class="seg" id="lang"><button data-l="ja" class="on">일본어</button><button data-l="en">영어</button></div></div>
-      <div class="modes subsOnly"><div class="t"><b>자막 컨셉</b><small>번역 말투·단어 기준 · <a href="/subtitle-style" target="_blank" style="color:var(--acc2)">자막 스타일에서 만들고 고치기</a></small></div>
-        <select id="profile" class="psel"></select></div>
-      <div class="range blurOnly">
-        <div class="top"><b>털 찾는 범위</b><span id="reach_v"></span></div>
-        <input id="reach" type="range" min="0.2" max="1" step="0.05" value="0.8">
-        <small>클수록 모자이크에서 멀리 떨어진 음모까지 잡아요 (최대 250픽셀)</small>
-      </div>
-      <details class="adv blurOnly"><summary>덮는 모양 조절 — 보통은 그대로</summary>
-        <div class="range"><div class="top"><b>블러 크기</b><span id="scale_v"></span></div>
-          <input id="scale" type="range" min="0.8" max="2.5" step="0.05" value="0.8"><small>장면마다 가려야 할 곳 크기의 몇 배로 고정할지</small></div>
-        <div class="range"><div class="top"><b>블러 세기</b><span id="blur_v"></span></div>
-          <input id="blur" type="range" min="0.1" max="0.6" step="0.05" value="0.2"></div>
-        <div class="range"><div class="top"><b>가장자리 번짐 폭</b><span id="feather_v"></span></div>
-          <input id="feather" type="range" min="0.2" max="1.2" step="0.05" value="0.45"><small>클수록 바깥으로 넓게, 잘게 흐려지며 사라져요 (블러 크기에 비례)</small></div>
-      </details>
+    <div class="step"><span class="no">2</span><b>무엇을 만들까요</b></div>
+    <div class="seg wide" id="mode"><button data-m="both" class="on">블러 + 자막</button><button data-m="blur">블러만</button><button data-m="subs">자막만</button></div>
+    <small class="hint" id="modeHelp"></small>
+    <div class="subrow subsOnly">
+      <div><label>영상 속 말</label><div class="seg" id="lang"><button data-l="ja" class="on">일본어</button><button data-l="en">영어</button></div></div>
+      <div style="flex:1"><label>자막 컨셉 · <a href="/subtitle-style" target="_blank">고치기</a></label><select id="profile" class="psel"></select></div>
     </div>
+
     <button class="go" id="go">만들기 시작</button>
+
+    <details class="setbox" id="setbox">
+      <summary><span class="st">설정</span><span class="sum" id="setSum"></span><span class="chev">›</span></summary>
+      <div class="opts">
+        <div class="outdir"><div class="t"><b>결과 영상 저장 폴더</b><small id="odTxt">작업 폴더 안 (따로 안 정함)</small></div>
+          <button id="odPick" type="button">폴더 고르기</button><button id="odClear" type="button" title="따로 정하지 않고 작업 폴더 안에 저장">기본으로</button></div>
+        <div class="opt on blurOnly" id="o_hair"><div class="t"><b>밖으로 나온 털까지 같이 덮기</b><small>원본 모자이크 밖의 음모를 찾아서 함께 가려요</small></div><div class="sw"></div></div>
+        <div class="range blurOnly">
+          <div class="top"><b>털 찾는 범위</b><span id="reach_v"></span></div>
+          <input id="reach" type="range" min="0.2" max="1" step="0.05" value="0.8">
+          <small>클수록 모자이크에서 멀리 떨어진 음모까지 잡아요 (최대 250픽셀)</small>
+        </div>
+        <div class="opt blurOnly" id="o_fast"><div class="t"><b>빠른 훑기</b><small>4K 같은 큰 영상을 1080p 크기로 줄여서 훑어요. 훨씬 빨라요</small></div><div class="sw"></div></div>
+        <div class="opt blurOnly" id="o_copy"><div class="t"><b>블러 없는 구간은 원본 그대로</b><small>MOV(ProRes)·MXF(DNxHD) 원본만 해당 — 다시 압축하지 않고 복사해서 빨라요</small></div><div class="sw"></div></div>
+        <details class="adv blurOnly"><summary>덮는 모양 조절 — 보통은 그대로</summary>
+          <div class="range"><div class="top"><b>블러 크기</b><span id="scale_v"></span></div>
+            <input id="scale" type="range" min="0.8" max="2.5" step="0.05" value="0.8"><small>장면마다 가려야 할 곳 크기의 몇 배로 고정할지</small></div>
+          <div class="range"><div class="top"><b>블러 세기</b><span id="blur_v"></span></div>
+            <input id="blur" type="range" min="0.1" max="0.6" step="0.05" value="0.2"></div>
+          <div class="range"><div class="top"><b>가장자리 번짐 폭</b><span id="feather_v"></span></div>
+            <input id="feather" type="range" min="0.2" max="1.2" step="0.05" value="0.45"><small>클수록 바깥으로 넓게, 잘게 흐려지며 사라져요 (블러 크기에 비례)</small></div>
+        </details>
+      </div>
+    </details>
   </section>
 
   <div class="right">
@@ -217,9 +255,10 @@ $("o_hair").onclick = () => $("o_hair").classList.toggle("on");
 // ---------- 결과 영상 저장 폴더 ----------
 function showOd(d) {
   const t = $("odTxt");
-  if (!d.out_dir) { t.textContent = "작업 폴더 안 (따로 안 정함)"; t.className = ""; return; }
+  if (!d.out_dir) { t.textContent = "작업 폴더 안 (따로 안 정함)"; t.className = ""; updSum(); return; }
   t.textContent = d.out_dir + (d.out_ok === false ? "  — 지금 이 폴더를 쓸 수 없어서 작업 폴더에 저장돼요" : "");
   t.className = d.out_ok === false ? "bad" : "";
+  updSum();
 }
 fetch("/settings").then(r => r.json()).then(showOd).catch(() => {});
 $("odPick").onclick = () => {
@@ -239,13 +278,26 @@ let mode = "both";
 try { mode = localStorage.getItem("mode") || "both"; } catch (e) {}
 function setMode(m) { mode = m; $("mode").querySelectorAll("button").forEach(b => b.classList.toggle("on", b.dataset.m === m)); $("modeHelp").textContent = MODE_HELP[m];
   document.querySelectorAll(".blurOnly").forEach(el => el.classList.toggle("hide", m === "subs"));
-  document.querySelectorAll(".subsOnly").forEach(el => el.classList.toggle("hide", m === "blur")); try { localStorage.setItem("mode", m); } catch (e) {} }
+  document.querySelectorAll(".subsOnly").forEach(el => el.classList.toggle("hide", m === "blur")); try { localStorage.setItem("mode", m); } catch (e) {}
+  if (typeof updSum === "function" && $("setSum")) try { updSum(); } catch (e) {} }
 $("mode").querySelectorAll("button").forEach(b => b.onclick = () => setMode(b.dataset.m));
 let lang = "ja";
 function setLang(l) { lang = l; $("lang").querySelectorAll("button").forEach(b => b.classList.toggle("on", b.dataset.l === l)); try { localStorage.setItem("lang", l); } catch (e) {} }
 $("lang").querySelectorAll("button").forEach(b => b.onclick = () => setLang(b.dataset.l));
 try { setLang(localStorage.getItem("lang") || "ja"); } catch (e) {}
-["scale", "blur", "feather", "reach"].forEach(k => { const s = () => $(k + "_v").textContent = $(k).value; $(k).oninput = s; s(); });
+["scale", "blur", "feather", "reach"].forEach(k => { const s = () => { $(k + "_v").textContent = $(k).value; updSum(); }; $(k).oninput = s; s(); });
+function updSum() {                 // 설정을 접어 둬도 지금 무엇으로 만드는지 한 줄로 보이게
+  const on = id => $(id).classList.contains("on"), od = $("odTxt").textContent;
+  const parts = [od.startsWith("작업 폴더") ? "저장: 작업 폴더" : "저장: " + od.split("\\").slice(-2).join("\\")];
+  if (mode !== "subs") {
+    parts.push(on("o_hair") ? `털 덮기 ${$("reach").value}` : "털 덮기 끔");
+    if (on("o_fast")) parts.push("빠른 훑기");
+    if (on("o_copy")) parts.push("원본 복사");
+    parts.push(`크기 ${$("scale").value} · 번짐 ${$("feather").value}`);
+  }
+  $("setSum").textContent = parts.join(" · ");
+}
+["o_hair", "o_fast", "o_copy"].forEach(id => $(id).addEventListener("click", () => setTimeout(updSum)));
 fetch("/night").then(r => r.json()).then(d => $("night").classList.toggle("on", d.on)).catch(() => {});
 $("night").onclick = () => post("/night", { on: !$("night").classList.contains("on") }).then(d => $("night").classList.toggle("on", d.on));
 
@@ -397,7 +449,7 @@ $("profile").onchange = () => { try { localStorage.setItem("profile", $("profile
 // ---------- 처음 준비 ----------
 function setupPoll(d) {
   if (d.install && d.install !== "both" && !setupPoll.fixed) {     // 설치할 때 블러만/자막만 골랐으면 그것만
-    setupPoll.fixed = true; setMode(d.install); $("mode").closest(".modes").classList.add("hide");
+    setupPoll.fixed = true; setMode(d.install); $("mode").classList.add("hide"); $("mode").previousElementSibling.classList.add("hide"); $("modeHelp").classList.add("hide");
   }
   if (d.install) $("setupBtns").querySelectorAll("button").forEach(b => b.classList.toggle("hide", b.dataset.w !== d.install && b.dataset.w !== "later"));
   const st = d.state, show = st.running || st.error || (!d.done.asked && !d.install);
