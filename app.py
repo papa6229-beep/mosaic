@@ -1808,6 +1808,14 @@ def page_alive():
     return Response(gen(), mimetype="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+@app.get("/alive-worker.js")
+def alive_worker():
+    """생성기 화면들이 함께 쓰는 연결 하나 (탭마다 연결을 열면 브라우저의 동시 연결 수(6개)를 다 써 버려서
+    탭을 여러 개 열면 새 화면·영상이 한참 안 뜸 → 브라우저 전체에서 딱 하나만 열어 둠)"""
+    js = 'const es = new EventSource("/alive"); onconnect = e => { e.ports[0].start(); };'
+    return Response(js, mimetype="text/javascript", headers={"Cache-Control": "no-cache"})
+
+
 def _watch_pages():
     """생성기 화면이 하나도 안 남으면 끔: 마지막 화면이 닫히고 5초 안에 새 화면(새로 고침·다른 화면으로 이동)이 안 열리면"""
     while True:
