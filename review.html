@@ -1138,9 +1138,10 @@ function detach(sx, sy) {
     d.head.append(st1, st2);
     const fb = d.createElement("button"); fb.id = "fsBtn"; fb.title = "F 키로도 돼요"; fb.textContent = "전체 화면 (F)";
     fb.onclick = () => toggleFS(pw);
+    const playing = !V.paused;
     d.body.append(fb, d.adoptNode($("stage")));
     V.style.maxHeight = ""; vMaxH = 0;
-    reloadHere();
+    reloadHere(playing);
     pw.addEventListener("keydown", onKey);
     pw.addEventListener("resize", () => requestAnimationFrame(fit));
     pw.addEventListener("pagehide", dock);
@@ -1151,8 +1152,8 @@ function detach(sx, sy) {
     if (window.getScreenDetails) getScreenDetails().then(() => { try { pw.moveTo(L, T); } catch (e) {} }).catch(() => {});
   } catch (e) {}
 }
-function reloadHere() {              // 영상 화면을 다른 창으로 옮기면 브라우저가 영상을 처음부터 다시 불러옴 → 보던 프레임·재생 상태로 되돌림
-  const f = cur, playing = !V.paused;
+function reloadHere(playing) {       // 영상 화면을 다른 창으로 옮기면 브라우저가 영상을 처음부터 다시 불러옴 → 보던 프레임·재생 상태로 되돌림
+  const f = cur;
   V.addEventListener("loadeddata", () => { setFrame(f); if (playing) V.play().catch(() => {}); fit(); }, { once: true });
   const src = V.getAttribute("src");
   if (src) V.src = new URL(src, location.href).href;   // 새 창 주소 기준이 아니라 원래 주소 기준으로
@@ -1163,8 +1164,9 @@ function dock() {
   const pw = PW; PW = null;
   const st = pw.document.getElementById("stage");
   if (st) {
+    const playing = !V.paused;
     $("tearPh").before(document.adoptNode(st));
-    reloadHere();
+    reloadHere(playing);
   }
   $("tear").style.display = ""; $("tearPh").style.display = "none";
   try { if (!pw.closed) pw.close(); } catch (e) {}

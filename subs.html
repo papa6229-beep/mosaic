@@ -26,6 +26,10 @@
   /* 방송본부 자막 샘플 기준: 가로 가운데, 글자 높이 ≈ 영상 높이 4%, 글자 아래 끝이 영상 아래에서 ≈ 11% 위, 흰 글자 + 얇은 검은 테두리 */
   @font-face{font-family:"SubKR";src:url("/fonts/NotoSansKR-Medium.otf") format("opentype");font-weight:500}
   #cap{position:absolute;text-align:center;line-height:1.38;pointer-events:none}
+  #tear{display:flex;align-items:center;gap:8px;height:22px;padding:0 10px;margin-bottom:4px;border-radius:6px;background:var(--panel);color:var(--sub,#999);font-size:12px;cursor:grab;user-select:none;touch-action:none;line-height:1}
+  #tear:active{cursor:grabbing}
+  #tear.out{background:var(--acc);color:#1a120a}
+  #tearPh{display:none;align-items:center;justify-content:center;gap:10px;min-height:120px;border:1px dashed #555;border-radius:8px;color:var(--sub,#999);font-size:14px}
   #cap span{display:inline-block;color:#fff;font-family:"SubKR","Malgun Gothic",sans-serif;font-weight:500;white-space:pre;-webkit-text-stroke:.1em #000;paint-order:stroke fill}
   #cap span.dlg{text-align:left}
   #cap span.box{-webkit-text-stroke:0;text-shadow:none;padding:.45em .6em}
@@ -103,6 +107,8 @@
     <div class="r"><button id="sReset">기본값 (방송본부 샘플)</button><span style="flex:1"></span><button id="sClose">닫기</button></div>
   </div>
   <div id="left">
+    <div id="tear" title="잡고 브라우저 창 밖으로 끌어내서 놓으면, 영상 화면만 따로 창으로 떼어져요 (더블클릭해도 돼요)">⠿ 영상 화면 떼어내기 — 잡고 창 밖으로 끌어내세요 (다른 모니터에 크게 띄워 보면서 고치기)</div>
+    <div id="tearPh">영상 화면을 따로 창에 띄웠어요 — 그 창을 닫으면 여기로 돌아와요 <button id="bDock">다시 붙이기</button></div>
     <div id="stage">
       <video id="v" preload="auto" playsinline></video>
       <div id="cap"></div>
@@ -171,7 +177,8 @@
 <script>
 const $ = id => document.getElementById(id);
 const JID = location.pathname.split("/").filter(Boolean)[1];
-const V = $("v");
+let PW = null;   // 떼어낸 영상 화면 창
+const V = $("v"), CAP = $("cap"), BADGE = $("vBadge");   // 영상 화면을 다른 창으로 떼어내도 그대로 찾도록 미리 잡아 둠
 let L = [];            // 자막 줄 [{start,end,src,lang,ko}]
 let sel = -1, nowIdx = -1, showKo = true, saveT = null, hist = [];
 
@@ -190,6 +197,7 @@ let ST = { font: "NotoSansKR-Medium.otf", size: 0.046, bottom: 0.096, color: "#f
 function hexA(h, a) { const n = parseInt(h.slice(1), 16); return `rgba(${n >> 16 & 255},${n >> 8 & 255},${n & 255},${a})`; }
 function loadFont() {
   try { const f = new FontFace("SubSel", `url(/fontfile/${encodeURIComponent(ST.font)})`); f.load().then(ff => { document.fonts.add(ff); showCap(true); }).catch(() => {}); } catch (e) {}
+  if (PW && !PW.closed) fontTo(PW);
 }
 function fillStyle() {
   $("sFont").value = ST.font; $("sSize").value = ST.size; $("sBottom").value = ST.bottom; $("sColor").value = ST.color;
@@ -434,12 +442,12 @@ function showCap() {
   const txt = i < 0 ? "" : (showKo ? L[i].ko : L[i].src) || "";
   const t2 = wrapKo(txt.trim());
   const boxed = i >= 0 && showKo && (ST.box || L[i].nar);
-  $("cap").innerHTML = t2 ? `<span class="${/^- /.test(t2) ? "dlg" : ""}${boxed ? " box" : ""}">${esc(t2)}</span>` : "";
+  CAP.innerHTML = t2 ? `<span class="${/^- /.test(t2) ? "dlg" : ""}${boxed ? " box" : ""}">${esc(t2)}</span>` : "";
   // 영상이 실제로 그려진 칸(위아래·양옆 검은 여백 뺀 곳) 기준으로 크기·위치를 맞춤
   const ew = V.clientWidth, eh = V.clientHeight, ar = (V.videoWidth || 16) / (V.videoHeight || 9);
   let cw = ew, ch = ew / ar;
   if (ch > eh) { ch = eh; cw = eh * ar; }
-  const ox = (ew - cw) / 2, oy = (eh - ch) / 2, c = $("cap");
+  const ox = (ew - cw) / 2, oy = (eh - ch) / 2, c = CAP;
   c.style.left = ox + "px"; c.style.width = cw + "px";
   c.style.bottom = (eh - oy - ch + ch * ST.bottom) + "px";
   c.style.fontSize = Math.max(10, ch * ST.size) + "px";
@@ -553,7 +561,82 @@ $("tlc").addEventListener("mousedown", e => {
 });
 
 // ---------- 단축키 ----------
-document.addEventListener("keydown", e => {
+// ---------- 영상 화면 떼어내기 (다른 모니터에 크게) ----------
+function toggleFS(w) {
+  const d = w.document;
+  if (d.fullscreenElement) d.exitFullscreen().catch(() => {});
+  else d.documentElement.requestFullscreen().catch(() => {});
+}
+function fontTo(pw) {
+  try { const f = new pw.FontFace("SubSel", `url(/fontfile/${encodeURIComponent(ST.font)})`); f.load().then(ff => { pw.document.fonts.add(ff); showCap(true); }).catch(() => {}); } catch (e) {}
+}
+function reloadHere(t, playing) {    // 영상 화면을 다른 창으로 옮기면 브라우저가 영상을 다시 불러옴 → 옮기기 전 보던 곳·재생 상태로 되돌림
+  V.addEventListener("loadeddata", () => { V.currentTime = t; if (playing) V.play().catch(() => {}); showCap(); }, { once: true });
+  const src = V.getAttribute("src");
+  if (src) V.src = new URL(src, location.href).href;
+  V.load();
+}
+function detach(sx, sy) {
+  if (PW && !PW.closed) { PW.focus(); return; }
+  const r = $("stage").getBoundingClientRect();
+  const w = Math.max(800, Math.round(r.width)), h = Math.max(450, Math.round(r.height));
+  const L0 = Math.round(sx - w / 2), T0 = Math.round(sy - 16);
+  const pw = window.open("/viewer", "subsView_" + JID, `popup,width=${w},height=${h},left=${L0},top=${T0}`);
+  if (!pw) { msg("브라우저가 새 창을 막았어요 — 주소창 오른쪽의 팝업 차단 표시를 눌러 '항상 허용'으로 바꾼 뒤 다시 해 주세요", "bad"); return; }
+  PW = pw;
+  $("tear").style.display = "none"; $("tearPh").style.display = "flex";
+  const build = () => {
+    let ok = false;
+    try { ok = pw.location.pathname === "/viewer" && pw.document.readyState === "complete"; } catch (e) {}
+    if (pw.closed) { PW = null; $("tear").style.display = ""; $("tearPh").style.display = "none"; return; }
+    if (!ok) return setTimeout(build, 30);
+    const d = pw.document;
+    d.title = "자막 영상 화면";
+    const st1 = d.createElement("style"); st1.textContent = [...document.querySelectorAll("style")].map(x => x.textContent).join("\n");
+    const st2 = d.createElement("style");
+    st2.textContent = `html,body{margin:0;height:100%;background:#000;overflow:hidden}
+#stage{border-radius:0;height:100vh}
+#stage video{width:100vw;height:100vh;max-height:none!important}
+#fsBtn{position:fixed;right:10px;top:10px;z-index:5;opacity:.35;font:13px sans-serif;background:#222;color:#eee;border:1px solid #555;border-radius:8px;padding:6px 10px;cursor:pointer}
+#fsBtn:hover{opacity:1}`;
+    d.head.append(st1, st2);
+    const fb = d.createElement("button"); fb.id = "fsBtn"; fb.title = "F 키로도 돼요"; fb.textContent = "전체 화면 (F)";
+    fb.onclick = () => toggleFS(pw);
+    const t = V.currentTime, playing = !V.paused;
+    d.body.append(fb, d.adoptNode($("stage")));
+    fontTo(pw);
+    reloadHere(t, playing);
+    pw.addEventListener("keydown", onKey);
+    pw.addEventListener("resize", () => requestAnimationFrame(() => showCap()));
+    pw.addEventListener("pagehide", dock);
+    setTimeout(() => showCap(), 120);
+  };
+  build();
+  try { if (window.getScreenDetails) getScreenDetails().then(() => { try { pw.moveTo(L0, T0); } catch (e) {} }).catch(() => {}); } catch (e) {}
+}
+function dock() {
+  if (!PW) return;
+  const pw = PW; PW = null;
+  const st = pw.document.getElementById("stage");
+  if (st) { const t = V.currentTime, playing = !V.paused; $("tearPh").before(document.adoptNode(st)); reloadHere(t, playing); }
+  $("tear").style.display = ""; $("tearPh").style.display = "none";
+  try { if (!pw.closed) pw.close(); } catch (e) {}
+  requestAnimationFrame(() => { drawTL(); showCap(); });
+}
+{
+  const T = $("tear"); let td = null;
+  const outside = ev => ev.clientX < 0 || ev.clientY < 0 || ev.clientX > innerWidth || ev.clientY > innerHeight;
+  T.addEventListener("pointerdown", ev => { td = 1; T.setPointerCapture(ev.pointerId); });
+  T.addEventListener("pointermove", ev => { if (td) T.classList.toggle("out", outside(ev)); });
+  T.addEventListener("pointerup", ev => { if (td && outside(ev)) detach(ev.screenX, ev.screenY); td = null; T.classList.remove("out"); });
+  T.addEventListener("pointercancel", () => { td = null; T.classList.remove("out"); });
+  T.addEventListener("dblclick", () => detach(screenX + outerWidth + 200, screenY + 80));
+  $("bDock").onclick = dock;
+  window.addEventListener("pagehide", () => { try { PW && PW.close(); } catch (e) {} });
+}
+function onKey(e) {
+  if (e.key && (e.key === "f" || e.key === "F" || e.code === "KeyF") && PW && !PW.closed && !e.ctrlKey && !e.metaKey
+      && !/TEXTAREA|INPUT|SELECT/.test(document.activeElement.tagName)) { e.preventDefault(); toggleFS(PW); return; }
   const typing = /TEXTAREA|INPUT|SELECT/.test(document.activeElement.tagName) || document.activeElement.isContentEditable;
   if (e.ctrlKey && e.code === "Space") { e.preventDefault(); $("bPlay").click(); return; }
   if (e.key === "Escape" && typing) { document.activeElement.blur(); return; }
@@ -575,7 +658,8 @@ document.addEventListener("keydown", e => {
   else if ((k === "r" || k === "R") && sel >= 0) { setSel(sel, true); V.play(); }
   else if (k === "Insert") $("bAdd").click();
   else if (k === "Delete" && sel >= 0) { snap(); L.splice(sel, 1); if (sel >= L.length) sel = L.length - 1; render(); save(); }
-});
+}
+document.addEventListener("keydown", onKey);
 
 // ---------- 자막 만들기 (아직 없을 때) ----------
 function showMake(st) {
@@ -635,7 +719,7 @@ const waitAudio = () => fetch(`/review/${JID}/video-status`).then(r => r.json())
 });
 waitVideo();
 // 블러 작업이 끝난 영상이면, 블러 결과 영상으로 미리보기를 바꿈 (만드는 동안은 원본 미리보기)
-const badge = (s) => { const b = $("vBadge"); b.textContent = s || ""; b.style.display = s ? "block" : "none"; };
+const badge = (s) => { const b = BADGE; b.textContent = s || ""; b.style.display = s ? "block" : "none"; };
 const waitBlur = () => fetch(`/review/${JID}/video-status?blur=1`).then(r => r.json()).then(s => {
   if (s.none || s.failed) { badge(s.failed ? "원본 화면 (블러 결과 미리보기를 못 만듦)" : ""); return; }
   if (s.ready) {
