@@ -48,11 +48,13 @@ def frames(src, depth=16, table=None, size=None):
     그리기 단계와 똑같이 ffmpeg로 풀고, 프레임마다 시간을 table에 기록 (다른 단계에서 프레임 번호를 정확히 맞추는 데 씀)"""
     info = media.probe(src)
     W, H = size or (info["W"], info["H"])
-    vf = f"scale={W}:{H}:flags=area" if (W, H) != (info["W"], info["H"]) else None
+    small = (W, H) != (info["W"], info["H"])
+    gs = small and _hw_for(src)                         # 줄이기도 그래픽카드 안에서 (4K 프레임을 CPU로 내려받지 않음)
+    vf = (f"scale_cuda={W}:{H}:interp_algo=lanczos,hwdownload,format=nv12" if gs else f"scale={W}:{H}:flags=area") if small else None
     q = queue.Queue(maxsize=depth)
 
     def reader():
-        d = Dec(src, 0, 10 ** 9, W, H, info["fps"], seek=False, threads=max(2, min(8, (os.cpu_count() or 4) // 2)), mi=info, vf=vf)   # 혼자 읽으니까 CPU를 넉넉히
+        d = Dec(src, 0, 10 ** 9, W, H, info["fps"], seek=False, threads=max(2, min(8, (os.cpu_count() or 4) // 2)), mi=info, vf=vf, hwout=gs)   # 혼자 읽으니까 CPU를 넉넉히
         while True:
             got = d.read()
             if got is None:
