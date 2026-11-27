@@ -411,7 +411,7 @@ setMode(mode); loadJobs(); pollQ();
     const e = $("ver"); if (!v.ver) return;
     const st = v.latest === true ? ' · <b style="color:#3a9d5d">최신 판</b>'
       : v.latest === false ? ' · <b style="color:#d9822b">새 판이 있어요 — 생성기를 껐다 켜면 받아요</b>' : "";
-    e.innerHTML = "판: " + v.ver + st;
+    e.innerHTML = "Ver. " + v.ver + st;
     if (v.latest == null) setTimeout(ver, 3000);
   }).catch(() => {});
 })();
