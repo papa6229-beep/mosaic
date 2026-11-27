@@ -26,7 +26,7 @@
   /* 방송본부 자막 샘플 기준: 가로 가운데, 글자 높이 ≈ 영상 높이 4%, 글자 아래 끝이 영상 아래에서 ≈ 11% 위, 흰 글자 + 얇은 검은 테두리 */
   @font-face{font-family:"SubKR";src:url("/fonts/NotoSansKR-Medium.otf") format("opentype");font-weight:500}
   #cap{position:absolute;text-align:center;line-height:1.38;pointer-events:none}
-  #tear{display:flex;align-items:center;gap:8px;height:22px;padding:0 10px;margin-bottom:4px;border-radius:6px;background:var(--panel);color:var(--sub,#999);font-size:12px;cursor:grab;user-select:none;touch-action:none;line-height:1}
+  #tear{display:none!important;align-items:center;gap:8px;height:22px;padding:0 10px;margin-bottom:4px;border-radius:6px;background:var(--panel);color:var(--sub,#999);font-size:12px;cursor:grab;user-select:none;touch-action:none;line-height:1}
   #tear:active{cursor:grabbing}
   #tear.out{background:var(--acc);color:#1a120a}
   #tearPh{display:none;align-items:center;justify-content:center;gap:10px;min-height:120px;border:1px dashed #555;border-radius:8px;color:var(--sub,#999);font-size:14px}
