@@ -1398,6 +1398,13 @@ def _kill_leftovers(only_orphans=False):
 
 
 # ---------- 자막 화면 소리 그림: 말소리 대역(300~4000Hz) 크기를 0.05초마다 + 자막 없는데 소리 있는 곳 ----------
+@app.get("/viewer")
+def viewer_page():
+    """검수·자막 화면에서 떼어낸 영상 화면을 담는 빈 창 (내용은 원래 창이 옮겨 넣음)"""
+    return Response('<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>영상 화면</title></head>'
+                    '<body style="margin:0;background:#000"></body></html>', mimetype="text/html")
+
+
 @app.get("/review/<jid>/wave")
 def review_wave(jid):
     import numpy as np, wave as wv

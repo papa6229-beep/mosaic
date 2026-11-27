@@ -23,6 +23,10 @@
   #stage{position:relative;background:#000;border-radius:8px;overflow:hidden;line-height:0}
   #stage video{width:100%;max-height:66vh;display:block;object-fit:contain}   /* 실제 높이는 fitV()가 창 높이에 맞춰 정함 */
   #ov{position:absolute;left:0;top:0;cursor:default;touch-action:none}
+  #tear{display:flex;align-items:center;gap:8px;height:22px;padding:0 10px;margin-bottom:4px;border-radius:6px;background:var(--panel);color:var(--sub);font-size:12px;cursor:grab;user-select:none;touch-action:none;line-height:1}
+  #tear:active{cursor:grabbing}
+  #tear.out{background:var(--acc);color:#1a120a}
+  #tearPh{display:none;align-items:center;justify-content:center;gap:10px;min-height:120px;border:1px dashed var(--line,#444);border-radius:8px;color:var(--sub);font-size:14px}
   .ctl{display:flex;align-items:center;gap:6px;margin-top:8px;flex-wrap:wrap}
   .ctl .tc{font-variant-numeric:tabular-nums;margin-left:8px;color:var(--sub)}
   .ctl .tc b{color:var(--ink)}
@@ -70,6 +74,8 @@
 </header>
 <main>
   <div>
+    <div id="tear" title="잡고 브라우저 창 밖으로 끌어내서 놓으면, 영상 화면만 따로 창으로 떼어져요 (더블클릭해도 돼요)">⠿ 영상 화면 떼어내기 — 잡고 창 밖으로 끌어내세요 (다른 모니터에 크게 띄워 보면서 고치기)</div>
+    <div id="tearPh">영상 화면을 따로 창에 띄웠어요 — 그 창을 닫으면 여기로 돌아와요 <button id="bDock">다시 붙이기</button></div>
     <div id="stage">
       <video id="v" preload="auto" playsinline></video>
       <canvas id="ov"></canvas>
@@ -181,6 +187,7 @@ const $ = id => document.getElementById(id);
 const JID = location.pathname.split("/").filter(Boolean)[1];
 document.getElementById("toSubs").href = `/review/${JID}/subtitles`;
 const V = $("v"), OV = $("ov"), octx = OV.getContext("2d");
+const DPR = () => ((OV.ownerDocument && OV.ownerDocument.defaultView) || window).devicePixelRatio || 1;   // 영상 화면이 다른 모니터 창에 있으면 그 창 기준
 let M, SEG, PLAN, ED;     // 정보, 구간표, 블러 계획, 고친 내용
 let cur = 0, sel = null, selSet = new Set(), tool = null, drag = null, hist = [], showOutline = true, showPreview = true;
 let tlStart = 0, tlSpan = 600;      // 타임라인 보기 범위 (프레임)
@@ -325,6 +332,7 @@ function wantExact() {              // 멈춰 있으면 실제 수정본과 똑�
 }
 let vMaxH = 0, lastTLH = 0;
 function fitV() {                  // 영상 크기를 창 높이에 맞춤: 아래 타임라인(블러 줄 전부)이 스크롤 없이 한 화면에 보이게
+  if (V.ownerDocument !== document) return false;   // 따로 띄운 창에선 그 창 크기에 꽉 차게 (CSS)
   const col = $("stage").parentElement, cr = col.getBoundingClientRect(), vh = V.getBoundingClientRect().height;
   const other = cr.height - vh, top = cr.top + scrollY;
   const mh = Math.max(240, Math.floor(innerHeight - top - other - 14));
@@ -334,7 +342,7 @@ function fitV() {                  // 영상 크기를 창 높이에 맞춤: 아
 function fit() {
   fitV();
   const r = V.getBoundingClientRect();
-  OV.width = Math.round(r.width * devicePixelRatio); OV.height = Math.round(r.height * devicePixelRatio);
+  OV.width = Math.round(r.width * DPR()); OV.height = Math.round(r.height * DPR());
   OV.style.width = r.width + "px"; OV.style.height = r.height + "px";
   drawTL(); draw();
 }
@@ -351,7 +359,7 @@ function handles(e) {              // 길이(주황)·폭(보라) 손잡이: 양
   ];
 }
 function rotHandle(e) {            // 회전 손잡이: 테두리 바깥 28픽셀, 화면 안에 보이는 쪽으로 자동
-  const a = axOf(e), { s } = view(), gap = 28 * devicePixelRatio / s, m = 14 * devicePixelRatio / s;
+  const a = axOf(e), { s } = view(), gap = 28 * DPR() / s, m = 14 * DPR() / s;
   const cand = [[a.ang - Math.PI / 2, a.ry], [a.ang + Math.PI / 2, a.ry], [a.ang + Math.PI, a.rx], [a.ang, a.rx]];
   const pt = ([th, r]) => ({ x: e.cx + (r + gap) * Math.cos(th), y: e.cy + (r + gap) * Math.sin(th), bx: e.cx + r * Math.cos(th), by: e.cy + r * Math.sin(th) });
   for (const c of cand) { const p = pt(c); if (p.x >= m && p.x <= M.W - m && p.y >= m && p.y <= M.H - m) return p; }
@@ -405,13 +413,13 @@ function draw() {
     }
   }
   if (mode && es.length) {
-    octx.save(); octx.font = `${12 * devicePixelRatio}px sans-serif`;
-    const tw = octx.measureText(mode).width + 12 * devicePixelRatio;
-    octx.fillStyle = "rgba(0,0,0,.55)"; octx.fillRect(ox + 8, oy + 8, tw, 20 * devicePixelRatio);
-    octx.fillStyle = useExact ? "#4ade80" : "#fde047"; octx.fillText(mode, ox + 14, oy + 8 + 14 * devicePixelRatio); octx.restore();
+    octx.save(); octx.font = `${12 * DPR()}px sans-serif`;
+    const tw = octx.measureText(mode).width + 12 * DPR();
+    octx.fillStyle = "rgba(0,0,0,.55)"; octx.fillRect(ox + 8, oy + 8, tw, 20 * DPR());
+    octx.fillStyle = useExact ? "#4ade80" : "#fde047"; octx.fillText(mode, ox + 14, oy + 8 + 14 * DPR()); octx.restore();
   }
   if (!useExact) wantExact();
-  const P = (x, y) => [ox + x * s, oy + y * s], dpr = devicePixelRatio;
+  const P = (x, y) => [ox + x * s, oy + y * s], dpr = DPR();
   for (const e of es) {
     const on = isSel(e.sid), primary = sel != null && String(e.sid) === String(sel);
     if (!showOutline) continue;                           // 테두리 끄면 선택한 블러도 테두리·손잡이 안 그림 (잡고 끄는 건 그대로 됨)
@@ -654,9 +662,9 @@ function msg(t, c) { const m = $("msg"); m.textContent = t; m.className = c || "
 
 function toVid(ev) {
   const r = OV.getBoundingClientRect(), { s, ox, oy } = view();
-  return [((ev.clientX - r.left) * devicePixelRatio - ox) / s, ((ev.clientY - r.top) * devicePixelRatio - oy) / s];
+  return [((ev.clientX - r.left) * DPR() - ox) / s, ((ev.clientY - r.top) * DPR() - oy) / s];
 }
-function near(x, y, p) { return Math.hypot(x - p.x, y - p.y) * view().s < 14 * devicePixelRatio; }
+function near(x, y, p) { return Math.hypot(x - p.x, y - p.y) * view().s < 14 * DPR(); }
 function handleHit(x, y) {          // 선택한 블러의 손잡이를 잡았는지
   if (sel == null) return null;
   const all = ellsAt(cur), e = all.find(e => String(e.sid) === String(sel));
@@ -718,7 +726,7 @@ function edgeHit(list, x, y) {      // 마우스가 블러 테두리 선 가까�
     const dx = x - e.cx, dy = y - e.cy, A = e.A;
     const q = Math.sqrt(Math.max(0, A[0][0] * dx * dx + 2 * A[0][1] * dx * dy + A[1][1] * dy * dy));
     const r = Math.hypot(dx, dy) / Math.max(q, 1e-6);            // 그 방향의 반지름
-    if (Math.abs(q - 1) * r * s < 10 * devicePixelRatio) return e;
+    if (Math.abs(q - 1) * r * s < 10 * DPR()) return e;
   }
   return null;
 }
@@ -1097,11 +1105,88 @@ function jumpSeg(dir) {
   const t = dir > 0 ? starts.find(s => s[0] > cur) : [...starts].reverse().find(s => s[0] < cur);
   if (t) { V.pause(); selectOnly(t[1]); setFrame(t[0]); }
 }
-document.addEventListener("keydown", ev => {
+// ---------- 영상 화면 떼어내기 (다른 모니터에 크게) ----------
+let PW = null;
+function toggleFS(w) {
+  const d = w.document;
+  if (d.fullscreenElement) d.exitFullscreen().catch(() => {});
+  else d.documentElement.requestFullscreen().catch(() => {});
+}
+function detach(sx, sy) {
+  if (PW && !PW.closed) { PW.focus(); return; }
+  const r = $("stage").getBoundingClientRect();
+  const w = Math.max(800, Math.round(r.width)), h = Math.max(450, Math.round(r.height));
+  const L = Math.round(sx - w / 2), T = Math.round(sy - 16);
+  const pw = window.open("/viewer", "mosaicView_" + JID, `popup,width=${w},height=${h},left=${L},top=${T}`);
+  if (!pw) { msg("브라우저가 새 창을 막았어요 — 주소창 오른쪽의 팝업 차단 표시를 눌러 '항상 허용'으로 바꾼 뒤 다시 해 주세요", "bad"); return; }
+  PW = pw;
+  $("tear").style.display = "none"; $("tearPh").style.display = "flex";
+  const build = () => {                            // 새 창이 다 열리면 영상 화면을 그리로 옮김
+    let ok = false;
+    try { ok = pw.location.pathname === "/viewer" && pw.document.readyState === "complete"; } catch (e) {}
+    if (pw.closed) { PW = null; $("tear").style.display = ""; $("tearPh").style.display = "none"; return; }
+    if (!ok) return setTimeout(build, 30);
+    const d = pw.document;
+    d.title = "영상 화면 — " + (M.name || "");
+    const st1 = d.createElement("style"); st1.textContent = [...document.querySelectorAll("style")].map(x => x.textContent).join("\n");
+    const st2 = d.createElement("style");
+    st2.textContent = `html,body{margin:0;height:100%;background:#000;overflow:hidden}
+#stage{border-radius:0;height:100vh}
+#stage video{width:100vw;height:100vh;max-height:none!important}
+#fsBtn{position:fixed;right:10px;top:10px;z-index:5;opacity:.35;font:13px sans-serif;background:#222;color:#eee;border:1px solid #555;border-radius:8px;padding:6px 10px;cursor:pointer}
+#fsBtn:hover{opacity:1}`;
+    d.head.append(st1, st2);
+    const fb = d.createElement("button"); fb.id = "fsBtn"; fb.title = "F 키로도 돼요"; fb.textContent = "전체 화면 (F)";
+    fb.onclick = () => toggleFS(pw);
+    d.body.append(fb, d.adoptNode($("stage")));
+    V.style.maxHeight = ""; vMaxH = 0;
+    reloadHere();
+    pw.addEventListener("keydown", onKey);
+    pw.addEventListener("resize", () => requestAnimationFrame(fit));
+    pw.addEventListener("pagehide", dock);
+    requestAnimationFrame(fit); setTimeout(fit, 120); setTimeout(fit, 500);
+  };
+  build();
+  try {                                            // 다른 모니터에 바로 놓으려면 크롬 '창 관리' 허용이 필요 (처음 한 번 물어봄)
+    if (window.getScreenDetails) getScreenDetails().then(() => { try { pw.moveTo(L, T); } catch (e) {} }).catch(() => {});
+  } catch (e) {}
+}
+function reloadHere() {              // 영상 화면을 다른 창으로 옮기면 브라우저가 영상을 처음부터 다시 불러옴 → 보던 프레임·재생 상태로 되돌림
+  const f = cur, playing = !V.paused;
+  V.addEventListener("loadeddata", () => { setFrame(f); if (playing) V.play().catch(() => {}); fit(); }, { once: true });
+  const src = V.getAttribute("src");
+  if (src) V.src = new URL(src, location.href).href;   // 새 창 주소 기준이 아니라 원래 주소 기준으로
+  V.load();
+}
+function dock() {
+  if (!PW) return;
+  const pw = PW; PW = null;
+  const st = pw.document.getElementById("stage");
+  if (st) {
+    $("tearPh").before(document.adoptNode(st));
+    reloadHere();
+  }
+  $("tear").style.display = ""; $("tearPh").style.display = "none";
+  try { if (!pw.closed) pw.close(); } catch (e) {}
+  vMaxH = 0; requestAnimationFrame(fit);
+}
+{
+  const T = $("tear"); let td = null;
+  const outside = ev => ev.clientX < 0 || ev.clientY < 0 || ev.clientX > innerWidth || ev.clientY > innerHeight;
+  T.addEventListener("pointerdown", ev => { td = 1; T.setPointerCapture(ev.pointerId); });
+  T.addEventListener("pointermove", ev => { if (td) T.classList.toggle("out", outside(ev)); });
+  T.addEventListener("pointerup", ev => { if (td && outside(ev)) detach(ev.screenX, ev.screenY); td = null; T.classList.remove("out"); });
+  T.addEventListener("pointercancel", () => { td = null; T.classList.remove("out"); });
+  T.addEventListener("dblclick", () => detach(screenX + outerWidth + 200, screenY + 80));
+  $("bDock").onclick = dock;
+  window.addEventListener("pagehide", () => { try { PW && PW.close(); } catch (e) {} });
+}
+function onKey(ev) {
   if (ev.target.tagName === "INPUT" || ev.target.tagName === "SELECT") return;
   const k = ev.key, K = (ev.code || "").startsWith("Key") ? ev.code.slice(3).toLowerCase() : (k.length === 1 ? k.toLowerCase() : k);   // 한글 입력 상태여도 동작
   if ((ev.ctrlKey || ev.metaKey) && K === "a") { ev.preventDefault(); selAll(); return; }
   if (k === " ") { ev.preventDefault(); togglePlay(); }
+  if (K === "f" && PW && !PW.closed && !ev.ctrlKey && !ev.metaKey) { ev.preventDefault(); toggleFS(PW); return; }
   else if (k === "ArrowLeft") { ev.preventDefault(); V.pause(); setFrame(cur - (ev.shiftKey ? Math.round(M.fps) : 1)); }
   else if (k === "ArrowRight") { ev.preventDefault(); V.pause(); setFrame(cur + (ev.shiftKey ? Math.round(M.fps) : 1)); }
   else if (k === "Home") { ev.preventDefault(); goEdge("start"); }
@@ -1138,7 +1223,8 @@ document.addEventListener("keydown", ev => {
   else if (K === "p") $("bPreview").click();
   else if (k === ",") jumpSeg(-1);
   else if (k === ".") jumpSeg(1);
-});
+}
+document.addEventListener("keydown", onKey);
 
 // ---------- 수정본 만들기 ----------
 $("bRender").onclick = () => {
