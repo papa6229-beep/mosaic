@@ -12,9 +12,16 @@ SEC = 30
 lines = []
 
 
+LOGF = os.path.join(ROOT, "전체속도점검결과.txt")
+
+
 def out(s=""):
     print(s, flush=True)
     lines.append(s)
+    try:                                   # 한 줄씩 바로 파일에도 (창이 갑자기 닫혀도 어디까지 됐는지 남게)
+        open(LOGF, "w", encoding="utf-8").write("\n".join(lines))
+    except Exception:
+        pass
 
 
 def mmss(x):
@@ -58,6 +65,7 @@ def main():
     job = {}
     app.ensure_model(job)
     app._set_hw(clip, job)
+    out("· 위치 찾는 중…")
     t = time.time()
     table = []
     boxes, all_boxes, exps, n2 = app.detect_all(clip, job, n, None, table)
@@ -69,6 +77,7 @@ def main():
     json.dump(all_boxes, open(os.path.join(work, "boxes_all.json"), "w"))
     if exps is not None:
         json.dump(exps, open(os.path.join(work, "exposures.json"), "w"))
+    out(f"· 위치 찾기 끝 ({time.time() - t:.1f}초). 훑기·계획·저장 중…")
     times = {}
     rep = app.render(clip, bj, os.path.join(work, "x_cover" + os.path.splitext(src)[1]), job, n, times)
     tm = rep.get("times", times)
@@ -95,6 +104,12 @@ def main():
 
 
 if __name__ == "__main__":
+    import faulthandler
+    try:                                   # 프로그램이 통째로 죽어도 어디서 죽었는지 파일에 남김
+        _fh = open(os.path.join(ROOT, "전체속도점검_오류.txt"), "w", encoding="utf-8")
+        faulthandler.enable(_fh, all_threads=True)
+    except Exception:
+        pass
     try:
         r = main()
     except Exception:

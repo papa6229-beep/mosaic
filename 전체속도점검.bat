@@ -9,3 +9,6 @@ if not exist %PYEXE% (
   exit /b 1
 )
 %PYEXE% tools\bench_all.py %*
+echo.
+echo (exit code %errorlevel%)
+pause
